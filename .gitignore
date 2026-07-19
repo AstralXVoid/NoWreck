@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.basedpyright/
+*.sqlite
+*.sqlite3
+
+# Virtual environments
+.venv/
+venv/
+
+# Nowreck
+.nowreck/
+
+# Test repositories (hand-built for Milestone 1)
+test_repos/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
