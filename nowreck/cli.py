@@ -16,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Launch the interactive terminal picker",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 

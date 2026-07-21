@@ -94,6 +94,14 @@ class TestResolvePath:
             with pytest.raises(ValueError, match="not a directory"):
                 _resolve_path(f.name)
 
+    def test_path_too_long_raises_clean_error(self) -> None:
+        """A path exceeding the OS filename length limit (PATH_MAX ~4096)
+        should raise ValueError with a clean message, not an OSError
+        traceback."""
+        long_path = "/" + ("a" * 5000) + "/path"
+        with pytest.raises(ValueError, match="Cannot access path"):
+            _resolve_path(long_path)
+
 
 # ---------------------------------------------------------------------------
 # handle_config

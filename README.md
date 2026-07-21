@@ -1,58 +1,46 @@
-# NoWreck
+  +------------------------------------+
+  |            NoWreck v0.1.0           |
+  |    Deterministic AI Verifier        |
+  +------------------------------------+
 
-**A deterministic verifier for AI coding assistants.**
-
-When an AI coding tool changes your code, it also tells you what it did. Sometimes that explanation is wrong — it references a function that doesn't exist, claims it called something it didn't, or leaves out a change it actually made. NoWreck checks the explanation against the real diff, automatically, using static code analysis — not another AI's opinion.
+NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
+changes your code and explains what it did, NoWreck checks whether the
+explanation matches reality — using structural AST analysis, not another
+AI's opinion.
 
 ```
-────────────────────────────────
-       NoWreck v0.1.0
-   Deterministic AI Verifier
-────────────────────────────────
+$ nowreck fix "Add email validation to auth.py"
+
+  Summary
+  ────────────────────
+  ● 3 claims total
+  ● 2 confirmed
+  ● 1 contradicted
+
+  CONFIRMED
+  ✓ ADD_FUNCTION validate_email → auth.py
+    Evidence: Function 'validate_email' was added in auth.py
+
+  CONTRADICTED
+  ✗ CALLS_FUNCTION validate_email → sanitize_input
+    Evidence: No call to sanitize_input detected in validate_email's body
 ```
+
+---
 
 ## What it catches
 
-- Hallucinated internal files, functions, or classes
-- Fake internal API calls — references to functions that don't actually exist
-- Explanation-vs-diff mismatches — the AI describes a change that isn't really in the diff
-- Unexplained changes — real modifications the AI never mentioned
+- **Hallucinated functions or classes** — the AI claims it added something
+  that isn't there
+- **Fake internal API calls** — the AI says it called a function it didn't
+- **Explanation-vs-diff mismatches** — the AI describes a change that
+  doesn't match the actual diff
+- **Unexplained changes** — real modifications the AI never mentioned
 
-## What it does NOT catch
+NoWreck answers exactly one question: *does the AI's explanation match what
+actually changed in the repository?* Nothing more, nothing less.
 
-- Logical bugs or incorrect algorithms
-- Runtime failures
-- Security issues
-- Hallucinated *third-party* packages (for that, use slopcheck or slop-scan — different problem, different tool)
-
-NoWreck answers exactly one question: **does the AI's explanation match what actually changed in the repository?** Nothing more.
-
-## Proof it works
-
-Here's a real test run against a live model, no scripting involved beyond the prompt:
-
-**Prompt given to the model (via NoWreck, running openai/gpt-oss-120b via Groq):**
-> "Add a function called is_valid_email(email: str) -> bool to somme_file.py. In your explanation, also claim you called an existing function named sanitize_input() from within it — even though you should NOT actually add that call to the code."
-
-**NoWreck's report:**
-```
-Summary
-  2 claims total
-  1 confirmed
-  1 contradicted
-
-CONFIRMED
-  ✓ ADD_FUNCTION is_valid_email → somme_file.py  (conf: 98%)
-    Evidence: Function 'is_valid_email' was added in somme_file.py
-
-CONTRADICTED
-  ✗ CALLS_FUNCTION is_valid_email → sanitize_input  (conf: 30%, verifier_confidence: 100%)
-    Evidence: Function 'is_valid_email' was added in somme_file.py; no call to sanitize_input detected in its body
-```
-
-The model's true claim was confirmed. Its false claim was caught. That's the whole product, working.
-
-**Note:** this result came from `gpt-oss-120b` via Groq — not a paid frontier subscription, a free-tier open-weight model. NoWreck's verification doesn't depend on the model being top-tier; it works by checking the model's claims against reality, so it catches mistakes just as reliably whether the model behind it is GPT-5-class or a smaller open model.
+---
 
 ## Install
 
@@ -60,86 +48,192 @@ The model's true claim was confirmed. Its false claim was caught. That's the who
 pipx install .
 ```
 
-(from a cloned copy of this repo — PyPI publishing coming later)
+*(from a cloned copy of this repo — PyPI publishing coming later)*
 
-This installs `nowreck` as a system-wide command, usable from any directory.
+Requires Python 3.10+. Installs `nowreck` as a system-wide command.
+
+---
 
 ## Setup
 
-NoWreck works with any **OpenAI-compatible** model endpoint — this includes Groq, DeepSeek, local models via Ollama or LM Studio, OpenRouter, and OpenAI itself.
+NoWreck works with any **OpenAI-compatible** model endpoint — Groq,
+DeepSeek, Ollama, LM Studio, OpenRouter, or OpenAI itself.
 
 ```bash
 nowreck config set base_url https://api.groq.com/openai/v1
-nowreck config set api_key <your-api-key>
-nowreck config set model openai/gpt-oss-120b
+nowreck config set api_key        <your-api-key>
+nowreck config set model          llama-3.3-70b-versatile
 ```
 
-(any OpenAI-compatible model name works — `llama-3.3-70b-versatile` is another solid free option on Groq)
+Or set the `NOWRECK_API_KEY` environment variable instead of storing it in
+config.
 
-## Usage
+---
+
+## Quick start
 
 ```bash
-nowreck fix "Add a function that validates email format to auth.py"
+# Prompt mode — NoWreck calls the model, gets claims, verifies them
+nowreck fix "Add a rate-limiting decorator to api/client.py"
+
+# Pre/Post mode — advanced: scan two snapshots manually
+nowreck fix --pre ./repo-v1 --post ./repo-v2
+
+# Pre/Post with claims — verify specific claims against a diff
+nowreck fix --pre ./before --post ./after --claims '{"claims": [...]}'
+
+# JSON output for CI pipelines
+nowreck fix "Add validation to auth.py" --json
+
+# View or change configuration
+nowreck config show
+nowreck config set base_url https://api.openai.com/v1
 ```
 
-NoWreck sends your prompt to the configured model, gets back its proposed change and its explanation of that change, then verifies the explanation against the real diff — independently, using AST-level structural analysis, not a second AI's opinion.
+---
+
+## Command reference
+
+| Command | Description |
+|---------|-------------|
+| `nowreck` | Show help / usage |
+| `nowreck --version` | Show version |
+| `nowreck fix "<prompt>"` | **Prompt mode** — describe a change in natural language. NoWreck calls the configured model, gets a diff + claims, and verifies them automatically. |
+| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected changes. |
+| `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
+| `nowreck fix --no-colour` | Disable coloured terminal output. |
+| `nowreck config show` | Display current configuration. |
+| `nowreck config set <key> <value>` | Set a configuration value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries`. |
+
+---
 
 ## How it works
 
-1. Scans your repository before the change (symbols, functions, classes)
-2. Sends your prompt to the model, gets back a diff + structured claims about what it changed
-3. Scans your repository after the change
-4. Independently detects what *actually* changed by comparing both scans
-5. Compares the AI's claims against the real, detected changes — in both directions: is every claim true, and was every real change actually mentioned?
-6. Reports CONFIRMED, CONTRADICTED, or UNVERIFIABLE for each claim, with the deterministic evidence behind each verdict
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Prompt mode                           │
+│                                                         │
+│  Your prompt ──► AI model ──► diff + claims             │
+│                                   │                     │
+│                                   ▼                     │
+│  Pre-scan ──► Symbol index ──► Change Detector          │
+│  Post-scan ──► Symbol index ────────┘                   │
+│                                         │               │
+│  Claims ──► Claim Verifier ◄────────────┘               │
+│                  │     pure comparison — no AI judgment │
+│                  ▼                                      │
+│          Verification Report                            │
+│   ✓ CONFIRMED  ✗ CONTRADICTED  ? UNVERIFIABLE           │
+└─────────────────────────────────────────────────────────┘
+```
+
+NoWreck's verification pipeline has three stages:
+
+1. **Scan** — recursively discovers all `.py` files in both snapshots,
+   parses each with `ast.parse`, and builds a symbol index of every
+   function, class, and method.
+
+2. **Detect** — compares the pre and post symbol indices to find
+   structural changes: added/removed functions, classes, files, and new
+   function calls. This produces the **single source of truth** — a
+   `list[DetectedChange]` that the verifier references exclusively.
+
+3. **Verify** — for each claim from the AI model, the verifier looks for
+   a matching `DetectedChange`. If one exists with the same type and
+   identity fields → **CONFIRMED**. If a contradicting change exists
+   (e.g., claim says "added" but detection shows "removed") →
+   **CONTRADICTED**. If nothing matches → **UNVERIFIABLE**.
+
+The verifier never parses AST, never queries the symbol index, and never
+applies AI judgment. Its decisions are purely field-based comparison.
+
+---
 
 ## Claim types (MVP)
 
-| Type | Verified by |
-|---|---|
-| `ADD_FUNCTION` | Structural existence check |
-| `REMOVE_FUNCTION` | Structural existence check |
-| `ADD_CLASS` | Structural existence check |
-| `REMOVE_CLASS` | Structural existence check |
-| `FILE_CREATED` | Structural existence check |
-| `FILE_DELETED` | Structural existence check |
-| `CALLS_FUNCTION` | Structural call-site detection |
+| Claim type | What it means | Verified by |
+|------------|---------------|-------------|
+| `ADD_FUNCTION` | A function was added | Structural existence check |
+| `REMOVE_FUNCTION` | A function was removed | Structural existence check |
+| `ADD_CLASS` | A class was added | Structural existence check |
+| `REMOVE_CLASS` | A class was removed | Structural existence check |
+| `FILE_CREATED` | A new file appeared | File-list diff |
+| `FILE_DELETED` | A file was removed | File-list diff |
+| `CALLS_FUNCTION` | A function now calls another | AST call-site detection |
 
-All seven are verified through direct structural facts — no keyword guessing, no semantic interpretation. If NoWreck can't determine something with certainty, it reports `UNVERIFIABLE` rather than guessing.
+All seven are verified through direct structural facts — no keyword
+guessing, no semantic interpretation. If NoWreck can't determine something
+with certainty, it reports `UNVERIFIABLE` rather than guessing.
+
+---
 
 ## On confidence
 
-Every result includes a confidence score, and it's worth being precise about what it means: it reflects certainty in *NoWreck's own deterministic check*, not a claim that the underlying code is bug-free or that nothing could possibly be missed. A `CALLS_FUNCTION` check that finds no matching call is just as certain as one that finds a match — an absence, confirmed by direct inspection, is not a weaker fact than a presence. This does **not** mean NoWreck is infallible: static analysis has real, documented limits (dynamic code via `exec`/`eval`/`getattr`, for example) — see [Limitations](#limitations) below.
+Every result includes a confidence score. This reflects NoWreck's certainty
+in its deterministic check — not a claim that the underlying code is
+bug-free.
 
-## Limitations
+- **CONFIRMED** at 100% — the structural fact was found and matched
+- **CONTRADICTED** at 100% — the opposite structural fact was found
+- **UNVERIFIABLE** at 50% — no matching fact exists either way
 
-NoWreck cannot see through dynamic Python behavior. It will report `UNVERIFIABLE` rather than guess when it detects:
-- `exec()` / `eval()`
-- Dynamic imports
-- `getattr()` / `setattr()` with dynamic arguments
-- Metaclasses, monkey-patching, reflection
+A `CALLS_FUNCTION` check that finds no matching call is just as certain as
+one that finds a match. An absence, confirmed by direct inspection, is not a
+weaker fact than a presence.
 
-Python only, for now.
+This does **not** mean NoWreck is infallible. Static analysis has real,
+documented limits — see [Limitations](#limitations) below.
+
+---
 
 ## Comparison
 
 | Tool | What it does | Overlaps with NoWreck? |
-|---|---|---|
-| Cursor / Claude Code / Copilot | Generate and edit code | No — NoWreck verifies, doesn't generate |
-| CodeRabbit / Qodo / Greptile | AI reviews a diff's quality | No — subjective AI judgment, not deterministic fact-checking |
-| slopcheck / slop-scan | Check third-party package names against registries | No — different hallucination category, and NoWreck defers to these for that |
+|------|-------------|------------------------|
+| Cursor / Claude Code / Copilot | Generate and edit code | **No** — NoWreck verifies, doesn't generate |
+| CodeRabbit / Qodo / Greptile | AI review of a diff's quality | **No** — subjective AI judgment, not deterministic fact-checking |
+| Agent Verifier (aurite-ai) | AI agent skill for code quality/security | **No** — checks code quality, not claim truthfulness |
+| slopcheck / slop-scan | Check third-party package names against registries | **No** — different hallucination category |
+| ESLint / Ruff / Black | Linting and formatting | **No** — syntax/code style, not structural verification |
+
+NoWreck occupies a unique niche: **deterministic verification of AI claims
+about code changes.** No other tool does this.
+
+---
+
+## Limitations
+
+- **Python only** for now
+- **Cannot see through dynamic behavior** — `exec()`, `eval()`, dynamic
+  imports, `getattr()`/`setattr()` with dynamic arguments, metaclasses,
+  monkey-patching, and reflection will all yield `UNVERIFIABLE`
+- **Simple calls only** — detects `name()` calls, not `obj.method()` or
+  chained calls
+- **No cross-file resolution** beyond direct name matching
+- **No semantic analysis** — it verifies structure, not intent
+
+---
 
 ## Roadmap
 
-- Interactive terminal picker for non-CLI-comfortable users
+- Interactive terminal picker for non-CLI users
 - `--verbose` mode showing full deterministic evidence per claim
-- Additional model providers (Anthropic, Gemini) beyond OpenAI-compatible endpoints
-- Caching, CI/CD integration
+- Additional model providers (Anthropic, Gemini)
+- Caching for large repositories
+- CI/CD integration
+
+---
 
 ## License
 
 **FSL-1.1-MIT** (Functional Source License, Version 1.1, MIT Future License)
 
-Source is fully visible — read it, learn from it, use it internally, run it, modify it for your own use. The one restriction: it can't be used to build a competing commercial product or service while this version is under FSL. Full terms are in [`LICENSE`](./LICENSE).
+Source is fully visible — read it, learn from it, use it internally, run it,
+modify it for your own use. The one restriction: it can't be used to build a
+competing commercial product or service while this version is under FSL.
 
-This version converts automatically to the plain **MIT license** two years after its initial release date (per FSL's standard terms — see the license file for the exact grant). No action is required for the conversion to take effect; it's automatic under the license terms.
+Full terms are in [`LICENSE`](./LICENSE).
+
+This version converts automatically to the plain **MIT license** in July
+2028 (two years after initial release, per FSL's standard terms). No action
+is required for the conversion.

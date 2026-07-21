@@ -20,7 +20,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.1.0           |
+  |            NoWreck v0.2.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+"""
 
@@ -36,6 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     if not cmd_args:
         print(_BANNER)
         print()
+
+    # --interactive flag launches the terminal picker.
+    if args.interactive:
+        from nowreck.picker import run_picker
+
+        return run_picker()
 
     if args.command == "fix":
         return handle_fix(args)
@@ -251,6 +257,11 @@ def _get_float_or(data: dict[str, object], key: str, default: float) -> float:
     val: object = data.get(key, default)
     if isinstance(val, (int, float)):
         return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
     return default
 
 
@@ -261,6 +272,11 @@ def _get_int_or(data: dict[str, object], key: str, default: int) -> int:
         return val
     if isinstance(val, float):
         return int(val)
+    if isinstance(val, str):
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            pass
     return default
 
 
@@ -298,9 +314,14 @@ def _detect_and_verify(
 
 def _resolve_path(raw: str) -> Path:
     """Resolve a user-provided path, raising on invalid input."""
-    path = Path(raw).resolve()
-    if not path.exists():
-        raise ValueError(f"Path does not exist: {path}")
-    if not path.is_dir():
-        raise ValueError(f"Path is not a directory: {path}")
+    path = Path(raw).expanduser().resolve()
+    try:
+        if not path.exists():
+            raise ValueError(f"Path does not exist: {path}")
+        if not path.is_dir():
+            raise ValueError(f"Path is not a directory: {path}")
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot access path: {exc}"
+        ) from exc
     return path
