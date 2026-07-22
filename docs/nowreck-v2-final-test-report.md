@@ -16,7 +16,7 @@ usage: nowreck [-h] [--version] [--interactive] {fix,config} ...
 
 ### 1b: `nowreck --version`
 ```
-nowreck 0.1.0
+nowreck 0.2.0
 ```
 **Result:** ✅ Correct version.
 
@@ -173,7 +173,7 @@ Complete structured JSON output with all fields. Machine-parseable.
 | Test | Result |
 |------|--------|
 | `pipx install .` | ✅ Already installed, works |
-| `nowreck --version` from `/tmp` | ✅ `nowreck 0.1.0` |
+| `nowreck --version` from `/tmp` | ✅ `nowreck 0.2.0` |
 | `nowreck config show` from `/tmp` | ✅ "No configuration found." — clean state in new directory |
 | `nowreck --help` from `/tmp` | ✅ Full help output |
 

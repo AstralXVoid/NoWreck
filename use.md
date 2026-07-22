@@ -45,7 +45,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.1.0
+# → nowreck 0.2.0
 
 nowreck
 # → shows banner + usage
@@ -312,6 +312,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 |---------|-------------|
 | `nowreck` | Show ASCII banner + usage help |
 | `nowreck --version` | Show version number |
+| `nowreck --interactive` | Launch the interactive terminal picker (menu-driven) |
 | `nowreck fix "<prompt>"` | **Prompt mode** — describe changes; NoWreck calls the model and verifies automatically |
 | `nowreck fix --pre P --post P` | **Pre/Post mode** — scan two directory snapshots, detect changes |
 | `nowreck fix --pre P --post P --claims JSON` | **Claims mode** — detect changes *and* verify claims against them |
@@ -423,7 +424,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -541,4 +542,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.1.0 — July 2026*
+*NoWreck v0.2.0 — July 2026*

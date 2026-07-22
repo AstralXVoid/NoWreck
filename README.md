@@ -1,5 +1,5 @@
   +------------------------------------+
-  |            NoWreck v0.1.0           |
+  |            NoWreck v0.2.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+
 
@@ -73,6 +73,9 @@ config.
 ## Quick start
 
 ```bash
+# Interactive picker — menu-driven interface (great for new users)
+nowreck --interactive
+
 # Prompt mode — NoWreck calls the model, gets claims, verifies them
 nowreck fix "Add a rate-limiting decorator to api/client.py"
 
@@ -98,6 +101,7 @@ nowreck config set base_url https://api.openai.com/v1
 |---------|-------------|
 | `nowreck` | Show help / usage |
 | `nowreck --version` | Show version |
+| `nowreck --interactive` | Launch the interactive terminal picker — menu-driven interface for all operations |
 | `nowreck fix "<prompt>"` | **Prompt mode** — describe a change in natural language. NoWreck calls the configured model, gets a diff + claims, and verifies them automatically. |
 | `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected changes. |
 | `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
@@ -216,7 +220,7 @@ about code changes.** No other tool does this.
 
 ## Roadmap
 
-- Interactive terminal picker for non-CLI users
+- Interactive terminal picker for non-CLI users ✅ *(done in v0.2.0)*
 - `--verbose` mode showing full deterministic evidence per claim
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
