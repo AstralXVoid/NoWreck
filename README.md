@@ -8,6 +8,8 @@ changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
+<img width="1632" height="1224" alt="yes" src="https://github.com/user-attachments/assets/ec2aa6b1-dfc0-4809-a1d6-10306b96f428" />
+
 ```
 $ nowreck fix "Add email validation to auth.py"
 
@@ -769,7 +771,7 @@ Make sure:
   returning expected results — the model may be having trouble with the
   JSON format.
 
-*NoWreck v0.1.0 — July 2026*
+*NoWreck v0.2.0 — July 2026*
 
 
 ## License
