@@ -1,0 +1,41 @@
+[project]
+name = "nowreck"
+version = "0.1.0"
+description = "Deterministic verifier for AI code change explanations"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+nowreck = "nowreck.__main__:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nowreck*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# Do not explore into hand-built test repositories
+norecursedirs = [".nowreck", "test_repos"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.basedpyright]
+typeCheckingMode = "strict"
+include = ["nowreck"]
+reportUnusedImport = true
+reportMissingTypeStubs = false

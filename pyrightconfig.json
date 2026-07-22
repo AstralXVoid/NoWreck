@@ -1,0 +1,6 @@
+{
+  "include": ["nowreck"],
+  "exclude": ["tests", ".venv", "**/__pycache__"],
+  "typeCheckingMode": "strict",
+  "reportMissingTypeStubs": false
+}
