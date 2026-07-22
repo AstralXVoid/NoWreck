@@ -8,7 +8,8 @@ changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
-<img width="1632" height="1224" alt="yes" src="https://github.com/user-attachments/assets/ec2aa6b1-dfc0-4809-a1d6-10306b96f428" />
+<img width="981" height="710" alt="no" src="https://github.com/user-attachments/assets/7fb751f3-ae02-4023-bc01-c737e42e8083" />
+
 
 ```
 $ nowreck fix "Add email validation to auth.py"
