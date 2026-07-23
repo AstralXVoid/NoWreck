@@ -1,7 +1,7 @@
   +------------------------------------+
-  |            NoWreck v0.2.0           |
-  |    Deterministic AI Verifier        |
-  +------------------------------------+
+   |            NoWreck v0.2.0           |
+   |    Deterministic AI Verifier        |
+   +------------------------------------+
 
 NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
@@ -95,24 +95,29 @@ nowreck fix "Add validation to auth.py" --json
 nowreck config show
 nowreck config set base_url https://api.openai.com/v1
 ```
-### 0. Interactive mode (NEW in v0.2.0)
 
-Menu-driven interface for users who prefer exploring options interactively:
+---
+
+## Interactive Mode (NEW in v0.2.0)
+
+Menu-driven interface for users who prefer exploring options without memorizing commands:
 
 ```bash
 nowreck --interactive
+```
+
 This launches a terminal picker where you can:
 
-    Choose from Prompt, Pre/Post, or Claims modes
-    Select your repository path
-    Configure options interactively
-    See verification results with formatted output
+- Choose from Prompt, Pre/Post, or Claims modes
+- Select your repository path
+- Configure options interactively
+- See verification results with formatted output
 
 Great for:
 
-    Beginners exploring NoWreck
-    One-off verifications without typing complex commands
-    Learning the tool's capabilities
+- Beginners exploring NoWreck
+- One-off verifications without typing complex commands
+- Learning the tool's capabilities
 
 ---
 
@@ -124,7 +129,7 @@ Great for:
 | `nowreck --version` | Show version |
 | `nowreck --interactive` | Launch the interactive terminal picker — menu-driven interface for all operations |
 | `nowreck fix "<prompt>"` | **Prompt mode** — describe a change in natural language. NoWreck calls the configured model, gets a diff + claims, and verifies them automatically. |
-| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected changes. |
+| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected chang[...]
 | `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
 | `nowreck fix --no-colour` | Disable coloured terminal output. |
 | `nowreck config show` | Display current configuration. |
