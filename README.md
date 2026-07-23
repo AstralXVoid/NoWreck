@@ -231,10 +231,6 @@ about code changes.** No other tool does this.
 
 ---
 
-- # NoWreck — Setup & Usage Guide
-
----
-
 ## Table of Contents
 
 1. [Installation](#installation)
@@ -278,7 +274,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.1.0
+# → nowreck 0.2.0
 
 nowreck
 # → shows banner + usage
@@ -656,7 +652,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "success": false,
   "summary": {
     "total_claims": 3,
