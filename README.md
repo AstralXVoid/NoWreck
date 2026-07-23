@@ -95,6 +95,24 @@ nowreck fix "Add validation to auth.py" --json
 nowreck config show
 nowreck config set base_url https://api.openai.com/v1
 ```
+### 0. Interactive mode (NEW in v0.2.0)
+
+Menu-driven interface for users who prefer exploring options interactively:
+
+```bash
+nowreck --interactive
+This launches a terminal picker where you can:
+
+    Choose from Prompt, Pre/Post, or Claims modes
+    Select your repository path
+    Configure options interactively
+    See verification results with formatted output
+
+Great for:
+
+    Beginners exploring NoWreck
+    One-off verifications without typing complex commands
+    Learning the tool's capabilities
 
 ---
 
