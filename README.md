@@ -98,7 +98,7 @@ nowreck config set base_url https://api.openai.com/v1
 
 ---
 
-## Interactive Mode (NEW in v0.2.0)
+## Interactive Mode (in v0.2.0)
 
 Menu-driven interface for users who prefer exploring options without memorizing commands:
 
@@ -311,7 +311,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.2.0
+# → nowreck 0.3.0
 
 nowreck
 # → shows banner + usage
@@ -689,7 +689,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -809,7 +809,7 @@ Make sure:
   returning expected results — the model may be having trouble with the
   JSON format.
 
-*NoWreck v0.2.0 — July 2026*
+*NoWreck v0.3.0 — July 2026*
 
 
 ## License
