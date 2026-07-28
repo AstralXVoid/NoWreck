@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, cast
 
 from nowreck.claims.models import Claim, ClaimType, ParseResult
@@ -51,9 +52,13 @@ class ClaimParser:
         errors: list[str] = []
         claims: list[Claim] = []
 
+        # --- Step 0: strip markdown code block fences before parsing ---
+        # Some models wrap JSON in ```json ... ``` or ``` ... ``` blocks.
+        cleaned = ClaimParser._strip_markdown_fence(json_str)
+
         # --- Step 1: parse the top-level JSON structure ---
         try:
-            parsed: Any = json.loads(json_str)
+            parsed: Any = json.loads(cleaned)
         except json.JSONDecodeError as exc:
             return ParseResult(
                 errors=[f"Invalid JSON: {exc}"],
@@ -150,6 +155,25 @@ class ClaimParser:
             errs.append(f"Claim #{index}: 'file_path' must be a non-empty string")
 
         return errs
+
+    @staticmethod
+    def _strip_markdown_fence(raw: str) -> str:
+        """Strip markdown code-block fences (`` ```json ... ``` `` or
+        `` ``` ... ``` ``) from a model response.
+
+        Many open-source models wrap their JSON output in markdown
+        code blocks.  This method extracts the JSON payload from
+        inside the block when fences are detected.
+
+        Returns the original string unchanged if no fences are found.
+        """
+        # Search for the first ``` ... ``` block anywhere in the string
+        # (handles both clean blocks and blocks with leading/trailing text).
+        pattern = r"```[a-z]*\s*\n?(.*?)```"
+        match = re.search(pattern, raw, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return raw
 
     @staticmethod
     def _normalize_claim(raw: dict[str, Any]) -> dict[str, Any]:

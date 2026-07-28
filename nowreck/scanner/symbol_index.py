@@ -117,19 +117,63 @@ class SymbolIndexBuilder:
 
     @staticmethod
     def build(scan_result: ScanResult) -> SymbolIndex:
-        """Construct a ``SymbolIndex`` from a completed scan.
+        """Construct a ``SymbolIndex`` from a completed repository scan.
+
+        Processes both Python modules (``scan_result.modules``) and
+        JavaScript symbol lists (``scan_result.js_files``) into a single
+        unified index.  The resulting index is structurally identical
+        regardless of whether the symbols came from Python or JS.
 
         Args:
             scan_result: The output of :meth:`RepositoryScanner.scan`.
 
         Returns:
-            A populated ``SymbolIndex``.  Repositories with no Python
+            A populated ``SymbolIndex``.  Repositories with no source
             files produce an empty index.
         """
         index: dict[str, list[Symbol]] = {}
 
+        # Process Python files (AST-based)
         for file_path, module in scan_result.modules.items():
             SymbolIndexBuilder._process_module(index, file_path, module)
+
+        # Process JavaScript files (tree-sitter-based)
+        for file_path, symbols in scan_result.js_files.items():
+            for sym in symbols:
+                index.setdefault(sym.name, []).append(sym)
+
+        # Sort each name group for deterministic output
+        ordered: dict[str, list[Symbol]] = {}
+        for name in sorted(index):
+            ordered[name] = sorted(index[name])
+
+        return SymbolIndex(symbols=ordered)
+
+    @staticmethod
+    def from_symbols(symbols: list[Symbol]) -> SymbolIndex:
+        """Build a ``SymbolIndex`` from a flat list of ``Symbol`` objects.
+
+        This is the JS pathway: the JS scanner (``scan_js_file``) already
+        produces ``Symbol`` objects directly, so there is no intermediate
+        ``ScanResult`` or AST walk needed.  This method groups them by
+        name and returns a ready-to-use index that is interchangeable
+        with the Python-built equivalent.
+
+        All ``Symbol`` objects in the input list must carry a meaningful
+        ``file_path`` — typically a path relative to the repository root.
+
+        Args:
+            symbols: A flat list of ``Symbol`` objects, e.g. from
+                :func:`~nowreck.scanner.javascript_scanner.scan_js_file`.
+
+        Returns:
+            A populated ``SymbolIndex``.  An empty list produces an
+            empty index.
+        """
+        index: dict[str, list[Symbol]] = {}
+
+        for sym in symbols:
+            index.setdefault(sym.name, []).append(sym)
 
         # Sort each name group for deterministic output
         ordered: dict[str, list[Symbol]] = {}
@@ -185,5 +229,6 @@ class SymbolIndexBuilder:
                 index.setdefault(node.name, []).append(symbol)
 
 
-# Convenience alias for brevity in tests and callers
+# Convenience aliases for brevity in tests and callers
 build_symbol_index = SymbolIndexBuilder.build
+build_symbol_index_from_symbols = SymbolIndexBuilder.from_symbols

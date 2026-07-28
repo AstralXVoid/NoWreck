@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -10,7 +9,7 @@ from nowreck.claims.models import Claim, ClaimType
 from nowreck.detector.change_detector import ChangeType, DetectedChange
 from nowreck.model.provider import ModelResult
 from nowreck.picker import run_picker
-from nowreck.verifier.verifier import VerificationReport, VerificationResult, Verdict
+from nowreck.verifier.verifier import Verdict, VerificationReport, VerificationResult
 
 # ============================================================================
 # Integration tests for run_picker()
@@ -240,8 +239,16 @@ class TestPickerIntegrationVerify:
         mock_config = MagicMock()
         mock_config.load.side_effect = [
             {},
-            {"api_key": "sk-new", "base_url": "https://api.new.com/v1", "model": "new-model"},
-            {"api_key": "sk-new", "base_url": "https://api.new.com/v1", "model": "new-model"},
+            {
+                "api_key": "sk-new",
+                "base_url": "https://api.new.com/v1",
+                "model": "new-model",
+            },
+            {
+                "api_key": "sk-new",
+                "base_url": "https://api.new.com/v1",
+                "model": "new-model",
+            },
         ]
         mock_config_cls.return_value = mock_config
 
@@ -340,7 +347,9 @@ class TestPickerIntegrationVerify:
 
         with patch("nowreck.picker.ModelProvider") as mock_provider_cls:
             mock_provider = MagicMock()
-            mock_provider.changes_from_prompt.side_effect = ModelError("API returned 401")
+            mock_provider.changes_from_prompt.side_effect = ModelError(
+                "API returned 401",
+            )
             mock_provider_cls.return_value = mock_provider
 
             rc = run_picker()
@@ -913,9 +922,16 @@ class TestPickerTerminal:
     responds to keyboard input in a real PTY environment.
 
     Skipped when tmux is not available (CI, headless machines).
+
+    Each test uses a **unique session name** to avoid ordering-dependent
+    flakiness from lingering sessions left by previous tests.
     """
 
-    _TMUX_SESSION = "nw_picker_term"
+    _TMUX_SESSION_BASE = "nw_picker_term"
+
+    def _session_name(self) -> str:
+        """Return a unique tmux session name for this test instance."""
+        return f"{self._TMUX_SESSION_BASE}_{id(self)}"
 
     @staticmethod
     def _has_tmux() -> bool:
@@ -942,7 +958,7 @@ class TestPickerTerminal:
         last_output = ""
         while time.monotonic() < deadline:
             result = subprocess.run(
-                ["tmux", "capture-pane", "-t", self._TMUX_SESSION,
+                ["tmux", "capture-pane", "-t", self._session_name(),
                  "-p", "-S", "-", "-e"],
                 capture_output=True, text=True, timeout=5,
             )
@@ -956,7 +972,7 @@ class TestPickerTerminal:
         """Check whether the tmux session is still alive."""
         import subprocess
         result = subprocess.run(
-            ["tmux", "has-session", "-t", self._TMUX_SESSION],
+            ["tmux", "has-session", "-t", self._session_name()],
             capture_output=True, timeout=5,
         )
         return result.returncode == 0
@@ -975,7 +991,21 @@ class TestPickerTerminal:
         """Kill the tmux session if it still exists."""
         import subprocess
         subprocess.run(
-            ["tmux", "kill-session", "-t", self._TMUX_SESSION],
+            ["tmux", "kill-session", "-t", self._session_name()],
+            capture_output=True, timeout=5,
+        )
+
+    def _start_session(self, command: str) -> None:
+        """Start a fresh tmux session for this test.
+
+        Kills any existing session with the same name first (safety),
+        then creates a new one.
+        """
+        import subprocess
+
+        self._cleanup()
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self._session_name(), command],
             capture_output=True, timeout=5,
         )
 
@@ -988,17 +1018,8 @@ class TestPickerTerminal:
         if not self._has_tmux():
             pytest.skip("tmux not available")
 
-        import subprocess
-
-        self._cleanup()
-
         try:
-            # Start nowreck --interactive in a headless tmux session
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", self._TMUX_SESSION,
-                 "nowreck --interactive"],
-                capture_output=True, timeout=5,
-            )
+            self._start_session("nowreck --interactive")
 
             # Poll until the menu appears
             output = self._poll_pane("What would you like to do?", timeout=6.0)
@@ -1032,21 +1053,15 @@ class TestPickerTerminal:
 
         import subprocess
 
-        self._cleanup()
-
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", self._TMUX_SESSION,
-                 "nowreck --interactive"],
-                capture_output=True, timeout=5,
-            )
+            self._start_session("nowreck --interactive")
 
             # Wait for menu
             self._poll_pane("What would you like to do?", timeout=6.0)
 
             # Send Ctrl+C
             subprocess.run(
-                ["tmux", "send-keys", "-t", self._TMUX_SESSION, "C-c"],
+                ["tmux", "send-keys", "-t", self._session_name(), "C-c"],
                 capture_output=True, timeout=5,
             )
 
@@ -1067,20 +1082,14 @@ class TestPickerTerminal:
 
         import subprocess
 
-        self._cleanup()
-
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", self._TMUX_SESSION,
-                 "nowreck --interactive"],
-                capture_output=True, timeout=5,
-            )
+            self._start_session("nowreck --interactive")
 
             # --- Step 1: Wait for menu, select Verify by pressing Enter ---
             self._poll_pane("What would you like to do?", timeout=6.0)
 
             subprocess.run(
-                ["tmux", "send-keys", "-t", self._TMUX_SESSION, "Enter"],
+                ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
                 capture_output=True, timeout=5,
             )
 
@@ -1089,7 +1098,7 @@ class TestPickerTerminal:
 
             # --- Step 3: Send Enter to submit empty prompt ---
             subprocess.run(
-                ["tmux", "send-keys", "-t", self._TMUX_SESSION, "Enter"],
+                ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
                 capture_output=True, timeout=5,
             )
 

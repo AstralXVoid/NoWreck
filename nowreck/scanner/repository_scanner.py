@@ -4,6 +4,10 @@ import ast
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from nowreck.scanner.symbol_index import Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -14,18 +18,23 @@ class ScanResult:
 
     Attributes:
         modules: Mapping of file paths (relative to repo root) to their
-            parsed ``ast.Module`` trees. Only successfully parsed files
-            appear here.
+            parsed ``ast.Module`` trees. Only successfully parsed Python
+            files appear here.
+        js_files: Mapping of file paths (relative to repo root) to the
+            list of ``Symbol`` objects extracted from each successfully
+            parsed JavaScript file.
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
 
     modules: dict[Path, ast.Module] = field(default_factory=dict)
+    js_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
+    repo_root: Path | None = None
 
     @property
     def success_count(self) -> int:
-        return len(self.modules)
+        return len(self.modules) + len(self.js_files)
 
     @property
     def failure_count(self) -> int:
@@ -33,16 +42,20 @@ class ScanResult:
 
 
 class RepositoryScanner:
-    """Scans a repository directory for Python files and parses them into ASTs.
+    """Scans a repository directory for Python and JavaScript files and
+    parses them into their respective structural representations.
 
-    This scanner discovers ``.py`` files recursively, parses each with
-    ``ast.parse``, and collects the results into a :class:`ScanResult`.
+    This scanner discovers ``.py`` files recursively and parses each with
+    ``ast.parse``, and discovers ``.js`` files recursively and parses each
+    with the tree-sitter-based JavaScript scanner.  The results are
+    collected into a :class:`ScanResult`.
+
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
     ``OSError`` are recorded in ``failed_files`` rather than halting the
     scan.
 
     The scanner deliberately avoids any semantic analysis or code
-    execution — it treats Python source as structural information only.
+    execution — it treats source as structural information only.
 
     Args:
         repo_path: Absolute or relative path to the repository root
@@ -57,13 +70,16 @@ class RepositoryScanner:
         return self._repo_path
 
     def scan(self) -> ScanResult:
-        """Discover and parse all ``.py`` files under the repository root.
+        """Discover and parse all ``.py`` and ``.js`` files under the
+        repository root.
 
         Returns:
             A :class:`ScanResult` containing all successfully parsed
-            modules and any files that failed to parse.
+            modules and JS symbol lists, and any files that failed to
+            parse.
         """
         modules: dict[Path, ast.Module] = {}
+        js_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         for py_file in self._discover_python_files():
@@ -75,7 +91,21 @@ class RepositoryScanner:
                 assert error is not None
                 failed[relative] = error
 
-        return ScanResult(modules=modules, failed_files=failed)
+        for js_file in self._discover_js_files():
+            relative = js_file.relative_to(self._repo_path)
+            symbols, error = self._parse_js_file(js_file)
+            if symbols is not None:
+                js_files[relative] = symbols
+            else:
+                assert error is not None
+                failed[relative] = error
+
+        return ScanResult(
+            modules=modules,
+            js_files=js_files,
+            failed_files=failed,
+            repo_root=self._repo_path,
+        )
 
     def _discover_python_files(self) -> list[Path]:
         """Recursively discover all ``.py`` files, skipping hidden dirs.
@@ -98,6 +128,28 @@ class RepositoryScanner:
             py_files.append(entry)
 
         return sorted(py_files)  # deterministic ordering
+
+    def _discover_js_files(self) -> list[Path]:
+        """Recursively discover all ``.js`` files, skipping hidden dirs.
+
+        Hidden directories (names starting with ``.``) are excluded by
+        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+        """
+        js_files: list[Path] = []
+        if not self._repo_path.is_dir():
+            logger.warning("Repository path is not a directory: %s", self._repo_path)
+            return js_files
+
+        for entry in self._repo_path.rglob("*.js"):
+            # Skip files inside hidden directories (e.g. .git, .venv)
+            if any(
+                part.startswith(".")
+                for part in entry.relative_to(self._repo_path).parts
+            ):
+                continue
+            js_files.append(entry)
+
+        return sorted(js_files)  # deterministic ordering
 
     def _parse_file(self, file_path: Path) -> tuple[ast.Module | None, str | None]:
         """Parse a single Python file into an ``ast.Module``.
@@ -124,4 +176,33 @@ class RepositoryScanner:
         except OSError as exc:
             msg = f"OSError: {exc}"
             logger.warning("Failed to read %s: %s", file_path, msg)
+            return None, msg
+
+    def _parse_js_file(
+        self, file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single JavaScript file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails (e.g. file not
+        found, I/O error), ``symbols`` is ``None`` and ``error`` is a
+        human-readable message.
+
+        Note that tree-sitter is resilient to syntax errors — it produces
+        a partial CST and logs a warning rather than raising.  Therefore
+        most real-world ``.js`` files will produce a non-``None`` result
+        even with syntax issues.
+        """
+        # Local import to avoid circular dependency:
+        #   repository_scanner → javascript_scanner → symbol_index → repository_scanner
+        from nowreck.scanner.javascript_scanner import scan_js_file  # noqa: PLC0415
+
+        try:
+            symbols = scan_js_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
             return None, msg

@@ -475,3 +475,202 @@ class TestDetectEdgeCases:
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(src, src)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         assert changes == []
+
+
+# ---------------------------------------------------------------------------
+# JavaScript call detection + file changes
+# ---------------------------------------------------------------------------
+
+
+class TestDetectJsCallChanges:
+    """JS call detection works through the same ChangeDetector pipeline.
+
+    Uses ``RepositoryScanner`` on temp directories so that JS files are
+    properly scanned and their paths recorded in ``ScanResult.js_files``.
+    """
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        """Write JS files to *tmp_path* and scan them."""
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_js_simple_call_detected(self, tmp_path: Path) -> None:
+        """A JS function calling ``print()`` surfaces as CALL_DETECTED."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"app.js": "function greet(name) { return print('Hello ' + name); }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greet_calls = [c for c in calls if c.caller_name == "greet"]
+        assert any(c.called_name == "print" for c in greet_calls)
+
+    def test_js_multiple_calls_in_one_function(self, tmp_path: Path) -> None:
+        """Multiple calls in one JS function are all captured."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "utils.js": (
+                    "function process(items) {\n"
+                    "  var result = sort(items);\n"
+                    "  console.log(result);\n"
+                    "  return len(result);\n"
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        process_calls = {c.called_name for c in calls if c.caller_name == "process"}
+        assert "sort" in process_calls
+        assert "len" in process_calls
+
+    def test_js_class_method_call_detected(self, tmp_path: Path) -> None:
+        """Calls inside a class method are attributed to the method."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "shapes.js": (
+                    "class Circle {\n"
+                    "  draw() {\n"
+                    "    return print('circle');\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        draw_calls = {c.called_name for c in calls if c.caller_name == "draw"}
+        assert "print" in draw_calls
+
+    def test_js_arrow_function_calls_detected(self, tmp_path: Path) -> None:
+        """Calls inside const foo = () => {} are attributed to foo."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "utils.js": (
+                    "const greet = (name) => {\n"
+                    "  return print('Hello ' + name);\n"
+                    "};\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greet_calls = [c for c in calls if c.caller_name == "greet"]
+        assert any(c.called_name == "print" for c in greet_calls)
+
+    def test_js_attribute_calls_are_excluded(self, tmp_path: Path) -> None:
+        """Method-style calls like logger.info() are out of MVP scope."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "app.js": (
+                    "function run() {\n"
+                    "  return logger.info('started');\n"
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
+        assert "info" not in run_calls
+
+    def test_js_calls_not_reported_when_present_in_both(self, tmp_path: Path) -> None:
+        """No CALL_DETECTED when pre and post both have the same call."""
+        source = {"app.js": "function greet() { return print('hi'); }\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan, post_sym = self._write_and_scan(tmp_path, source)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert calls == []
+
+    def test_js_file_created_with_calls(self, tmp_path: Path) -> None:
+        """Creating a JS file produces FILE_CREATED + CALL_DETECTED."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"app.js": "function greet() { return print('hi'); }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        types = {c.change_type for c in changes}
+        assert ChangeType.FILE_CREATED in types
+        assert ChangeType.CALL_DETECTED in types
+
+    def test_js_file_deleted(self, tmp_path: Path) -> None:
+        """Removing a JS file produces FILE_DELETED + REMOVE_FUNCTION."""
+        source = {"old.js": "function helper() { return 42; }\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        types = {c.change_type for c in changes}
+        assert ChangeType.FILE_DELETED in types
+        assert ChangeType.REMOVE_FUNCTION in types
+
+
+# ---------------------------------------------------------------------------
+# Mixed Python + JavaScript integration
+# ---------------------------------------------------------------------------
+
+
+class TestDetectMixedPyJsChanges:
+    """Python and JavaScript files in the same repo are handled together."""
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_both_languages_in_one_repo(self, tmp_path: Path) -> None:
+        """A mixed repo detects symbols from both languages."""
+        src = {
+            "greeter.py": "def greet(): return 'hello'\n",
+            "utils.js": "function helper() { return 42; }\n",
+        }
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        post_scan, post_sym = self._write_and_scan(tmp_path, src)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added_functions = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        added_names = {c.symbol_name for c in added_functions}
+        assert "greet" in added_names
+        assert "helper" in added_names
+        types = {c.change_type for c in changes}
+        assert ChangeType.FILE_CREATED in types

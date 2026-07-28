@@ -66,6 +66,47 @@ def repo_with_hidden_dirs(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def js_only_repo(tmp_path: Path) -> Path:
+    """A repo with JavaScript files only (no Python)."""
+    (tmp_path / "app.js").write_text("function greet() { return 'hello'; }\n")
+    (tmp_path / "utils.js").write_text(
+        "const double = (n) => n * 2;\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def mixed_repo(tmp_path: Path) -> Path:
+    """A repo with both Python and JavaScript files."""
+    (tmp_path / "main.py").write_text("def run(): ...\n")
+    (tmp_path / "models.py").write_text("class User: pass\n")
+    (tmp_path / "app.js").write_text("function greet() {}\n")
+    (tmp_path / "utils.js").write_text(
+        "const helper = () => {};\n"
+        "class Widget { render() {} }\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def repo_with_js_hidden_dirs(tmp_path: Path) -> Path:
+    """A repo with .js files inside hidden directories that should be ignored."""
+    (tmp_path / "visible.js").write_text("function visible() {}\n")
+    hidden = tmp_path / ".hidden"
+    hidden.mkdir()
+    (hidden / "ignored.js").write_text("function ignored() {}\n")
+    return tmp_path
+
+
+@pytest.fixture
+def repo_with_empty_js(tmp_path: Path) -> Path:
+    """A repo with an empty .js file (valid, but produces no symbols)."""
+    (tmp_path / "empty.js").write_text("")
+    (tmp_path / "code.py").write_text("x = 1\n")
+    return tmp_path
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -220,3 +261,92 @@ class TestRepositoryScannerScan:
         assert result.success_count == 0
         assert result.failure_count == 1
         assert Path("null_bytes.py") in result.failed_files
+
+    # ------------------------------------------------------------------
+    # JavaScript discovery and parsing
+    # ------------------------------------------------------------------
+
+    def test_scan_finds_js_files(self, js_only_repo: Path) -> None:
+        """JS-only repository: all .js files are discovered and parsed."""
+        scanner = RepositoryScanner(js_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2  # app.js + utils.js
+        assert result.failure_count == 0
+
+        assert Path("app.js") in result.js_files
+        assert Path("utils.js") in result.js_files
+
+        # app.js has one function declaration
+        app_symbols = result.js_files[Path("app.js")]
+        assert len(app_symbols) == 1
+        assert app_symbols[0].name == "greet"
+
+        # utils.js has one arrow function
+        utils_symbols = result.js_files[Path("utils.js")]
+        assert len(utils_symbols) == 1
+        assert utils_symbols[0].name == "double"
+
+    def test_scan_mixed_python_and_js(self, mixed_repo: Path) -> None:
+        """Mixed repo: both .py and .js files are discovered and parsed."""
+        scanner = RepositoryScanner(mixed_repo)
+        result = scanner.scan()
+
+        # 2 Python + 2 JavaScript = 4 successfully parsed files
+        assert result.success_count == 4
+        assert result.failure_count == 0
+
+        # Python files in modules
+        assert Path("main.py") in result.modules
+        assert Path("models.py") in result.modules
+
+        # JS files in js_files
+        assert Path("app.js") in result.js_files
+        assert Path("utils.js") in result.js_files
+
+        # Verify JS symbol content
+        assert len(result.js_files[Path("app.js")]) == 1  # function greet
+        # utils.js has const helper + class Widget { render() } = 3 symbols
+        assert len(result.js_files[Path("utils.js")]) == 3
+
+    def test_scan_js_hidden_dirs_skipped(self, repo_with_js_hidden_dirs: Path) -> None:
+        """.js files inside hidden directories are not discovered."""
+        scanner = RepositoryScanner(repo_with_js_hidden_dirs)
+        result = scanner.scan()
+
+        assert result.success_count == 1  # only visible.js
+        assert result.failure_count == 0
+        assert Path("visible.js") in result.js_files
+
+    def test_scan_js_empty_file(self, repo_with_empty_js: Path) -> None:
+        """Empty .js files are parsed successfully (zero symbols)."""
+        scanner = RepositoryScanner(repo_with_empty_js)
+        result = scanner.scan()
+
+        # Python file + empty JS file = 2 successes
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("empty.js") in result.js_files
+        assert result.js_files[Path("empty.js")] == []
+
+    def test_scan_js_deterministic(self, mixed_repo: Path) -> None:
+        """Two scans of the same mixed repo produce identical results."""
+        scanner = RepositoryScanner(mixed_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        # Same number of files discovered
+        assert result1.success_count == result2.success_count
+        assert result1.failure_count == result2.failure_count
+
+        # Same keys in all dicts
+        assert list(result1.modules) == list(result2.modules)
+        assert list(result1.js_files) == list(result2.js_files)
+        assert list(result1.failed_files) == list(result2.failed_files)
+
+        # Same symbols per JS file (use name+type as a proxy for equality)
+        for rel_path in result1.js_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.js_files[rel_path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.js_files[rel_path]]
+            assert syms1 == syms2

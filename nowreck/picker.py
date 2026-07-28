@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import questionary
@@ -16,12 +17,16 @@ from nowreck.scanner.symbol_index import build_symbol_index
 from nowreck.storage.config import NowreckConfig
 from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 
+if TYPE_CHECKING:
+    from nowreck.scanner.repository_scanner import ScanResult
+    from nowreck.scanner.symbol_index import SymbolIndex
+
 # ---------------------------------------------------------------------------
 # Exit signal — raised from any depth to exit the picker immediately
 # ---------------------------------------------------------------------------
 
 
-class _ExitPicker(Exception):
+class _ExitPickerError(Exception):
     """Raised when the user presses Ctrl+C during any questionary prompt.
 
     Propagates up through nested helper functions to ``run_picker()``,
@@ -62,7 +67,7 @@ def run_picker() -> int:
                 ],
                 instruction=" ",
             ).ask()
-        except _ExitPicker:
+        except _ExitPickerError:
             break
 
         # User pressed Ctrl+C or selected Exit
@@ -78,7 +83,7 @@ def run_picker() -> int:
                 _run_config_setup()
             elif choice == "View last report":
                 _view_last_report()
-        except _ExitPicker:
+        except _ExitPickerError:
             break
 
     return 0
@@ -97,7 +102,7 @@ def _run_verification(reporter: TerminalReporter) -> None:
     ).ask()
 
     if prompt is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     if not prompt.strip():
         print("No prompt provided. Returning to menu.")
@@ -121,7 +126,7 @@ def _run_verification(reporter: TerminalReporter) -> None:
         ).ask()
 
         if should_setup is None:
-            raise _ExitPicker()
+            raise _ExitPickerError()
 
         if should_setup:
             _run_config_setup()
@@ -142,8 +147,18 @@ def _run_verification(reporter: TerminalReporter) -> None:
     _check_endpoint_reachable(base_url)
 
     try:
-        temperature = float(data.get("temperature", 0.0))
-        max_retries = int(data.get("max_retries", 1))
+        temp_raw = data.get("temperature", 0.0)
+        temperature = (
+            float(temp_raw)
+            if isinstance(temp_raw, (int, float, str))
+            else 0.0
+        )
+        retries_raw = data.get("max_retries", 1)
+        max_retries = (
+            int(retries_raw)
+            if isinstance(retries_raw, (int, float, str))
+            else 1
+        )
     except (ValueError, TypeError):
         temperature = 0.0
         max_retries = 1
@@ -210,7 +225,7 @@ def _run_config_setup() -> None:
     ).ask()
 
     if api_key_raw is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     base_url: str | None = questionary.text(
         "Base URL:",
@@ -218,7 +233,7 @@ def _run_config_setup() -> None:
     ).ask()
 
     if base_url is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     model_name: str | None = questionary.text(
         "Model:",
@@ -226,7 +241,7 @@ def _run_config_setup() -> None:
     ).ask()
 
     if model_name is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     # Only save non-empty values — never overwrite with empty string.
     if api_key_raw:
@@ -261,7 +276,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
     ).ask()
 
     if pre_path_str is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     pre_path = Path(pre_path_str).resolve()
 
@@ -273,7 +288,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
     ).ask()
 
     if post_path_str is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     post_path = Path(post_path_str).resolve()
 
@@ -289,7 +304,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
     ).ask()
 
     if claims_choice is None:
-        raise _ExitPicker()
+        raise _ExitPickerError()
 
     claims_json: str | None = None
 
@@ -299,7 +314,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
             multiline=True,
         ).ask()
         if claims_json is None:
-            raise _ExitPicker()
+            raise _ExitPickerError()
         if not claims_json.strip():
             print("No claims provided. Running detection only.")
             claims_json = None
@@ -309,7 +324,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
             file_filter=lambda p: p.endswith(".json"),
         ).ask()
         if claims_path_str is None:
-            raise _ExitPicker()
+            raise _ExitPickerError()
         try:
             claims_json = Path(claims_path_str).read_text(encoding="utf-8")
         except OSError as exc:
@@ -321,17 +336,11 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
     print()
     print(f"Scanning pre snapshot:  {pre_path}")
     pre_scan = RepositoryScanner(pre_path).scan()
-    print(
-        f"  \u2192 {pre_scan.success_count} files parsed, "
-        f"{pre_scan.failure_count} failed"
-    )
+    _print_scan_summary(pre_scan)
 
     post_scan = RepositoryScanner(post_path).scan()
     print(f"Scanning post snapshot: {post_path}")
-    print(
-        f"  \u2192 {post_scan.success_count} files parsed, "
-        f"{post_scan.failure_count} failed"
-    )
+    _print_scan_summary(post_scan)
 
     # 5. Build symbol indices.
     pre_symbols = build_symbol_index(pre_scan)
@@ -340,6 +349,8 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
         f"Symbols: {len(pre_symbols.all_symbols)} pre \u2192 "
         f"{len(post_symbols.all_symbols)} post"
     )
+    _print_symbol_summary("Pre", pre_symbols)
+    _print_symbol_summary("Post", post_symbols)
 
     # 6. Detect changes.
     changes = ChangeDetector.detect(
@@ -429,6 +440,50 @@ def _view_last_report() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _print_scan_summary(scan_result: ScanResult) -> None:
+    """Print a summary of a scan result, including language breakdown.
+
+    Shows total file counts, Python vs JavaScript breakdown,
+    and any parse failures.
+    """
+    success = scan_result.success_count
+    failure = scan_result.failure_count
+    modules = scan_result.modules or {}
+    js_files = scan_result.js_files or {}
+
+    print(
+        f"  \u2192 {success} files parsed, "
+        f"{failure} failed"
+    )
+    if modules:
+        py_files = ", ".join(str(p) for p in modules)
+        print(f"    Python ({len(modules)}): {py_files}")
+    if js_files:
+        js_lines = ", ".join(str(p) for p in js_files)
+        print(f"    JS     ({len(js_files)}): {js_lines}")
+
+
+def _print_symbol_summary(label: str, sym_index: SymbolIndex) -> None:
+    """Print a summary of a symbol index's contents.
+
+    Shows functions, classes, and methods counts (zero-count
+    categories are omitted).
+    """
+    functions = sym_index.functions or []
+    classes = sym_index.classes or []
+    methods = sym_index.methods or []
+
+    parts: list[str] = []
+    if functions:
+        parts.append(f"{len(functions)} functions")
+    if classes:
+        parts.append(f"{len(classes)} classes")
+    if methods:
+        parts.append(f"{len(methods)} methods")
+    if parts:
+        print(f"  {label}: {', '.join(parts)}")
+
+
 def _check_endpoint_reachable(base_url: str) -> None:
     """Check whether the base URL is reachable.
 
@@ -486,4 +541,4 @@ def _pause() -> None:
     try:
         input("\nPress Enter to return to the main menu.")
     except (KeyboardInterrupt, EOFError):
-        raise _ExitPicker()
+        raise _ExitPickerError()

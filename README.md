@@ -1,7 +1,7 @@
   +------------------------------------+
-   |            NoWreck v0.2.0           |
-   |    Deterministic AI Verifier        |
-   +------------------------------------+
+  |            NoWreck v0.3.0           |
+  |    Deterministic AI Verifier        |
+  +------------------------------------+
 
 NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
@@ -159,9 +159,17 @@ Great for:
 
 NoWreck's verification pipeline has three stages:
 
-1. **Scan** — recursively discovers all `.py` files in both snapshots,
-   parses each with `ast.parse`, and builds a symbol index of every
-   function, class, and method.
+1. **Scan** — recursively discovers `.py` and `.js` files in both
+   snapshots, parses each with the appropriate parser, and builds a
+   symbol index of every function, class, and method.
+
+   - **Python files** → parsed with Python's built-in `ast` module
+   - **JavaScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
+     (the `tree-sitter-javascript` grammar)
+
+   Both parsers produce the same `Symbol` / `SymbolType` data shapes, so
+   the rest of the pipeline never knows (or cares) which language
+   produced the data.
 
 2. **Detect** — compares the pre and post symbol indices to find
    structural changes: added/removed functions, classes, files, and new
@@ -233,7 +241,9 @@ about code changes.** No other tool does this.
 
 ## Limitations
 
-- **Python only** for now
+- **Python + JavaScript** — NoWreck supports both languages. Python files
+  are parsed with the built-in `ast` module; JavaScript files use
+  Tree-sitter with the `tree-sitter-javascript` grammar.
 - **Cannot see through dynamic behavior** — `exec()`, `eval()`, dynamic
   imports, `getattr()`/`setattr()` with dynamic arguments, metaclasses,
   monkey-patching, and reflection will all yield `UNVERIFIABLE`
@@ -241,12 +251,16 @@ about code changes.** No other tool does this.
   chained calls
 - **No cross-file resolution** beyond direct name matching
 - **No semantic analysis** — it verifies structure, not intent
+- **JavaScript limitations** — generator functions (`function*`),
+  `export default` patterns, and IIFEs are not captured (deferred to a
+  future release). TypeScript is not yet supported.
 
 ---
 
 ## Roadmap
 
 - Interactive terminal picker for non-CLI users ✅ *(done in v0.2.0)*
+- JavaScript support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
 - `--verbose` mode showing full deterministic evidence per claim
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
@@ -771,7 +785,8 @@ Failed responses are saved to `.nowreck/failed/` for debugging.
 
 Make sure:
 - Both `--pre` and `--post` paths exist and are directories
-- The directories contain `.py` files
+- The directories contain `.py` or `.js` files
+- The `tree-sitter-javascript` package is installed (required for JS scanning)
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
@@ -782,6 +797,9 @@ Make sure:
   interaction. Just make sure you have an API key configured.
 - **Pre/Post mode** doesn't require an API key — it scans directories
   and detects changes entirely offline.
+- **Mix Python and JavaScript freely** — NoWreck handles both languages
+  in the same scan. The pre/post summaries show separate file counts for
+  each language.
 - **Test with hallucinated claims** — create claims that include a
   `CALLS_FUNCTION` to a function that doesn't exist in the code. NoWreck
   should flag it as CONTRADICTED.

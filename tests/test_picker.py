@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,8 +9,8 @@ from nowreck.claims.models import Claim, ClaimType, ParseResult
 from nowreck.detector.change_detector import ChangeType, DetectedChange
 from nowreck.model.provider import ModelError, ModelResult
 from nowreck.picker import (
-    _ExitPicker,
     _check_endpoint_reachable,
+    _ExitPickerError,
     _pause,
     _resolve_last_report_path,
     _run_config_setup,
@@ -23,7 +22,7 @@ from nowreck.picker import (
     run_picker,
 )
 from nowreck.reporter.terminal_reporter import TerminalReporter
-from nowreck.verifier.verifier import VerificationReport, VerificationResult, Verdict
+from nowreck.verifier.verifier import Verdict, VerificationReport, VerificationResult
 
 # ============================================================================
 # _validate_directory_path — inline path validator
@@ -326,7 +325,7 @@ class TestRunVerificationPromptHandling(BaseVerificationFixture):
     ) -> None:
         """Ctrl+C on prompt should exit immediately via _ExitPicker."""
         mock_text.return_value.ask.return_value = None
-        with pytest.raises(_ExitPicker):
+        with pytest.raises(_ExitPickerError):
             _run_verification(MagicMock(spec=TerminalReporter))
 
     @patch("nowreck.picker._pause")
@@ -370,8 +369,16 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         # 3. _run_verification re-check after setup
         mock_config.load.side_effect = [
             {},
-            {"api_key": "sk-test", "base_url": "https://api.test.com/v1", "model": "test-model"},
-            {"api_key": "sk-test", "base_url": "https://api.test.com/v1", "model": "test-model"},
+            {
+                "api_key": "sk-test",
+                "base_url": "https://api.test.com/v1",
+                "model": "test-model",
+            },
+            {
+                "api_key": "sk-test",
+                "base_url": "https://api.test.com/v1",
+                "model": "test-model",
+            },
         ]
         mock_config_cls.return_value = mock_config
 
@@ -435,8 +442,16 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         # 3. _run_verification re-check after setup
         mock_config.load.side_effect = [
             {},
-            {"api_key": "", "base_url": "https://api.test.com/v1", "model": "test-model"},
-            {"api_key": "", "base_url": "https://api.test.com/v1", "model": "test-model"},
+            {
+                "api_key": "",
+                "base_url": "https://api.test.com/v1",
+                "model": "test-model",
+            },
+            {
+                "api_key": "",
+                "base_url": "https://api.test.com/v1",
+                "model": "test-model",
+            },
         ]
         mock_config_cls.return_value = mock_config
 
@@ -468,7 +483,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_check: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Happy path: prompt → config loaded → model called → verified → report saved."""
+        """Happy path: full verification flow."""
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -515,7 +530,9 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
 
         # Assert pipeline was called
         mock_check.assert_called_once_with("https://api.test.com/v1")
-        mock_provider.changes_from_prompt.assert_called_once_with("Add validation to auth.py")
+        mock_provider.changes_from_prompt.assert_called_once_with(
+            "Add validation to auth.py",
+        )
         mock_verifier.verify.assert_called_once_with(
             mock_result.claims, mock_result.changes,
         )
@@ -551,7 +568,9 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
 
         with patch("nowreck.picker.ModelProvider") as mock_provider_cls:
             mock_provider = MagicMock()
-            mock_provider.changes_from_prompt.side_effect = ModelError("API key invalid")
+            mock_provider.changes_from_prompt.side_effect = ModelError(
+            "API key invalid",
+        )
             mock_provider_cls.return_value = mock_provider
 
             _run_verification(MagicMock(spec=TerminalReporter))
@@ -812,7 +831,7 @@ class TestRunPrePost:
         mock_select.return_value.ask.return_value = "No, just detect changes"
 
         # Mock scanner
-        mock_scanner = MagicMock()
+        MagicMock()
         mock_pre_scan = MagicMock()
         mock_pre_scan.success_count = 5
         mock_pre_scan.failure_count = 0
@@ -867,7 +886,7 @@ class TestRunPrePost:
         """Ctrl+C on pre path should exit immediately via _ExitPicker."""
         mock_path.return_value.ask.return_value = None
 
-        with pytest.raises(_ExitPicker):
+        with pytest.raises(_ExitPickerError):
             _run_pre_post(MagicMock(spec=TerminalReporter))
 
     @patch("nowreck.picker.questionary.select")
@@ -883,7 +902,7 @@ class TestRunPrePost:
         mock_path.return_value.ask.side_effect = ["/pre/path", "/post/path"]
         mock_select.return_value.ask.return_value = None
 
-        with pytest.raises(_ExitPicker):
+        with pytest.raises(_ExitPickerError):
             _run_pre_post(MagicMock(spec=TerminalReporter))
 
     @patch("nowreck.picker._save_last_report")
@@ -1032,7 +1051,7 @@ class TestRunPrePost:
         mock_save: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Invalid claims JSON should print parse warnings and fall back to detection-only."""
+        """Invalid claims JSON falls back to detection-only."""
         from nowreck.claims.parser import ParseResult
 
         mock_path.return_value.ask.side_effect = ["/pre/path", "/post/path"]
@@ -1261,7 +1280,6 @@ class TestRunConfigSetup:
         mock_password: MagicMock,
     ) -> None:
         """API key field should use questionary.password() for masked input."""
-        from nowreck.picker import _run_config_setup
         # Just verify that password() is called (not text() for the api key)
         _ = mock_password  # mark as used
         # The fixture setup calls _run_config_setup which requires all mocks
@@ -1275,7 +1293,7 @@ class TestRunConfigSetup:
         """Ctrl+C on API key field should raise _ExitPicker immediately."""
         mock_password.return_value.ask.return_value = None
 
-        with pytest.raises(_ExitPicker):
+        with pytest.raises(_ExitPickerError):
             _run_config_setup()
 
 

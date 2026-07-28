@@ -1,11 +1,13 @@
 [project]
 name = "nowreck"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic verifier for AI code change explanations"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "questionary>=2.0",
+    "tree-sitter>=0.26",
+    "tree-sitter-javascript>=0.25",
 ]
 
 [project.scripts]
@@ -30,6 +32,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"test_milestone1/*.py" = ["E402", "E501", "F541"]
 
 [tool.ruff.format]
 quote-style = "double"

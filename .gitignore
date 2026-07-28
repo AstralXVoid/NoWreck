@@ -28,3 +28,6 @@ test_repos/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test artifacts
+_binary_test.bin

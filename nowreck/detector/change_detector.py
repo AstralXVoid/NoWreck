@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+import logging
 from dataclasses import dataclass
 from enum import IntEnum, auto
 from pathlib import Path
 
 from nowreck.scanner.repository_scanner import ScanResult
 from nowreck.scanner.symbol_index import Symbol, SymbolIndex, SymbolType
+
+logger = logging.getLogger(__name__)
 
 
 def change_sort_key(c: DetectedChange) -> tuple[int, str, str, str, int, str, str]:
@@ -185,10 +188,19 @@ class ChangeDetector:
         pre: ScanResult,
         post: ScanResult,
     ) -> list[DetectedChange]:
-        """Compare file sets to find created and deleted files."""
+        """Compare file sets to find created and deleted files.
+
+        Includes both Python modules and JavaScript files in the file
+        set so that adding or removing a ``.js`` file surfaces a
+        ``FILE_CREATED`` / ``FILE_DELETED`` change.
+        """
         changes: list[DetectedChange] = []
-        pre_files: set[Path] = set(pre.modules) | set(pre.failed_files)
-        post_files: set[Path] = set(post.modules) | set(post.failed_files)
+        pre_files: set[Path] = (
+            set(pre.modules) | set(pre.js_files) | set(pre.failed_files)
+        )
+        post_files: set[Path] = (
+            set(post.modules) | set(post.js_files) | set(post.failed_files)
+        )
 
         created = sorted(post_files - pre_files)
         deleted = sorted(pre_files - post_files)
@@ -249,11 +261,24 @@ class ChangeDetector:
         """Extract all (file_path, caller_name, called_name) tuples from
         a scan result.
 
-        Walks every function/method body looking for ``ast.Call`` nodes
-        with a simple ``ast.Name`` function expression.
+        Handles both Python and JavaScript source files:
+
+        **Python:** walks every function/method body looking for
+        ``ast.Call`` nodes with a simple ``ast.Name`` function
+        expression.
+
+        **JavaScript:** re-parses each file listed in
+        ``scan.js_files`` using the tree-sitter scanner and extracts
+        ``call_expression`` nodes whose target is a simple
+        ``identifier``.
         """
+        # Local import to avoid circular dependency at module level:
+        #   change_detector → javascript_scanner → symbol_index → repository_scanner
+        from nowreck.scanner.javascript_scanner import scan_js_calls  # noqa: PLC0415
+
         calls: set[tuple[Path, str, str]] = set()
 
+        # --- Python calls ---
         for file_path, module in scan.modules.items():
             for node in ast.walk(module):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -266,6 +291,24 @@ class ChangeDetector:
                 )
                 for called in called_names:
                     calls.add((file_path, caller_name, called))
+
+        # --- JavaScript calls ---
+        repo_root = scan.repo_root
+        for file_path in scan.js_files:
+            if repo_root is not None:
+                abs_path = repo_root / file_path
+            else:
+                # Fall back to the relative path; may not resolve
+                # correctly if CWD differs from the original repo root.
+                abs_path = file_path
+            try:
+                js_calls = scan_js_calls(abs_path, repo_root=repo_root)
+                calls.update(js_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read JS file for call detection: %s — %s",
+                    abs_path, exc,
+                )
 
         return calls
 

@@ -47,7 +47,8 @@ def run_interactive(
             break
 
         # Send the keystroke
-        os.write(master_fd, keystroke.encode() if isinstance(keystroke, str) else keystroke)
+        encoded = keystroke.encode() if isinstance(keystroke, str) else keystroke
+        os.write(master_fd, encoded)
         time.sleep(prompt_delay)
 
         # Drain available output (non-blocking)
