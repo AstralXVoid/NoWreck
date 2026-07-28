@@ -8,7 +8,8 @@ changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
-<img width="981" height="710" alt="no" src="https://github.com/user-attachments/assets/7fb751f3-ae02-4023-bc01-c737e42e8083" />
+<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/9e4d16cf-5633-456e-99b6-616bd46cb898" />
+
 
 
 ```
