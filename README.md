@@ -691,7 +691,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "0.4.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -811,7 +811,7 @@ Make sure:
   returning expected results — the model may be having trouble with the
   JSON format.
 
-*NoWreck v0.3.0 — July 2026*
+*NoWreck v0.4.0 — July 2026*
 
 
 ## License
