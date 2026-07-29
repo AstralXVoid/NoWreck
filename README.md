@@ -1,5 +1,5 @@
   +------------------------------------+
-  |            NoWreck v0.3.0           |
+  |            NoWreck v0.4.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+
 
@@ -252,19 +252,20 @@ about code changes.** No other tool does this.
   chained calls
 - **No cross-file resolution** beyond direct name matching
 - **No semantic analysis** — it verifies structure, not intent
-- **JavaScript limitations** — generator functions (`function*`),
-  `export default` patterns, and IIFEs are not captured (deferred to a
-  future release). TypeScript is not yet supported.
+- **No TypeScript support** — TypeScript syntax is not yet supported (files
+  will be skipped during scanning).
 
 ---
 
 ## Roadmap
 
 - Interactive terminal picker for non-CLI users ✅ *(done in v0.2.0)*
-- JavaScript support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
+- JavaScript core support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
+- JavaScript polish (generators, export default, IIFEs) ✅ *(done in v0.4.0)*
 - `--verbose` mode showing full deterministic evidence per claim
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
+- TypeScript support
 - CI/CD integration
 
 ---

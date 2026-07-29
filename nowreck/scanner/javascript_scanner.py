@@ -79,11 +79,17 @@ def _collect_top_level_symbols(
             declaration_child = node.child_by_field_name("declaration")
             if declaration_child is not None:
                 node = declaration_child
-        # ``export default`` and bare ``export { ... }`` remain
-        # unresolved (no ``declaration`` field) — they fall through to
-        # the elif chain below and are correctly ignored.
+        # ``export default function|class <name>`` DOES have a
+        # ``declaration`` field, so named default exports are already
+        # handled by the unwrapping above.
+        #
+        # Anonymous default exports (``export default function() {}``,
+        # ``export default () => {}``) and bare re-exports
+        # (``export { ... } from ...``) have no ``declaration`` field
+        # — they fall through to the elif chain below and are correctly
+        # ignored (no name to capture).
 
-        if node.type == "function_declaration":
+        if node.type in ("function_declaration", "generator_function_declaration"):
             name_node = node.child_by_field_name("name")
             if name_node is not None:
                 symbols.append(Symbol(
@@ -108,6 +114,17 @@ def _collect_top_level_symbols(
                 _collect_class_methods(
                     node, source_bytes, file_path, class_name, symbols,
                 )
+
+        elif node.type == "expression_statement":
+            # Standalone IIFE at the top level: ``(function() { ... })()``
+            # or ``void function() { ... }()``.  Skip explicitly rather than
+            # falling through silently (v4 Gap 3).
+            if node.named_child_count > 0:
+                expr = node.named_child(0)
+                if expr is not None and _is_iife(expr):
+                    logger.debug("Skipping top-level IIFE at line %d",
+                                 node.start_point[0] + 1)
+                    continue
 
         elif node.type in ("lexical_declaration", "variable_declaration"):
             # const foo = () => {}  or  var foo = () => {}
@@ -149,16 +166,55 @@ def _unwrap_parens(node: Node) -> Node | None:
     """Unwrap a chain of parenthesized expressions to reach the inner node.
 
     ``((() => {}))`` → after unwrapping → ``() => {}`` (arrow_function)
-    Returns ``None`` when the chain is empty (child_count == 0).
+    Returns ``None`` when the chain is empty (named_child_count == 0).
+
+    Uses ``named_child(0)`` (not ``child(0)``) to skip syntactic tokens
+    like ``(`` and ``)`` and reach the actual expression inside the parens.
     """
     inner: Node | None = node
     while (
         inner is not None
         and inner.type == "parenthesized_expression"
-        and inner.child_count > 0
+        and inner.named_child_count > 0
     ):
-        inner = inner.child(0)
+        inner = inner.named_child(0)
     return inner
+
+
+def _is_iife(node: Node) -> bool:
+    """Check whether *node* is a ``call_expression`` whose callee is a
+    ``function_expression``, ``arrow_function``, or ``generator_function``
+    (possibly wrapped in ``parenthesized_expression``).
+
+    This is the characteristic structural pattern of an IIFE:
+
+    - ``(function() { ... })()``  →  call_expression whose callee is a
+       ``function_expression`` (wrapped in ``parenthesized_expression``)
+    - ``(() => { ... })()``  →  call_expression whose callee is an
+       ``arrow_function`` (wrapped in ``parenthesized_expression``)
+    - ``void function() { ... }()``  →  ``call_expression`` reachable
+       through a ``unary_expression``
+
+    Returns ``False`` for ordinary function calls like ``foo()`` where
+    the callee is an ``identifier`` or ``member_expression``.
+    """
+    if node.type == "call_expression":
+        func_node = node.child_by_field_name("function")
+        if func_node is not None:
+            inner = _unwrap_parens(func_node)
+            if inner is not None and inner.type in (
+                "function_expression",
+                "arrow_function",
+                "generator_function",
+            ):
+                return True
+    # ``void function() { ... }()`` — void wraps a call_expression.
+    # Use ``named_child(0)`` (not ``child(0)``) to skip the operator keyword.
+    if node.type == "unary_expression" and node.named_child_count > 0:
+        operand = node.named_child(0)
+        if operand is not None and operand.type == "call_expression":
+            return _is_iife(operand)
+    return False
 
 
 def _maybe_arrow_function_declarator(
@@ -167,15 +223,32 @@ def _maybe_arrow_function_declarator(
     file_path: Path,
     symbols: list[Symbol],
 ) -> None:
-    """If a variable declarator's value is an arrow function, emit a Symbol."""
+    """If a variable declarator's value is an arrow function or generator
+    expression, emit a Symbol.
+
+    IIFEs (e.g. ``const x = (function() { ... })()``) are explicitly
+    skipped here rather than falling through silently (v4 Gap 3).
+    """
     name_node = declarator_node.child_by_field_name("name")
     value_node = declarator_node.child_by_field_name("value")
     if name_node is None or value_node is None:
         return
 
+    # Explicit IIFE skip: if the value is a call_expression whose
+    # callee is a function_expression/arrow_function, this is an IIFE
+    # assigned to a variable — do not emit a symbol.
+    if _is_iife(value_node):
+        logger.debug("Skipping IIFE assignment to %s at line %d",
+                     _text_of(name_node, source_bytes),
+                     value_node.start_point[0] + 1)
+        return
+
     inner = _unwrap_parens(value_node)
 
-    if inner is not None and inner.type == "arrow_function":
+    if inner is not None and inner.type in (
+        "arrow_function",
+        "generator_function",
+    ):
         symbols.append(Symbol(
             name=_text_of(name_node, source_bytes),
             symbol_type=SymbolType.FUNCTION,
@@ -205,7 +278,7 @@ def _collect_js_callers(
     Nested functions are collected independently so their calls are
     attributed to them, not to their enclosing function.
     """
-    if node.type == "function_declaration":
+    if node.type in ("function_declaration", "generator_function_declaration"):
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             result.append((_text_of(name_node, source_bytes), node))
@@ -222,6 +295,7 @@ def _collect_js_callers(
             if inner is not None and inner.type in (
                 "arrow_function",
                 "function_expression",
+                "generator_function",
             ):
                 name_node = node.child_by_field_name("name")
                 if name_node is not None:
@@ -255,9 +329,11 @@ def _find_js_calls_in_body(
         if child is not root_func_node:
             if child.type in (
                 "function_declaration",
+                "generator_function_declaration",
                 "method_definition",
                 "arrow_function",
                 "function_expression",
+                "generator_function",
             ):
                 continue
             # Skip const foo = () => {} inside a function body
@@ -268,6 +344,7 @@ def _find_js_calls_in_body(
                     if inner is not None and inner.type in (
                         "arrow_function",
                         "function_expression",
+                        "generator_function",
                     ):
                         continue
 

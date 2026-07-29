@@ -329,9 +329,9 @@ def round_4_realworld(samples_dir: Path) -> None:
 
     for fn in expected_functions:
         if fn == "idGenerator":
-            check(f"realworld: {fn} deferred (generator)",
-                  not has_symbol(syms, fn, SymbolType.FUNCTION),
-                  f"{fn} is a generator \u2014 should be deferred")
+            check(f"realworld: {fn} captured (v4 generator)",
+                  has_symbol(syms, fn, SymbolType.FUNCTION),
+                  f"{fn} is a generator \u2014 should now be captured")
         else:
             check(f"realworld: {fn}",
                   has_symbol(syms, fn, SymbolType.FUNCTION),

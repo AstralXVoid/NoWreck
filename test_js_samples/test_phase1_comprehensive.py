@@ -260,13 +260,56 @@ def run_tests() -> None:
     check("edge_async: processAsync",
           has_symbol(syms, "processAsync", SymbolType.FUNCTION),
           "Missing async arrow processAsync")
-    # Generators are deferred (v3 scope)
-    check("edge_async: generator generateIds not captured (deferred)",
-          not has_symbol(syms, "generateIds", SymbolType.FUNCTION),
-          "generator was captured despite being deferred")
-    check("edge_async: async generator streamResults not captured (deferred)",
-          not has_symbol(syms, "streamResults", SymbolType.FUNCTION),
-          "async generator was captured despite being deferred")
+    # Generators are captured (v4 scope — Gap 2)
+    check("edge_async: generator generateIds captured",
+          has_symbol(syms, "generateIds", SymbolType.FUNCTION),
+          "Missing generator function generateIds")
+    check("edge_async: async generator streamResults captured",
+          has_symbol(syms, "streamResults", SymbolType.FUNCTION),
+          "Missing async generator function streamResults")
+    check("edge_async: generator expression makeRange captured",
+          has_symbol(syms, "makeRange", SymbolType.FUNCTION),
+          "Missing generator expression makeRange")
+
+    # --- edge_generators.js (dedicated generator test file) ---
+    syms = test_file(
+        samples_dir / "edge_generators.js", repo_root=samples_dir)
+    check("edge_generators: no crash",
+          True,
+          f"No crash. Got {len(syms)} symbol(s)")
+    # Positive: generators should be captured
+    check("edge_generators: idGenerator",
+          has_symbol(syms, "idGenerator", SymbolType.FUNCTION),
+          "Missing generator function idGenerator")
+    check("edge_generators: streamGenerator",
+          has_symbol(syms, "streamGenerator", SymbolType.FUNCTION),
+          "Missing async generator function streamGenerator")
+    check("edge_generators: counter (gen expr const)",
+          has_symbol(syms, "counter", SymbolType.FUNCTION),
+          "Missing generator expression counter")
+    check("edge_generators: range (gen expr let)",
+          has_symbol(syms, "range", SymbolType.FUNCTION),
+          "Missing generator expression range")
+    check("edge_generators: sequence (gen expr var)",
+          has_symbol(syms, "sequence", SymbolType.FUNCTION),
+          "Missing generator expression sequence")
+    check("edge_generators: exportedGenerator",
+          has_symbol(syms, "exportedGenerator", SymbolType.FUNCTION),
+          "Missing exported generator function exportedGenerator")
+    check("edge_generators: exportedDefaultGen (default export)",
+          has_symbol(syms, "exportedDefaultGen", SymbolType.FUNCTION),
+          "Missing default-exported generator function exportedDefaultGen")
+    # Positive controls: regular functions still work
+    check("edge_generators: normalFunction (control)",
+          has_symbol(syms, "normalFunction", SymbolType.FUNCTION),
+          "Missing normal function (positive control)")
+    check("edge_generators: normalArrow (control)",
+          has_symbol(syms, "normalArrow", SymbolType.FUNCTION),
+          "Missing normal arrow (positive control)")
+    # Negative control: non-generator function expression should NOT be captured
+    check("edge_generators: notAGenerator excluded (negative control)",
+          not has_symbol(syms, "notAGenerator", SymbolType.FUNCTION),
+          "notAGenerator is a function expression, not arrow — should not be captured")
 
     # --- edge_getters_setters.js ---
     syms = test_file(
@@ -282,6 +325,33 @@ def run_tests() -> None:
     check("edge_gs: MyClassExpr class expression excluded",
           not has_symbol(syms, "MyClassExpr", SymbolType.FUNCTION),
           "MyClassExpr is a class expression, not an arrow")
+
+    # --- edge_iife.js (v4 Gap 3: explicit IIFE exclusion) ---
+    syms = test_file(
+        samples_dir / "edge_iife.js", repo_root=samples_dir)
+    check("edge_iife: no crash",
+          True,
+          f"No crash. Got {len(syms)} symbol(s)")
+    # IIFEs should NOT be captured
+    check("edge_iife: config IIFE excluded",
+          not has_symbol(syms, "config", SymbolType.FUNCTION),
+          "config is an IIFE — should not be captured")
+    check("edge_iife: theme IIFE excluded",
+          not has_symbol(syms, "theme", SymbolType.FUNCTION),
+          "theme is an arrow IIFE — should not be captured")
+    check("edge_iife: legacyConfig IIFE excluded",
+          not has_symbol(syms, "legacyConfig", SymbolType.FUNCTION),
+          "legacyConfig is a var IIFE — should not be captured")
+    # Positive controls: regular functions MUST still be captured
+    check("edge_iife: normalArrow captured (control)",
+          has_symbol(syms, "normalArrow", SymbolType.FUNCTION),
+          "normalArrow is a regular arrow — should be captured")
+    check("edge_iife: normalFunction captured (control)",
+          has_symbol(syms, "normalFunction", SymbolType.FUNCTION),
+          "normalFunction is a regular function — should be captured")
+    check("edge_iife: container captured (control)",
+          has_symbol(syms, "container", SymbolType.FUNCTION),
+          "container is a regular function — should be captured")
 
     # --- edge_naming.js ---
     syms = test_file(samples_dir / "edge_naming.js", repo_root=samples_dir)
@@ -417,12 +487,13 @@ def run_tests() -> None:
     finally:
         binary_test.unlink(missing_ok=True)
 
-    # --- export_default.js: should NOT crash ---
+    # --- export_default.js: verify named default exports are captured ---
     syms = test_file(
         samples_dir / "edge_export_default.js", repo_root=samples_dir)
     check("export_default: no crash",
           True,
           f"No crash. Got {len(syms)} symbol(s): {symbol_names(syms)}")
+    # Regular named exports (always worked)
     check("export_default: namedFn",
           has_symbol(syms, "namedFn", SymbolType.FUNCTION),
           "Missing namedFn FUNCTION (regular named export)")
@@ -432,6 +503,22 @@ def run_tests() -> None:
     check("export_default: NamedClass.doThing",
           has_symbol(syms, "doThing", SymbolType.METHOD, "NamedClass"),
           "Missing doThing METHOD in NamedClass")
+    # Named default exports (also work — tree-sitter provides `declaration` field)
+    check("export_default: explicitDefault (default function)",
+          has_symbol(syms, "explicitDefault", SymbolType.FUNCTION),
+          "Missing explicitDefault FUNCTION (export default function)")
+    check("export_default: Bar (default class)",
+          has_symbol(syms, "Bar", SymbolType.CLASS),
+          "Missing Bar CLASS (export default class)")
+    check("export_default: Bar.barMethod (default class method)",
+          has_symbol(syms, "barMethod", SymbolType.METHOD, "Bar"),
+          "Missing barMethod METHOD in Bar")
+    # Anonymous default exports (correctly NOT captured — no name)
+    defaults = [s for s in syms
+                if s.name == "" or s.name is None or s.name == "default"]
+    check("export_default: no anonymous default symbols",
+          len(defaults) == 0,
+          f"Anonymous default exports should not produce symbols; got {defaults}")
 
     # ======================================================================
     # Summary
