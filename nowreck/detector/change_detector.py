@@ -196,10 +196,16 @@ class ChangeDetector:
         """
         changes: list[DetectedChange] = []
         pre_files: set[Path] = (
-            set(pre.modules) | set(pre.js_files) | set(pre.failed_files)
+            set(pre.modules)
+            | set(pre.js_files)
+            | set(pre.ts_files)
+            | set(pre.failed_files)
         )
         post_files: set[Path] = (
-            set(post.modules) | set(post.js_files) | set(post.failed_files)
+            set(post.modules)
+            | set(post.js_files)
+            | set(post.ts_files)
+            | set(post.failed_files)
         )
 
         created = sorted(post_files - pre_files)
@@ -307,6 +313,23 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read JS file for call detection: %s — %s",
+                    abs_path, exc,
+                )
+
+        # --- TypeScript calls ---
+        from nowreck.scanner.typescript_scanner import scan_ts_calls  # noqa: PLC0415
+
+        for file_path in scan.ts_files:
+            if repo_root is not None:
+                abs_path = repo_root / file_path
+            else:
+                abs_path = file_path
+            try:
+                ts_calls = scan_ts_calls(abs_path, repo_root=repo_root)
+                calls.update(ts_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read TS file for call detection: %s — %s",
                     abs_path, exc,
                 )
 

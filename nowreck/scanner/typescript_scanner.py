@@ -17,27 +17,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Per-process singleton: load the grammar once and reuse it.
 # ---------------------------------------------------------------------------
-_js_language_cache: Language | None = None
+_ts_language_cache: Language | None = None
 
 
-def _get_js_language() -> Language:
-    """Return the JavaScript tree-sitter language, loading it on first call.
+def _get_ts_language() -> Language:
+    """Return the TypeScript tree-sitter language, loading it on first call.
 
-    The ``tree_sitter_javascript`` package is imported **lazily** so that
+    The ``tree_sitter_typescript`` package is imported **lazily** so that
     importing this module does not fail when the dependency is not
-    installed.
+    installed.  This allows the Python-only test suite and the change
+    detector to function without the TS parser installed.
     """
-    global _js_language_cache  # noqa: PLW0603 — deliberate per-process cache
-    if _js_language_cache is None:
-        import tree_sitter_javascript as ts_javascript  # noqa: PLC0415
+    global _ts_language_cache  # noqa: PLW0603 — deliberate per-process cache
+    if _ts_language_cache is None:
+        import tree_sitter_typescript as ts_typescript  # noqa: PLC0415
 
-        _js_language_cache = Language(ts_javascript.language())
-    return _js_language_cache
+        _ts_language_cache = Language(ts_typescript.language_typescript())
+    return _ts_language_cache
 
 
 def _new_parser() -> Parser:
-    """Create a fresh parser wired to the JavaScript grammar."""
-    return Parser(_get_js_language())
+    """Create a fresh parser wired to the TypeScript grammar."""
+    return Parser(_get_ts_language())
 
 
 # ---------------------------------------------------------------------------
@@ -45,19 +46,19 @@ def _new_parser() -> Parser:
 # ---------------------------------------------------------------------------
 
 
-def scan_js_file(
+def scan_ts_file(
     file_path: str | Path,
     repo_root: str | Path | None = None,
 ) -> list[Symbol]:
-    """Parse a single ``.js`` file and return the symbols it defines.
+    """Parse a single ``.ts`` file and return the symbols it defines.
 
-    This is the primary entry point for JavaScript scanning.  It uses
+    This is the primary entry point for TypeScript scanning.  It uses
     tree-sitter to parse the file, walks the concrete syntax tree,
     and returns :class:`Symbol` objects that are structurally compatible
-    with the existing Python symbol pipeline.
+    with the existing symbol pipeline.
 
     Args:
-        file_path: Path to a JavaScript file.
+        file_path: Path to a TypeScript file.
         repo_root: Optional repository root.  When provided, ``Symbol``
             ``file_path`` values are made relative to this root.
 
@@ -82,34 +83,33 @@ def scan_js_file(
             path,
         )
 
-    # Determine the path to store in each Symbol
     if repo_root is not None:
         repo_root_path = Path(repo_root).resolve()
         try:
             symbol_path = path.relative_to(repo_root_path)
         except ValueError:
-            symbol_path = path  # fall back to absolute
+            symbol_path = path
     else:
         symbol_path = path
 
     return collect_top_level_symbols(root, source_bytes, symbol_path)
 
 
-def scan_js_calls(
+def scan_ts_calls(
     file_path: str | Path,
     repo_root: str | Path | None = None,
 ) -> set[tuple[Path, str, str]]:
-    """Parse a single ``.js`` file and return all call tuples it contains.
+    """Parse a single ``.ts`` file and return all call tuples it contains.
 
     Each tuple is ``(file_path, caller_name, called_name)`` where
     *caller_name* is the enclosing function/method/arrow-assignee name
     and *called_name* is the name of the function being called.
 
     Only simple identifier calls are captured (e.g. ``foo()`` — not
-    ``obj.method()``).
+    ``obj.method()``), matching the existing behaviour.
 
     Args:
-        file_path: Path to a JavaScript file.
+        file_path: Path to a TypeScript file.
         repo_root: Optional repository root for relativising paths.
 
     Returns:

@@ -60,6 +60,8 @@ def _show_scan_result(_name: str, scan: ScanResult, sym: SymbolIndex) -> None:
         print(f"  .py files: {', '.join(str(p) for p in scan.modules)}")
     if scan.js_files:
         print(f"  .js files: {', '.join(str(p) for p in scan.js_files)}")
+    if scan.ts_files:
+        print(f"  .ts files: {', '.join(str(p) for p in scan.ts_files)}")
     print(f"  Functions: {len(sym.functions)}")
     print(f"  Classes:   {len(sym.classes)}")
     print(f"  Methods:   {len(sym.methods)}")
@@ -84,6 +86,7 @@ def main() -> None:
     repos = [
         ("Pure Python", REPOS / "pure-python" / "src"),
         ("Pure JavaScript", REPOS / "pure-js" / "src"),
+        ("Pure TypeScript", REPOS / "pure-ts" / "src"),
         ("Mixed Python + JS", REPOS / "mixed"),
     ]
 

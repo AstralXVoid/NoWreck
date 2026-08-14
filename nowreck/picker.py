@@ -443,13 +443,14 @@ def _view_last_report() -> None:
 def _print_scan_summary(scan_result: ScanResult) -> None:
     """Print a summary of a scan result, including language breakdown.
 
-    Shows total file counts, Python vs JavaScript breakdown,
+    Shows total file counts, Python vs JavaScript vs TypeScript breakdown,
     and any parse failures.
     """
     success = scan_result.success_count
     failure = scan_result.failure_count
     modules = scan_result.modules or {}
     js_files = scan_result.js_files or {}
+    ts_files = scan_result.ts_files or {}
 
     print(
         f"  \u2192 {success} files parsed, "
@@ -461,6 +462,9 @@ def _print_scan_summary(scan_result: ScanResult) -> None:
     if js_files:
         js_lines = ", ".join(str(p) for p in js_files)
         print(f"    JS     ({len(js_files)}): {js_lines}")
+    if ts_files:
+        ts_lines = ", ".join(str(p) for p in ts_files)
+        print(f"    TS     ({len(ts_files)}): {ts_lines}")
 
 
 def _print_symbol_summary(label: str, sym_index: SymbolIndex) -> None:

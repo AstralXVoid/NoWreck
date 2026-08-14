@@ -1,5 +1,5 @@
   +------------------------------------+
-  |            NoWreck v0.4.0           |
+  |            NoWreck v0.5.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+
 
@@ -160,16 +160,18 @@ Great for:
 
 NoWreck's verification pipeline has three stages:
 
-1. **Scan** — recursively discovers `.py` and `.js` files in both
-   snapshots, parses each with the appropriate parser, and builds a
+1. **Scan** — recursively discovers `.py`, `.js`, and `.ts` files in
+   both snapshots, parses each with the appropriate parser, and builds a
    symbol index of every function, class, and method.
 
    - **Python files** → parsed with Python's built-in `ast` module
    - **JavaScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
      (the `tree-sitter-javascript` grammar)
+   - **TypeScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
+     (the `tree-sitter-typescript` grammar)
 
-   Both parsers produce the same `Symbol` / `SymbolType` data shapes, so
-   the rest of the pipeline never knows (or cares) which language
+   All three parsers produce the same `Symbol` / `SymbolType` data shapes,
+   so the rest of the pipeline never knows (or cares) which language
    produced the data.
 
 2. **Detect** — compares the pre and post symbol indices to find
@@ -242,9 +244,11 @@ about code changes.** No other tool does this.
 
 ## Limitations
 
-- **Python + JavaScript** — NoWreck supports both languages. Python files
-  are parsed with the built-in `ast` module; JavaScript files use
-  Tree-sitter with the `tree-sitter-javascript` grammar.
+- **Python + JavaScript + TypeScript** — NoWreck supports all three
+  languages. Python files are parsed with the built-in `ast` module;
+  JavaScript files use Tree-sitter with the `tree-sitter-javascript`
+  grammar; TypeScript files use Tree-sitter with the
+  `tree-sitter-typescript` grammar.
 - **Cannot see through dynamic behavior** — `exec()`, `eval()`, dynamic
   imports, `getattr()`/`setattr()` with dynamic arguments, metaclasses,
   monkey-patching, and reflection will all yield `UNVERIFIABLE`
@@ -252,8 +256,10 @@ about code changes.** No other tool does this.
   chained calls
 - **No cross-file resolution** beyond direct name matching
 - **No semantic analysis** — it verifies structure, not intent
-- **No TypeScript support** — TypeScript syntax is not yet supported (files
-  will be skipped during scanning).
+- **TypeScript types are invisible** — interfaces, type aliases, and enums
+  define types, not runtime symbols, so they are not captured (there is no
+  claim type that would consume them). The functions, classes, and methods
+  in `.ts` files are fully supported.
 
 ---
 
@@ -262,10 +268,11 @@ about code changes.** No other tool does this.
 - Interactive terminal picker for non-CLI users ✅ *(done in v0.2.0)*
 - JavaScript core support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
 - JavaScript polish (generators, export default, IIFEs) ✅ *(done in v0.4.0)*
+- TypeScript support (Tree-sitter scanner + symbol index + full pipeline) ✅ *(done in v0.5.0)*
 - `--verbose` mode showing full deterministic evidence per claim
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
-- TypeScript support
+- TSX (`.tsx` files)
 - CI/CD integration
 
 ---
@@ -313,7 +320,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.3.0
+# → nowreck 0.5.0
 
 nowreck
 # → shows banner + usage
@@ -691,7 +698,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.4.0",
+*NoWreck v0.5.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -721,7 +728,6 @@ Output schema:
         "parent_class": null,
         "line_number": 5,
         "caller_name": null,
-        "called_name": null
       }
     }
   ],
@@ -787,8 +793,9 @@ Failed responses are saved to `.nowreck/failed/` for debugging.
 
 Make sure:
 - Both `--pre` and `--post` paths exist and are directories
-- The directories contain `.py` or `.js` files
-- The `tree-sitter-javascript` package is installed (required for JS scanning)
+- The directories contain `.py`, `.js`, or `.ts` files
+- The `tree-sitter-javascript` / `tree-sitter-typescript` packages are
+  installed (required for JS/TS scanning)
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
@@ -799,9 +806,9 @@ Make sure:
   interaction. Just make sure you have an API key configured.
 - **Pre/Post mode** doesn't require an API key — it scans directories
   and detects changes entirely offline.
-- **Mix Python and JavaScript freely** — NoWreck handles both languages
-  in the same scan. The pre/post summaries show separate file counts for
-  each language.
+- **Mix Python, JavaScript, and TypeScript freely** — NoWreck handles
+  all three languages in the same scan. The pre/post summaries show
+  separate file counts for each language.
 - **Test with hallucinated claims** — create claims that include a
   `CALLS_FUNCTION` to a function that doesn't exist in the code. NoWreck
   should flag it as CONTRADICTED.
@@ -811,7 +818,11 @@ Make sure:
   returning expected results — the model may be having trouble with the
   JSON format.
 
-*NoWreck v0.4.0 — July 2026*
+
+
+
+*NoWreck v0.5.0 — August 2026*
+
 
 
 ## License

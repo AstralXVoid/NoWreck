@@ -20,7 +20,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.4.0           |
+  |            NoWreck v0.5.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+"""
 
