@@ -49,11 +49,13 @@ REPOS = Path(__file__).resolve().parent / "repos"
 PURE_PY_REPO = REPOS / "pure-python" / "src"
 PURE_JS_REPO = REPOS / "pure-js" / "src"
 PURE_TS_REPO = REPOS / "pure-ts" / "src"
+PURE_TSX_REPO = REPOS / "pure-tsx" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3     # greeter.py, calculator.py, models.py
 EXPECTED_JS_FILES = 3     # greeter.js, calculator.js, models.js
 EXPECTED_TS_FILES = 3     # greeter.ts, calculator.ts, models.ts
+EXPECTED_TSX_FILES = 3    # greeter.tsx, calculator.tsx, models.tsx
 EXPECTED_MIXED_PY = 2     # utils.py, main.py
 EXPECTED_MIXED_JS = 2     # utils.js, ui_handler.js
 
@@ -118,6 +120,11 @@ def pure_js_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_ts_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_TS_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_tsx_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_TSX_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -445,6 +452,121 @@ class TestPureTsRepo:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Pure TSX repo (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class TestPureTsxRepo:
+    """3 TSX files with function/arrow/class components, methods, and calls.
+
+    ``.tsx`` files fold into the ``ts_files`` field (same language family),
+    so all assertions here go through ``scan.ts_files``.
+    """
+
+    def test_discovers_all_files(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_tsx_scan
+        assert scan.success_count == EXPECTED_TSX_FILES
+        assert scan.failure_count == 0
+        assert len(scan.ts_files) == EXPECTED_TSX_FILES
+        assert set(scan.ts_files) == {
+            Path("greeter.tsx"),
+            Path("calculator.tsx"),
+            Path("models.tsx"),
+        }
+
+    def test_greeter_has_symbols(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_tsx_scan
+        assert len(idx.by_name("Greeting")) == 1  # function component
+        assert len(idx.by_name("formatGreeting")) == 1  # const arrow
+        assert len(idx.by_name("Farewell")) == 1  # const Farewell = () => {}
+
+    def test_calculator_has_class_and_methods(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_tsx_scan
+        assert len(idx.by_name("Calculator")) == 1
+        calc = idx.by_name("Calculator")[0]
+        assert calc.symbol_type is SymbolType.CLASS
+        # Methods: add, subtract, multiply, divide, render
+        methods = {s.name for s in idx.methods}
+        assert "add" in methods
+        assert "subtract" in methods
+        assert "multiply" in methods
+        assert "divide" in methods
+        assert "render" in methods
+
+    def test_models_has_components(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_tsx_scan
+        assert len(idx.by_name("UserCard")) == 1  # function component
+        assert len(idx.by_name("AdminCard")) == 1  # arrow component
+        assert len(idx.by_name("UserList")) == 1  # class component
+        assert len(idx.by_name("UserList")) == 1
+        user_list = idx.by_name("UserList")[0]
+        assert user_list.symbol_type is SymbolType.CLASS
+        # UserList.render is a method with parent_class=UserList
+        render_methods = [s for s in idx.methods if s.name == "render"]
+        assert any(s.parent_class == "UserList" for s in render_methods)
+
+    def test_symbol_index_has_tsx_symbols(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_tsx_scan
+        assert len(idx.functions) >= 6  # Greeting, formatGreeting, Farewell, computeAverage, UserCard, AdminCard
+        assert len(idx.classes) >= 2  # Calculator, UserList
+        assert len(idx.methods) >= 6  # add, subtract, multiply, divide, render (Calculator), render (UserList)
+
+    def test_call_detection(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        scan, idx = pure_tsx_scan
+        changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+
+        # Greeting calls formatGreeting
+        # computeAverage calls sum and len
+        # multiply calls console.log (excluded — attribute)
+        assert len(calls) >= 3
+
+        call_pairs = {(c.caller_name, c.called_name) for c in calls}
+        assert ("Greeting", "formatGreeting") in call_pairs
+        assert ("computeAverage", "len") in call_pairs
+
+    def test_console_log_is_excluded(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        """console.log() is an attribute call — should not appear as CALL_DETECTED."""
+        scan, idx = pure_tsx_scan
+        changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        call_pairs = {(c.caller_name, c.called_name) for c in calls}
+        # These are all attribute calls and should be excluded
+        assert ("Calculator", "log") not in call_pairs
+
+    def test_jsx_element_usage_is_not_a_call(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        """<UserCard /> and <AdminCard /> in JSX are elements, not calls."""
+        scan, idx = pure_tsx_scan
+        changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        call_pairs = {(c.caller_name, c.called_name) for c in calls}
+        # JSX usage inside UserList.render must not surface as calls
+        assert ("render", "UserCard") not in call_pairs
+        assert ("render", "AdminCard") not in call_pairs
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_TSX_REPO)
+        created = _changes_of_type(changes, ChangeType.FILE_CREATED)
+        assert len(created) == EXPECTED_TSX_FILES
+        assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
+        assert ChangeType.ADD_CLASS in {c.change_type for c in changes}
+
+    def test_no_changes_when_identical(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        scan, idx = pure_tsx_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert changes == []
+
+    def test_deterministic_across_runs(self) -> None:
+        scans = [_scan_and_index(PURE_TSX_REPO) for _ in range(3)]
+        for i in range(1, 3):
+            assert list(scans[i][0].modules) == list(scans[0][0].modules)
+            assert scans[i][0].js_files == scans[0][0].js_files
+            assert scans[i][0].ts_files == scans[0][0].ts_files
+            assert scans[i][0].failed_files == scans[0][0].failed_files
+            assert scans[i][1].symbols == scans[0][1].symbols
+
+
+# ---------------------------------------------------------------------------
 # 4. Mixed Python + JavaScript repo
 # ---------------------------------------------------------------------------
 
@@ -545,6 +667,7 @@ class TestAllReposDeterministic:
         ("pure-python", PURE_PY_REPO),
         ("pure-js", PURE_JS_REPO),
         ("pure-ts", PURE_TS_REPO),
+        ("pure-tsx", PURE_TSX_REPO),
         ("mixed", MIXED_REPO),
     ]
 
@@ -590,7 +713,13 @@ class TestPrePostPipeline:
         assert ChangeType.REMOVE_CLASS in types
 
     def test_no_changes_identical_scans(self) -> None:
-        for repo_path in [PURE_PY_REPO, PURE_JS_REPO, PURE_TS_REPO, MIXED_REPO]:
+        for repo_path in [
+            PURE_PY_REPO,
+            PURE_JS_REPO,
+            PURE_TS_REPO,
+            PURE_TSX_REPO,
+            MIXED_REPO,
+        ]:
             pre_scan, pre_sym = _scan_and_index(repo_path)
             post_scan, post_sym = _scan_and_index(repo_path)
             changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)

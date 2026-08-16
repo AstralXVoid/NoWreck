@@ -169,10 +169,9 @@ repos; 45/45 milestone checkpoint; full battery green.
 
 The roadmap remains focused on narrow, testable increments, each with its
 own scope document and phase-by-phase build discipline. **v0.7.0 is TSX
-(`.tsx` files)** — decided during the v6 planning conversation; it gets its
-own scope document when work begins.
+(`.tsx` files) and is now released** — see `docs/release7.md`.
 
-- TSX (`.tsx` files) — separate TSX grammar + JSX handling — **v0.7.0 (decided)**
+- TSX (`.tsx` files) — separate TSX grammar + JSX handling — ✅ *(released in v0.7.0)*
 - `explanation` field on claims — model + prompt change (README documents
   it, the `Claim` model doesn't have it yet) — deferred from v6
 - Scan-summary expansion in verbose mode (per-language file counts) —

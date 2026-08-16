@@ -674,3 +674,169 @@ class TestDetectMixedPyJsChanges:
         assert "helper" in added_names
         types = {c.change_type for c in changes}
         assert ChangeType.FILE_CREATED in types
+
+
+# ---------------------------------------------------------------------------
+# TSX (`.tsx`) change detection — v0.7.0
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTsxChanges:
+    """Add/remove/replace of React components in ``.tsx`` files.
+
+    Uses ``RepositoryScanner`` on temp directories so that ``.tsx`` files
+    are discovered, parsed with the TSX grammar, and recorded in
+    ``ScanResult.ts_files`` (the TS family fold).
+    """
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        """Write files to *tmp_path* and scan them."""
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_function_component_added(self, tmp_path: Path) -> None:
+        """Adding a function component produces ADD_FUNCTION."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"App.tsx": "function Greeting(): JSX.Element { return <div>hi</div>; }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["Greeting"]
+
+    def test_function_component_removed(self, tmp_path: Path) -> None:
+        """Removing a function component produces REMOVE_FUNCTION."""
+        source = {
+            "App.tsx": "function Greeting(): JSX.Element { return <div>hi</div>; }\n",
+        }
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [c.symbol_name for c in removed] == ["Greeting"]
+
+    def test_component_replaced_in_single_file(self, tmp_path: Path) -> None:
+        """Replacing one component with another produces add + remove."""
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"App.tsx": "function Old(): JSX.Element { return <div/>; }\n"},
+        )
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"App.tsx": "function New(): JSX.Element { return <div/>; }\n"},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [c.symbol_name for c in added] == ["New"]
+        assert [c.symbol_name for c in removed] == ["Old"]
+
+    def test_class_component_added(self, tmp_path: Path) -> None:
+        """Adding a class component produces ADD_CLASS + method adds."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "App.tsx": (
+                    "class Panel extends React.Component {\n"
+                    "    render(): JSX.Element { return <div/>; }\n"
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        assert any(
+            c.change_type is ChangeType.ADD_CLASS and c.symbol_name == "Panel"
+            for c in changes
+        )
+        # Methods fold into ADD_FUNCTION with parent_class (same as .ts/.js)
+        added_methods = [
+            c
+            for c in changes
+            if c.change_type is ChangeType.ADD_FUNCTION and c.symbol_name == "render"
+        ]
+        assert len(added_methods) == 1
+        assert added_methods[0].parent_class == "Panel"
+
+    def test_tsx_call_detected(self, tmp_path: Path) -> None:
+        """A component calling a helper surfaces as CALL_DETECTED."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "App.tsx": (
+                    "function Greeting(): JSX.Element {\n"
+                    "    const msg = formatGreeting('hi');\n"
+                    "    return <div>{msg}</div>;\n"
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greeting_calls = {c.called_name for c in calls if c.caller_name == "Greeting"}
+        assert "formatGreeting" in greeting_calls
+
+    def test_jsx_element_usage_not_a_call(self, tmp_path: Path) -> None:
+        """<Child /> usage is an element, not a call — no CALL_DETECTED."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "App.tsx": (
+                    "function Parent(): JSX.Element {\n"
+                    '    return <Child name="x" />;\n'
+                    "}\n"
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        parent_calls = {c.called_name for c in calls if c.caller_name == "Parent"}
+        assert "Child" not in parent_calls
+
+    def test_tsx_no_changes_when_identical(self, tmp_path: Path) -> None:
+        """Same .tsx file in pre and post → no changes."""
+        source = {"App.tsx": "function A(): JSX.Element { return <div/>; }\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan, post_sym = self._write_and_scan(tmp_path, source)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        assert changes == []
+
+    def test_tsx_file_created_and_deleted(self, tmp_path: Path) -> None:
+        """Creating then deleting a .tsx file surfaces the file events."""
+        source = {"App.tsx": "function A(): JSX.Element { return <div/>; }\n"}
+        # create
+        post_scan, post_sym = self._write_and_scan(tmp_path, source)
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        types = {c.change_type for c in changes}
+        assert ChangeType.FILE_CREATED in types
+        assert ChangeType.ADD_FUNCTION in types
+        # delete
+        pre_scan, pre_sym = post_scan, post_sym
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        types = {c.change_type for c in changes}
+        assert ChangeType.FILE_DELETED in types
+        assert ChangeType.REMOVE_FUNCTION in types

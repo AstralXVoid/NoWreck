@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import logging
 from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,7 +26,7 @@ class ScanResult:
             parsed JavaScript file.
         ts_files: Mapping of file paths (relative to repo root) to the
             list of ``Symbol`` objects extracted from each successfully
-            parsed TypeScript file.
+            parsed TypeScript-family file (``.ts`` and ``.tsx``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -53,7 +54,8 @@ class RepositoryScanner:
     ``ast.parse``, discovers ``.js`` files recursively and parses each
     with the tree-sitter-based JavaScript scanner, and discovers ``.ts``
     files recursively and parses each with the tree-sitter-based TypeScript
-    scanner.  The results are collected into a :class:`ScanResult`.
+    scanner (``.ts`` and ``.tsx``).  The results are collected into a
+    :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
     ``OSError`` are recorded in ``failed_files`` rather than halting the
@@ -195,17 +197,23 @@ class RepositoryScanner:
             return None, msg
 
     def _discover_ts_files(self) -> list[Path]:
-        """Recursively discover all ``.ts`` files, skipping hidden dirs.
+        """Recursively discover all ``.ts`` and ``.tsx`` files, skipping
+        hidden dirs.
 
-        Hidden directories (names starting with ``.``) are excluded by
-        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+        Both extensions belong to the same TypeScript family and fold
+        into the single ``ts_files`` field.  Hidden directories (names
+        starting with ``.``) are excluded by default to avoid scanning
+        ``.git``, ``.nowreck``, ``.venv``, etc.
         """
         ts_files: list[Path] = []
         if not self._repo_path.is_dir():
             logger.warning("Repository path is not a directory: %s", self._repo_path)
             return ts_files
 
-        for entry in self._repo_path.rglob("*.ts"):
+        for entry in chain(
+            self._repo_path.rglob("*.ts"),
+            self._repo_path.rglob("*.tsx"),
+        ):
             # Skip files inside hidden directories (e.g. .git, .venv)
             if any(
                 part.startswith(".")

@@ -1,12 +1,14 @@
   +------------------------------------+
-  |            NoWreck v0.6.0           |
-  |    Deterministic AI Verifier        |
+  |            NoWreck v0.7.0          |
+  |    Deterministic AI Verifier       |
   +------------------------------------+
 
 NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
+
+<video src="docs/nowreck-promo.mp4" controls width="100%" poster="https://github.com/user-attachments/assets/9e4d16cf-5633-456e-99b6-616bd46cb898"></video>
 
 <img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/9e4d16cf-5633-456e-99b6-616bd46cb898" />
 
@@ -271,9 +273,10 @@ about code changes.** No other tool does this.
 - JavaScript polish (generators, export default, IIFEs) ✅ *(done in v0.4.0)*
 - TypeScript support (Tree-sitter scanner + symbol index + full pipeline) ✅ *(done in v0.5.0)*
 - `--verbose` mode showing full deterministic evidence per claim ✅ *(done in v0.6.0)*
+- TSX (`.tsx` files) support ✅ *(done in v0.7.0)*
+- Interfaces / enums / type aliases as claim types 🗓 *(planned for v0.8.0)*
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
-- TSX (`.tsx` files) 🗓 *(planned for v0.7.0)*
 - CI/CD integration
 
 ---
@@ -321,7 +324,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.6.0
+# → nowreck 0.7.0
 
 nowreck
 # → shows banner + usage
@@ -701,7 +704,7 @@ Output schema:
 
 ```json
 {
-*NoWreck v0.6.0 — August 2026*
+*NoWreck v0.7.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -824,7 +827,7 @@ Make sure:
 
 
 
-*NoWreck v0.6.0 — August 2026*
+*NoWreck v0.7.0 — August 2026*
 
 
 

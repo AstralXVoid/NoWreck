@@ -1,6 +1,6 @@
 [project]
 name = "nowreck"
-version = "0.6.0"
+version = "0.7.0"
 description = "Deterministic verifier for AI code change explanations"
 requires-python = ">=3.11"
 dependencies = [
