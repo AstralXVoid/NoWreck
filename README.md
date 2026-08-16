@@ -133,6 +133,7 @@ Great for:
 | `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected chang[...]
 | `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
 | `nowreck fix --no-colour` | Disable coloured terminal output. |
+| `nowreck fix --verbose` | Show full deterministic evidence per claim. Works with both prompt and pre/post modes. |
 | `nowreck config show` | Display current configuration. |
 | `nowreck config set <key> <value>` | Set a configuration value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries`. |
 
@@ -575,6 +576,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 |------|-----------|-------------|
 | `--json` | All modes | Output structured JSON instead of coloured text |
 | `--no-colour` | All modes | Disable ANSI colour codes in output |
+| `--verbose` | All modes | Show full deterministic evidence per claim (detail blocks instead of one-line summaries); no-op with `--json` |
 | `--pre PATH` | Pre/Post, Claims | Path to pre-change snapshot |
 | `--post PATH` | Pre/Post, Claims | Path to post-change snapshot |
 | `--claims JSON` | Claims | JSON string of claims to verify |
@@ -592,6 +594,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `nowreck fix --pre P --post P --claims JSON` | **Claims mode** — detect changes *and* verify claims against them |
 | `nowreck fix --json` | JSON output (works with any mode) |
 | `nowreck fix --no-colour` | Disable colour (works with any mode) |
+| `nowreck fix --verbose` | Full evidence per claim (works with any mode) |
 | `nowreck config show` | Display current configuration |
 | `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries` |
 
