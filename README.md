@@ -1,14 +1,14 @@
-  +------------------------------------+
-  |            NoWreck v0.7.0          |
-  |    Deterministic AI Verifier       |
-  +------------------------------------+
+   +------------------------------------+
+   |            NoWreck v0.7.0          |
+   |    Deterministic AI Verifier       |
+   +------------------------------------+
 
 NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
-<img src="docs/nowreck-promo.gif" alt="NoWreck 16s promo" width="100%" />
+<video src="docs/nowreck-promo.mp4" width="100%" controls autoplay muted loop></video>
 
 
 
@@ -130,7 +130,7 @@ Great for:
 | `nowreck --version` | Show version |
 | `nowreck --interactive` | Launch the interactive terminal picker — menu-driven interface for all operations |
 | `nowreck fix "<prompt>"` | **Prompt mode** — describe a change in natural language. NoWreck calls the configured model, gets a diff + claims, and verifies them automatically. |
-| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected chang[...]
+| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected chang[...] |
 | `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
 | `nowreck fix --no-colour` | Disable coloured terminal output. |
 | `nowreck fix --verbose` | Show full deterministic evidence per claim. Works with both prompt and pre/post modes. |
