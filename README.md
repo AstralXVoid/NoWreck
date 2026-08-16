@@ -7,8 +7,8 @@ NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
+<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/1608ea03-fc56-409e-87dd-42d9025c84e3" />
 
-<video src="docs/nowreck-promo.mp4" width="100%" controls autoplay muted loop></video>
 
 
 
