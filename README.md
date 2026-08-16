@@ -8,9 +8,8 @@ changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
-<video src="docs/nowreck-promo.mp4" controls width="100%" poster="https://github.com/user-attachments/assets/9e4d16cf-5633-456e-99b6-616bd46cb898"></video>
 
-<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/9e4d16cf-5633-456e-99b6-616bd46cb898" />
+https://github.com/user-attachments/assets/ddd93e0b-c657-428b-9732-284bd6eb1f84
 
 
 
