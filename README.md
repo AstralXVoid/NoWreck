@@ -8,9 +8,7 @@ changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
 
-<a href="https://github.com/user-attachments/assets/ddd93e0b-c657-428b-9732-284bd6eb1f84"><img src="docs/nowreck-promo.gif" alt="NoWreck 16s promo — click to play the full film with sound" width="100%" /></a>
-
-<p><em>▶ <a href="https://github.com/user-attachments/assets/ddd93e0b-c657-428b-9732-284bd6eb1f84">Watch the full 16s film with sound</a></em></p>
+<img src="docs/nowreck-promo.gif" alt="NoWreck 16s promo" width="100%" />
 
 
 
