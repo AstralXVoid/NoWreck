@@ -72,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Output structured JSON instead of coloured text (for CI)",
     )
+    fix_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Show full deterministic evidence per claim in the terminal "
+            "report (no effect with --json)"
+        ),
+    )
 
     # ------------------------------------------------------------------
     # nowreck config — manage local configuration

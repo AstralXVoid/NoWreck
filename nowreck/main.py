@@ -20,7 +20,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.5.0           |
+  |            NoWreck v0.6.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+"""
 
@@ -73,7 +73,7 @@ def handle_fix(args: argparse.Namespace) -> int:
     """
     prompt = args.prompt
     colour = not args.no_colour
-    reporter = TerminalReporter(colour=colour)
+    reporter = TerminalReporter(colour=colour, verbose=args.verbose)
     _log_file = sys.stderr if args.json else sys.stdout
 
     def _log(msg: str) -> None:

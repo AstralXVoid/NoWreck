@@ -161,10 +161,12 @@ NOWRECK_API_KEY=your-key python test_milestone1/live_ts_hallucination_test.py
 ## What's next
 
 The roadmap remains focused on narrow, testable increments, each with its
-own scope document and phase-by-phase build discipline:
+own scope document and phase-by-phase build discipline. **v0.6.0 is the
+`--verbose` mode** (see `docs/nowreck-v6-scope.md`); TSX was decided as the
+**v7** increment during the v6 planning conversation.
 
-- TSX (`.tsx` files) — separate TSX grammar + JSX handling
-- `--verbose` mode showing full deterministic evidence per claim
+- `--verbose` mode showing full deterministic evidence per claim — **done in v0.6.0** (see `docs/release6.md`)
+- TSX (`.tsx` files) — separate TSX grammar + JSX handling — **v0.7.0 (decided)**
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
 - CI/CD integration

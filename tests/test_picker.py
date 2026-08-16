@@ -465,6 +465,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         # _pause is called from both _run_config_setup and _run_verification
         assert mock_pause.called
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
@@ -481,9 +482,11 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Happy path: full verification flow."""
+        mock_confirm.return_value.ask.return_value = False
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -579,6 +582,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         assert "Error: API key invalid" in captured.err
         mock_pause.assert_called_once()
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
@@ -595,9 +599,11 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause: MagicMock,
         _mock_save: MagicMock,
         _mock_check: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """When the model returns no valid claims, a warning is printed."""
+        mock_confirm.return_value.ask.return_value = False
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -628,6 +634,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         assert "Parse error: Missing required key" in captured.err
         mock_pause.assert_called_once()
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
@@ -644,9 +651,11 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause: MagicMock,
         _mock_save: MagicMock,
         _mock_check: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """When claims required multiple parse attempts, print attempt count."""
+        mock_confirm.return_value.ask.return_value = False
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -677,6 +686,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         assert "Claims parsed on attempt 3" in out
         mock_pause.assert_called_once()
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
@@ -693,9 +703,11 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause: MagicMock,
         _mock_save: MagicMock,
         _mock_check: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """When claims parsed on first attempt, print claim count."""
+        mock_confirm.return_value.ask.return_value = False
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -726,6 +738,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         assert "Claims parsed: 1" in out
         mock_pause.assert_called_once()
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
@@ -742,9 +755,11 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause: MagicMock,
         mock_save: MagicMock,
         _mock_check: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Report output should be printed and saved."""
+        mock_confirm.return_value.ask.return_value = False
         mock_config = MagicMock()
         mock_config.load.return_value = {
             "api_key": "sk-test",
@@ -793,6 +808,113 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
         mock_pause.assert_called_once()
 
 
+class TestRunVerificationVerboseChoice(BaseVerificationFixture):
+    """Per-run verbose choice in the verification flow."""
+
+    @patch("nowreck.picker._check_endpoint_reachable")
+    @patch("nowreck.picker._save_last_report")
+    @patch("nowreck.picker._pause")
+    @patch("nowreck.picker.ClaimVerifier")
+    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.questionary.confirm")
+    @patch("nowreck.picker.questionary.text")
+    @patch("nowreck.picker.NowreckConfig")
+    @patch("nowreck.picker.TerminalReporter")
+    def test_verbose_yes_builds_fresh_verbose_reporter(
+        self,
+        mock_reporter_cls: MagicMock,
+        mock_config_cls: MagicMock,
+        mock_text: MagicMock,
+        mock_confirm: MagicMock,
+        mock_provider_cls: MagicMock,
+        mock_verifier_cls: MagicMock,
+        mock_pause: MagicMock,
+        mock_save: MagicMock,
+        mock_check: MagicMock,
+    ) -> None:
+        """Answering Yes renders with a fresh verbose reporter; the shared
+        reporter passed in is never mutated."""
+        mock_config = MagicMock()
+        mock_config.load.return_value = {
+            "api_key": "sk-test",
+            "base_url": "https://api.test.com/v1",
+            "model": "test-model",
+        }
+        mock_config_cls.return_value = mock_config
+
+        mock_text.return_value.ask.return_value = "my prompt"
+        mock_confirm.return_value.ask.return_value = True
+
+        mock_provider = MagicMock()
+        mock_provider.changes_from_prompt.return_value = ModelResult(
+            claims=[], changes=[], attempts=1,
+        )
+        mock_provider_cls.return_value = mock_provider
+
+        verbose_reporter = MagicMock(spec=TerminalReporter)
+        verbose_reporter.report.return_value = "Verbose report"
+        mock_reporter_cls.return_value = verbose_reporter
+
+        shared_reporter = MagicMock(spec=TerminalReporter)
+
+        _run_verification(shared_reporter)
+
+        # A fresh reporter was constructed with verbose=True and used
+        mock_reporter_cls.assert_called_once_with(colour=True, verbose=True)
+        verbose_reporter.report.assert_called_once()
+        shared_reporter.report.assert_not_called()
+        mock_save.assert_called_once_with("Verbose report")
+
+    @patch("nowreck.picker._check_endpoint_reachable")
+    @patch("nowreck.picker._save_last_report")
+    @patch("nowreck.picker._pause")
+    @patch("nowreck.picker.ClaimVerifier")
+    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.questionary.confirm")
+    @patch("nowreck.picker.questionary.text")
+    @patch("nowreck.picker.NowreckConfig")
+    @patch("nowreck.picker.TerminalReporter")
+    def test_verbose_no_uses_shared_reporter(
+        self,
+        mock_reporter_cls: MagicMock,
+        mock_config_cls: MagicMock,
+        mock_text: MagicMock,
+        mock_confirm: MagicMock,
+        mock_provider_cls: MagicMock,
+        mock_verifier_cls: MagicMock,
+        mock_pause: MagicMock,
+        mock_save: MagicMock,
+        mock_check: MagicMock,
+    ) -> None:
+        """Answering No renders with the shared reporter and constructs
+        nothing new (the v0.5.0 path)."""
+        mock_config = MagicMock()
+        mock_config.load.return_value = {
+            "api_key": "sk-test",
+            "base_url": "https://api.test.com/v1",
+            "model": "test-model",
+        }
+        mock_config_cls.return_value = mock_config
+
+        mock_text.return_value.ask.return_value = "my prompt"
+        mock_confirm.return_value.ask.return_value = False
+
+        mock_provider = MagicMock()
+        mock_provider.changes_from_prompt.return_value = ModelResult(
+            claims=[], changes=[], attempts=1,
+        )
+        mock_provider_cls.return_value = mock_provider
+
+        shared_reporter = MagicMock(spec=TerminalReporter)
+        shared_reporter.report.return_value = "Standard report"
+
+        _run_verification(shared_reporter)
+
+        mock_reporter_cls.assert_not_called()
+        shared_reporter.report.assert_called_once()
+        mock_save.assert_called_once_with("Standard report")
+
+
 # ============================================================================
 # _run_pre_post — scanning two directories for changes
 # ============================================================================
@@ -801,6 +923,7 @@ class TestRunVerificationConfigHandling(BaseVerificationFixture):
 class TestRunPrePost:
     """Pre/Post directory scanning flow."""
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -823,8 +946,10 @@ class TestRunPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
     ) -> None:
         """Happy path: two valid dirs, no claims → detection only → report."""
+        mock_confirm.return_value.ask.return_value = False
         mock_path.return_value.ask.side_effect = ["/pre/path", "/post/path"]
 
         # User selects "No, just detect changes"
@@ -905,6 +1030,7 @@ class TestRunPrePost:
         with pytest.raises(_ExitPickerError):
             _run_pre_post(MagicMock(spec=TerminalReporter))
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -927,8 +1053,10 @@ class TestRunPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
     ) -> None:
         """"Yes, load from a file" with a valid file should verify claims."""
+        mock_confirm.return_value.ask.return_value = False
         from nowreck.claims.parser import ParseResult
 
         # Paths: pre dir, post dir, claims file
@@ -1025,6 +1153,7 @@ class TestRunPrePost:
         assert "No such file" in captured.out
         mock_pause.assert_called_once()
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -1049,9 +1178,11 @@ class TestRunPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Invalid claims JSON falls back to detection-only."""
+        mock_confirm.return_value.ask.return_value = False
         from nowreck.claims.parser import ParseResult
 
         mock_path.return_value.ask.side_effect = ["/pre/path", "/post/path"]
@@ -1103,6 +1234,70 @@ class TestRunPrePost:
         mock_reporter.report.assert_called_once()
         mock_save.assert_called_once_with("Fallback report")
         mock_pause.assert_called_once()
+
+
+class TestRunPrePostVerboseChoice:
+    """Per-run verbose choice in the pre/post flow."""
+
+    @patch("nowreck.picker._save_last_report")
+    @patch("nowreck.picker._pause")
+    @patch("nowreck.picker.VerificationReport")
+    @patch("nowreck.picker.ClaimVerifier")
+    @patch("nowreck.picker.ChangeDetector")
+    @patch("nowreck.picker.build_symbol_index")
+    @patch("nowreck.picker.RepositoryScanner")
+    @patch("nowreck.picker.questionary.confirm")
+    @patch("nowreck.picker.questionary.select")
+    @patch("nowreck.picker.questionary.path")
+    @patch("nowreck.picker.TerminalReporter")
+    def test_verbose_yes_builds_fresh_verbose_reporter(
+        self,
+        mock_reporter_cls: MagicMock,
+        mock_path: MagicMock,
+        mock_select: MagicMock,
+        mock_confirm: MagicMock,
+        mock_scanner_cls: MagicMock,
+        mock_build_sym: MagicMock,
+        mock_detector: MagicMock,
+        mock_verifier: MagicMock,
+        mock_report_cls: MagicMock,
+        mock_pause: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        """Answering Yes renders with a fresh verbose reporter even for a
+        detection-only run (no claims)."""
+        mock_path.return_value.ask.side_effect = ["/pre/path", "/post/path"]
+        mock_select.return_value.ask.return_value = "No, just detect changes"
+        mock_confirm.return_value.ask.return_value = True
+
+        mock_pre_scan = MagicMock()
+        mock_pre_scan.success_count = 1
+        mock_pre_scan.failure_count = 0
+        mock_post_scan = MagicMock()
+        mock_post_scan.success_count = 1
+        mock_post_scan.failure_count = 0
+        mock_scanner_cls.side_effect = [
+            MagicMock(scan=MagicMock(return_value=mock_pre_scan)),
+            MagicMock(scan=MagicMock(return_value=mock_post_scan)),
+        ]
+        mock_build_sym.side_effect = [
+            MagicMock(all_symbols=["a"]),
+            MagicMock(all_symbols=["a", "b"]),
+        ]
+        mock_detector.detect.return_value = [MagicMock()]
+
+        verbose_reporter = MagicMock(spec=TerminalReporter)
+        verbose_reporter.report.return_value = "Verbose pre/post report"
+        mock_reporter_cls.return_value = verbose_reporter
+
+        shared_reporter = MagicMock(spec=TerminalReporter)
+
+        _run_pre_post(shared_reporter)
+
+        mock_reporter_cls.assert_called_once_with(colour=True, verbose=True)
+        verbose_reporter.report.assert_called_once()
+        shared_reporter.report.assert_not_called()
+        mock_save.assert_called_once_with("Verbose pre/post report")
 
 
 # ============================================================================

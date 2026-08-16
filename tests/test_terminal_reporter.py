@@ -492,6 +492,279 @@ class TestReporterIntegration:
 
 
 # ---------------------------------------------------------------------------
+# TerminalReporter — verbose mode (v0.6.0)
+# ---------------------------------------------------------------------------
+
+
+class TestReporterVerbose:
+    def test_verbose_confirmed_contains_all_claim_fields(self) -> None:
+        """Verbose CONFIRMED output shows every claim identity field."""
+        claim = Claim(
+            type=ClaimType.ADD_FUNCTION,
+            symbol_name="greet",
+            file_path="app.py",
+            parent_class="Greeter",
+            line_number=10,
+            caller_name="main",
+            called_name="greet",
+            confidence=0.95,
+        )
+        change = _make_change(
+            ChangeType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+            parent_class="Greeter",
+            line_number=10,
+        )
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+
+        assert "    Claim:" in output
+        assert "      type: ADD_FUNCTION" in output
+        assert "      symbol_name: greet" in output
+        assert "      file_path: app.py" in output
+        assert "      parent_class: Greeter" in output
+        assert "      line_number: 10" in output
+        assert "      caller_name: main" in output
+        assert "      called_name: greet" in output
+        assert "      confidence: 0.95" in output
+
+    def test_verbose_confirmed_contains_full_matched_change(self) -> None:
+        """Verbose CONFIRMED output shows the complete matched-change dump."""
+        claim = _make_claim(
+            ClaimType.ADD_FUNCTION, file_path="app.py", symbol_name="greet"
+        )
+        change = _make_change(
+            ChangeType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+            parent_class="Greeter",
+            line_number=10,
+        )
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+
+        assert "    Matched:" in output
+        assert "      change_type: ADD_FUNCTION" in output
+        assert "      file_path: app.py" in output
+        assert "      symbol_name: greet" in output
+        assert "      parent_class: Greeter" in output
+        assert "      line_number: 10" in output
+        # Display confidence is 100% for deterministic findings
+        assert "    Confidence: 100%" in output
+
+    def test_verbose_unverifiable_shows_full_claim_and_reason(self) -> None:
+        """Verbose UNVERIFIABLE shows the full claim dump plus the reason."""
+        claim = _make_claim(
+            ClaimType.FILE_CREATED,
+            file_path="missing.py",
+            confidence=0.6,
+        )
+        report = VerificationReport(
+            results=[VerificationResult(claim=claim, verdict=Verdict.UNVERIFIABLE)],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+
+        assert "    Claim:" in output
+        assert "      type: FILE_CREATED" in output
+        assert "      file_path: missing.py" in output
+        assert "      confidence: 0.6" in output
+        # Model confidence is the display confidence for UNVERIFIABLE
+        assert "    Confidence:  60%" in output
+        # The reason line is kept in verbose mode
+        assert "    Reason:" in output
+        assert "No matching change detected" in output
+
+    def test_verbose_unexplained_shows_full_change_dump(self) -> None:
+        """Verbose unexplained changes show the full field dump."""
+        change = _make_change(
+            ChangeType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="foo",
+            parent_class="Widget",
+            line_number=5,
+        )
+        report = VerificationReport(unexplained_changes=[change])
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+
+        assert "UNEXPLAINED CHANGES" in output
+        assert "  ! Change:" in output
+        assert "      change_type: ADD_FUNCTION" in output
+        assert "      file_path: app.py" in output
+        assert "      symbol_name: foo" in output
+        assert "      parent_class: Widget" in output
+        assert "      line_number: 5" in output
+
+    def test_verbose_omits_none_fields(self) -> None:
+        """Only non-``None`` fields are shown in the verbose dump."""
+        claim = _make_claim(ClaimType.FILE_CREATED, file_path="new.py")
+        change = _make_change(ChangeType.FILE_CREATED, file_path="new.py")
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+
+        assert "    Claim:" in output
+        assert "      type: FILE_CREATED" in output
+        assert "      file_path: new.py" in output
+        # None fields are omitted
+        assert "symbol_name:" not in output
+        assert "parent_class:" not in output
+        assert "line_number:" not in output
+        assert "caller_name:" not in output
+        assert "called_name:" not in output
+        # FILE_CREATED matched change carries only change_type + file_path
+        assert "      change_type: FILE_CREATED" in output
+
+    def test_verbose_claim_line_unchanged(self) -> None:
+        """The claim line itself renders identically in both modes."""
+        claim = _make_claim(
+            ClaimType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+            confidence=0.95,
+        )
+        change = _make_change(
+            ChangeType.ADD_FUNCTION, file_path="app.py", symbol_name="greet"
+        )
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        plain = _strip_ansi(TerminalReporter(colour=False).report(report))
+        verbose = _strip_ansi(
+            TerminalReporter(colour=False, verbose=True).report(report)
+        )
+        assert "✓ ADD_FUNCTION greet → app.py  (conf: 100%)" in plain
+        assert "✓ ADD_FUNCTION greet → app.py  (conf: 100%)" in verbose
+
+    def test_verbose_replaces_evidence_line(self) -> None:
+        """Verbose mode replaces the one-line Evidence with the detail block."""
+        claim = _make_claim(ClaimType.FILE_CREATED, file_path="new.py")
+        change = _make_change(ChangeType.FILE_CREATED, file_path="new.py")
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+        assert "Evidence:" not in output
+        assert "    Claim:" in output
+
+    def test_non_verbose_byte_identical_to_v050(self) -> None:
+        """The default (non-verbose) rendering is pinned byte-for-byte to
+        the v0.5.0 output for the same report (regression gate)."""
+        claim = _make_claim(ClaimType.FILE_CREATED, file_path="new.py")
+        change = _make_change(ChangeType.FILE_CREATED, file_path="new.py")
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False)
+        expected = (
+            "═══════════════════════════════════════════════════════\n"
+            "  Nowreck Verification Report\n"
+            "═══════════════════════════════════════════════════════\n"
+            "\n"
+            "  Summary\n"
+            "  ────────────────────\n"
+            "  ● 1 claim total\n"
+            "  ● 1 confirmed\n"
+            "\n"
+            "  CONFIRMED\n"
+            "  ─────────\n"
+            "  ✓ FILE_CREATED → new.py  (conf: 100%)\n"
+            "    Evidence: File 'new.py' was created\n"
+        )
+        assert reporter.report(report) == expected
+
+    def test_verbose_deterministic_across_runs(self) -> None:
+        """Verbose output is identical across repeated renders."""
+        claim = _make_claim(
+            ClaimType.CALLS_FUNCTION,
+            file_path="app.py",
+            symbol_name="run",
+            caller_name="main",
+            called_name="run",
+            confidence=0.9,
+        )
+        change = _make_change(
+            ChangeType.CALL_DETECTED,
+            file_path="app.py",
+            caller_name="main",
+            called_name="run",
+        )
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONFIRMED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        assert reporter.report(report) == reporter.report(report)
+
+    def test_verbose_contradicted_shows_matched_change(self) -> None:
+        """Verbose CONTRADICTED output shows the matched-change dump."""
+        claim = _make_claim(
+            ClaimType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="foo",
+            confidence=0.3,
+        )
+        change = _make_change(
+            ChangeType.REMOVE_FUNCTION,
+            file_path="app.py",
+            symbol_name="foo",
+            line_number=7,
+        )
+        report = VerificationReport(
+            results=[
+                VerificationResult(
+                    claim=claim, verdict=Verdict.CONTRADICTED, matched_change=change
+                ),
+            ],
+        )
+        reporter = TerminalReporter(colour=False, verbose=True)
+        output = _strip_ansi(reporter.report(report))
+        assert "CONTRADICTED" in output
+        assert "    Claim:" in output
+        assert "      change_type: REMOVE_FUNCTION" in output
+        assert "      line_number: 7" in output
+        assert "    Confidence: 100%" in output
+
+
+# ---------------------------------------------------------------------------
 # TerminalReporter — JSON output
 # ---------------------------------------------------------------------------
 

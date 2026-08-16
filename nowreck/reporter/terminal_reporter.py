@@ -47,8 +47,9 @@ class TerminalReporter:
     No JSON, CI-mode, or UI output is produced.
     """
 
-    def __init__(self, colour: bool = True) -> None:
+    def __init__(self, colour: bool = True, verbose: bool = False) -> None:
         self._colour = colour
+        self._verbose = verbose
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,7 +92,9 @@ class TerminalReporter:
         self._append_section_header(lines, title, colour)
         for result in results:
             self._append_claim_line(lines, result)
-            if result.matched_change is not None:
+            if self._verbose:
+                self._append_verbose_claim_detail(lines, result)
+            elif result.matched_change is not None:
                 self._append_evidence_line(lines, result.matched_change)
         lines.append("")
 
@@ -106,6 +109,8 @@ class TerminalReporter:
         self._append_section_header(lines, "UNVERIFIABLE", _ANSI_YELLOW)
         for result in results:
             self._append_claim_line(lines, result)
+            if self._verbose:
+                self._append_verbose_claim_detail(lines, result)
             self._append_unverifiable_reason(lines, result.claim)
         lines.append("")
 
@@ -119,7 +124,16 @@ class TerminalReporter:
             return
         self._append_section_header(lines, "UNEXPLAINED CHANGES", _ANSI_RED)
         for change in changes:
-            self._append_unexplained_line(lines, change)
+            if self._verbose:
+                self._append_verbose_change_detail(
+                    lines,
+                    change,
+                    header="Change:",
+                    prefix="  ! ",
+                    colour=_ANSI_RED,
+                )
+            else:
+                self._append_unexplained_line(lines, change)
         lines.append("")
 
     # ------------------------------------------------------------------
@@ -221,10 +235,7 @@ class TerminalReporter:
         # found or not found.  Only UNVERIFIABLE displays the model's
         # original confidence since the verifier couldn't determine
         # anything.
-        if result.verdict is Verdict.UNVERIFIABLE:
-            conf_str = self._format_confidence(result.claim.confidence)
-        else:
-            conf_str = self._format_confidence(1.0)
+        conf_str = self._format_confidence(self._display_confidence(result))
 
         lines.append(
             self._colourise(
@@ -275,6 +286,67 @@ class TerminalReporter:
                 f"  ! {desc}",
             )
         )
+
+    # ------------------------------------------------------------------
+    # Verbose detail (v0.6.0)
+    # ------------------------------------------------------------------
+
+    def _append_verbose_claim_detail(
+        self,
+        lines: list[str],
+        result: VerificationResult,
+    ) -> None:
+        """Append the full deterministic evidence block for a claim result.
+
+        Replaces the one-line ``Evidence:`` / ``Reason:`` line in verbose
+        mode with the complete claim identity, the matched change (when
+        present), and the verifier's display confidence.  Every field is
+        already computed by the pipeline — this is presentation only.
+        The field dumps reuse ``_claim_to_dict`` / ``_change_to_dict`` so
+        the terminal detail matches the JSON schema field-for-field.
+        """
+        lines.append(self._colourise(_ANSI_DIM, "    Claim:"))
+        for label, value in self._claim_to_dict(result.claim).items():
+            if value is not None:
+                lines.append(self._colourise(_ANSI_DIM, f"      {label}: {value}"))
+
+        if result.matched_change is not None:
+            self._append_verbose_change_detail(lines, result.matched_change)
+
+        # Same display rule as the claim line: 100% for structural
+        # findings, the model's confidence when UNVERIFIABLE.
+        lines.append(
+            self._colourise(
+                _ANSI_DIM,
+                "    Confidence: "
+                + self._format_confidence(self._display_confidence(result)),
+            )
+        )
+
+    def _append_verbose_change_detail(
+        self,
+        lines: list[str],
+        change: DetectedChange,
+        header: str = "Matched:",
+        prefix: str = "    ",
+        colour: str = _ANSI_DIM,
+    ) -> None:
+        """Append the complete ``DetectedChange`` field dump.
+
+        *header* labels the block (``Matched:`` under a claim result,
+        ``Change:`` for an unexplained change).  *prefix* and *colour*
+        match the surrounding section's line style; sub-fields are always
+        dim.
+        """
+        lines.append(self._colourise(colour, f"{prefix}{header}"))
+        # Align sub-fields under the header text (``      `` for a plain
+        # ``    `` prefix; the same column when a glyph like ``! `` is used).
+        sub_prefix = " " * len(prefix) + "  "
+        for label, value in self._change_to_dict(change).items():
+            if value is not None:
+                lines.append(
+                    self._colourise(_ANSI_DIM, f"{sub_prefix}{label}: {value}")
+                )
 
     # ------------------------------------------------------------------
     # Descriptors
@@ -356,6 +428,21 @@ class TerminalReporter:
         return text
 
     @staticmethod
+    def _display_confidence(result: VerificationResult) -> float:
+        """Return the confidence value shown for a claim result.
+
+        The single source of truth for the display rule used by the
+        claim line, the verbose detail block, and the JSON report:
+        deterministic structural findings (CONFIRMED, CONTRADICTED) show
+        ``1.0`` because the change was either found or not found; only
+        UNVERIFIABLE shows the model's original confidence since the
+        verifier couldn't determine anything.
+        """
+        if result.verdict is Verdict.UNVERIFIABLE:
+            return result.claim.confidence
+        return 1.0
+
+    @staticmethod
     def _format_confidence(value: float) -> str:
         """Format a 0.0–1.0 confidence as a percentage string."""
         return f"{int(round(value * 100)):3d}%"
@@ -371,7 +458,7 @@ class TerminalReporter:
         The JSON schema::
 
             {
-              "version": "0.5.0",
+              "version": "0.6.0",
               "success": true|false,
               "summary": {
                 "total_claims": int,
@@ -411,15 +498,10 @@ class TerminalReporter:
         or not found.  Only UNVERIFIABLE preserves the model's original
         confidence since the verifier couldn't determine anything.
         """
-        if result.verdict is Verdict.UNVERIFIABLE:
-            display_confidence = result.claim.confidence
-        else:
-            display_confidence = 1.0
-
         out: dict[str, object] = {
             "claim": TerminalReporter._claim_to_dict(result.claim),
             "verdict": result.verdict.name,
-            "verifier_confidence": display_confidence,
+            "verifier_confidence": TerminalReporter._display_confidence(result),
         }
         if result.matched_change is not None:
             out["matched_change"] = TerminalReporter._change_to_dict(

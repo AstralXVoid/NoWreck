@@ -68,8 +68,10 @@ class TestPickerIntegrationVerify:
             "max_retries": 1,
         }
         mock_config_cls.return_value = mock_config
-        # Config.setup confirm should never be asked (config exists)
-        mock_confirm.return_value.ask.assert_not_called()
+        # Config-setup confirm should never be asked (config exists). The
+        # per-run verbose question is asked once; answering No keeps the
+        # shared reporter and the v0.5.0 rendering path.
+        mock_confirm.return_value.ask.return_value = False
 
         # --- Model provider returns a result ---
         mock_provider = MagicMock()
@@ -124,6 +126,13 @@ class TestPickerIntegrationVerify:
 
         # --- Assertions ---
         assert rc == 0
+
+        # The per-run verbose question was asked (config existed, so the
+        # setup confirm was not)
+        mock_confirm.assert_called_once_with(
+            "Show full evidence per claim?",
+            default=False,
+        )
 
         # Prompt was collected and sent to the model
         mock_text.return_value.ask.assert_called_once()
@@ -362,6 +371,7 @@ class TestPickerIntegrationVerify:
 class TestPickerIntegrationPrePost:
     """End-to-end flow: Scan directories → detect changes → report."""
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -386,8 +396,10 @@ class TestPickerIntegrationPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
     ) -> None:
         """Menu: Scan dirs → paths → detection runs → report printed + saved."""
+        mock_confirm.return_value.ask.return_value = False
         mock_select.return_value.ask.side_effect = [
             "Scan two directories for changes",  # main menu
             "No, just detect changes",            # claims choice
@@ -452,6 +464,7 @@ class TestPickerIntegrationPrePost:
         mock_save.assert_called_once_with("Pre/post report output")
         assert mock_pause.called
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -476,10 +489,12 @@ class TestPickerIntegrationPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
     ) -> None:
         """Pre/post mode with claims JSON should verify claims."""
         from nowreck.claims.parser import ParseResult
 
+        mock_confirm.return_value.ask.return_value = False
         mock_select.return_value.ask.side_effect = [
             "Scan two directories for changes",
             "Yes, enter claims JSON",
@@ -565,6 +580,7 @@ class TestPickerIntegrationPrePost:
 
         assert rc == 0
 
+    @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.VerificationReport")
@@ -589,10 +605,12 @@ class TestPickerIntegrationPrePost:
         mock_report_cls: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
+        mock_confirm: MagicMock,
     ) -> None:
         """Claims loaded from file should be verified through the full flow."""
         from nowreck.claims.parser import ParseResult
 
+        mock_confirm.return_value.ask.return_value = False
         mock_select.return_value.ask.side_effect = [
             "Scan two directories for changes",
             "Yes, load from a file",

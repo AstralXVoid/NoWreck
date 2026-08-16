@@ -1,5 +1,5 @@
   +------------------------------------+
-  |            NoWreck v0.5.0           |
+  |            NoWreck v0.6.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+
 
@@ -269,10 +269,10 @@ about code changes.** No other tool does this.
 - JavaScript core support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
 - JavaScript polish (generators, export default, IIFEs) ✅ *(done in v0.4.0)*
 - TypeScript support (Tree-sitter scanner + symbol index + full pipeline) ✅ *(done in v0.5.0)*
-- `--verbose` mode showing full deterministic evidence per claim
+- `--verbose` mode showing full deterministic evidence per claim ✅ *(done in v0.6.0)*
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
-- TSX (`.tsx` files)
+- TSX (`.tsx` files) 🗓 *(planned for v0.7.0)*
 - CI/CD integration
 
 ---
@@ -320,7 +320,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.5.0
+# → nowreck 0.6.0
 
 nowreck
 # → shows banner + usage
@@ -698,7 +698,7 @@ Output schema:
 
 ```json
 {
-*NoWreck v0.5.0 — August 2026*
+*NoWreck v0.6.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -821,7 +821,7 @@ Make sure:
 
 
 
-*NoWreck v0.5.0 — August 2026*
+*NoWreck v0.6.0 — August 2026*
 
 
 

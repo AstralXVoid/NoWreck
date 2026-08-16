@@ -50,6 +50,25 @@ class TestArgParser:
         )
         assert args.no_colour is True
 
+    def test_fix_with_verbose(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--verbose"]
+        )
+        assert args.verbose is True
+
+    def test_fix_verbose_defaults_false(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["fix", "--pre", "/tmp/a", "--post", "/tmp/b"])
+        assert args.verbose is False
+
+    def test_fix_verbose_with_prompt(self) -> None:
+        """--verbose is accepted in prompt mode too."""
+        parser = build_parser()
+        args = parser.parse_args(["fix", "Add a function to app.py", "--verbose"])
+        assert args.verbose is True
+        assert args.prompt == "Add a function to app.py"
+
     def test_config_show(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["config", "show"])

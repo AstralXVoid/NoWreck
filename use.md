@@ -45,7 +45,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.5.0
+# → nowreck 0.6.0
 
 nowreck
 # → shows banner + usage
@@ -300,9 +300,12 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 |------|-----------|-------------|
 | `--json` | All modes | Output structured JSON instead of coloured text |
 | `--no-colour` | All modes | Disable ANSI colour codes in output |
+| `--verbose` | All modes | Show full deterministic evidence per claim (detail blocks instead of one-line summaries); no-op with `--json` |
 | `--pre PATH` | Pre/Post, Claims | Path to pre-change snapshot |
 | `--post PATH` | Pre/Post, Claims | Path to post-change snapshot |
 | `--claims JSON` | Claims | JSON string of claims to verify |
+
+> **Verbose example:** `nowreck fix --pre ./before --post ./after --claims '{"claims": [...]}' --verbose` renders each claim with its full identity fields, the complete matched change (including `line_number`), and full detail for unverifiable and unexplained changes. Without `--verbose`, each claim shows the same one-line summary as before — output is byte-identical to earlier versions.
 
 ---
 
@@ -318,6 +321,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `nowreck fix --pre P --post P --claims JSON` | **Claims mode** — detect changes *and* verify claims against them |
 | `nowreck fix --json` | JSON output (works with any mode) |
 | `nowreck fix --no-colour` | Disable colour (works with any mode) |
+| `nowreck fix --verbose` | Full evidence per claim (works with any mode) |
 | `nowreck config show` | Display current configuration |
 | `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries` |
 
@@ -424,7 +428,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.5.0",
+  "version": "0.6.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -542,4 +546,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.5.0 — August 2026*
+*NoWreck v0.6.0 — August 2026*

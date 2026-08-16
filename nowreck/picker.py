@@ -94,6 +94,43 @@ def run_picker() -> int:
 # ---------------------------------------------------------------------------
 
 
+def _ask_verbose() -> bool:
+    """Ask whether to show full deterministic evidence per claim.
+
+    Returns ``True`` when the user wants verbose detail.  Ctrl+C
+    (``None``) raises :class:`_ExitPickerError` like every other prompt.
+    """
+    answer = questionary.confirm(
+        "Show full evidence per claim?",
+        default=False,
+    ).ask()
+    if answer is None:
+        raise _ExitPickerError()
+    return answer
+
+
+def _render_report(reporter: TerminalReporter, report: VerificationReport) -> None:
+    """Render and save a report, honouring the per-run verbose choice.
+
+    Verbose detail is a per-run choice: the user is asked before rendering
+    and a fresh verbose reporter is used only when requested.  The shared
+    reporter from ``run_picker()`` is never mutated, so the default (No)
+    path renders byte-identically to the non-interactive CLI.
+    """
+    render_reporter = reporter
+    if _ask_verbose():
+        render_reporter = TerminalReporter(colour=True, verbose=True)
+
+    print()
+    output = render_reporter.report(report)
+    print(output)
+
+    # Save for "View last report"
+    _save_last_report(output)
+
+    _pause()
+
+
 def _run_verification(reporter: TerminalReporter) -> None:
     """Walk the user through running a full verification."""
     prompt = questionary.text(
@@ -195,14 +232,7 @@ def _run_verification(reporter: TerminalReporter) -> None:
     print(f"Changes derived: {len(result.changes)}")
     report = ClaimVerifier.verify(result.claims, result.changes)
 
-    print()
-    output = reporter.report(report)
-    print(output)
-
-    # Save for "View last report"
-    _save_last_report(output)
-
-    _pause()
+    _render_report(reporter, report)
 
 
 # ---------------------------------------------------------------------------
@@ -378,14 +408,7 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
         report = VerificationReport(unexplained_changes=changes)
 
     # 8. Report.
-    print()
-    output = reporter.report(report)
-    print(output)
-
-    # Save for "View last report"
-    _save_last_report(output)
-
-    _pause()
+    _render_report(reporter, report)
 
 
 # ---------------------------------------------------------------------------
