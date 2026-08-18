@@ -7,9 +7,9 @@ NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
 changes your code and explains what it did, NoWreck checks whether the
 explanation matches reality — using structural AST analysis, not another
 AI's opinion.
-<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/1608ea03-fc56-409e-87dd-42d9025c84e3" />
 
 
+<img width="1536" height="1024" alt="ChatGPT Image Aug 18, 2026, 08_34_26 PM" src="https://github.com/user-attachments/assets/bcc62fa1-9605-498c-b22c-5328556b19d0" />
 
 
 ```
@@ -121,6 +121,9 @@ Great for:
 - Learning the tool's capabilities
 
 ---
+
+<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/1608ea03-fc56-409e-87dd-42d9025c84e3" />
+
 
 ## Command reference
 
