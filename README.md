@@ -1,5 +1,5 @@
    +------------------------------------+
-   |            NoWreck v0.7.0          |
+   |            NoWreck v0.8.0          |
    |    Deterministic AI Verifier       |
    +------------------------------------+
 
@@ -194,7 +194,7 @@ applies AI judgment. Its decisions are purely field-based comparison.
 
 ---
 
-## Claim types (MVP)
+## Claim types
 
 | Claim type | What it means | Verified by |
 |------------|---------------|-------------|
@@ -202,11 +202,17 @@ applies AI judgment. Its decisions are purely field-based comparison.
 | `REMOVE_FUNCTION` | A function was removed | Structural existence check |
 | `ADD_CLASS` | A class was added | Structural existence check |
 | `REMOVE_CLASS` | A class was removed | Structural existence check |
+| `ADD_INTERFACE` | An interface was added (TS/TSX) | Structural existence check |
+| `REMOVE_INTERFACE` | An interface was removed | Structural existence check |
+| `ADD_ENUM` | An enum was added (TS/TSX) | Structural existence check |
+| `REMOVE_ENUM` | An enum was removed | Structural existence check |
+| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX) | Structural existence check |
+| `REMOVE_TYPE_ALIAS` | A type alias was removed | Structural existence check |
 | `FILE_CREATED` | A new file appeared | File-list diff |
 | `FILE_DELETED` | A file was removed | File-list diff |
 | `CALLS_FUNCTION` | A function now calls another | AST call-site detection |
 
-All seven are verified through direct structural facts — no keyword
+All thirteen are verified through direct structural facts — no keyword
 guessing, no semantic interpretation. If NoWreck can't determine something
 with certainty, it reports `UNVERIFIABLE` rather than guessing.
 
@@ -326,7 +332,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.7.0
+# → nowreck 0.8.0
 
 nowreck
 # → shows banner + usage
@@ -706,7 +712,7 @@ Output schema:
 
 ```json
 {
-*NoWreck v0.7.0 — August 2026*
+*NoWreck v0.8.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -829,7 +835,7 @@ Make sure:
 
 
 
-*NoWreck v0.7.0 — August 2026*
+*NoWreck v0.8.0 — August 2026*
 
 
 

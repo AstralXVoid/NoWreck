@@ -45,7 +45,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.7.0
+# → nowreck 0.8.0
 
 nowreck
 # → shows banner + usage
@@ -428,7 +428,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.7.0",
+  "version": "0.8.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -546,4 +546,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.7.0 — August 2026*
+*NoWreck v0.8.0 — August 2026*
