@@ -244,6 +244,110 @@ class TestPromptBuilder:
         assert changes[0].change_type is ChangeType.FILE_CREATED
         assert str(changes[0].file_path) == "new_module.py"
 
+    def test_claims_to_changes_add_interface(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.ADD_INTERFACE,
+                symbol_name="User",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.ADD_INTERFACE
+        assert changes[0].symbol_name == "User"
+        assert str(changes[0].file_path) == "models.ts"
+
+    def test_claims_to_changes_remove_interface(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.REMOVE_INTERFACE,
+                symbol_name="User",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.REMOVE_INTERFACE
+
+    def test_claims_to_changes_add_enum(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.ADD_ENUM,
+                symbol_name="Role",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.ADD_ENUM
+        assert changes[0].symbol_name == "Role"
+
+    def test_claims_to_changes_remove_enum(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.REMOVE_ENUM,
+                symbol_name="Role",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.REMOVE_ENUM
+
+    def test_claims_to_changes_add_type_alias(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.ADD_TYPE_ALIAS,
+                symbol_name="UserStatus",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.ADD_TYPE_ALIAS
+        assert changes[0].symbol_name == "UserStatus"
+
+    def test_claims_to_changes_remove_type_alias(self) -> None:
+        from nowreck.claims.models import Claim, ClaimType
+
+        claims = [
+            Claim(
+                type=ClaimType.REMOVE_TYPE_ALIAS,
+                symbol_name="UserStatus",
+                file_path="models.ts",
+            ),
+        ]
+        changes = PromptBuilder.claims_to_changes(claims)
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.REMOVE_TYPE_ALIAS
+
+    def test_prompt_renders_interface_change(self) -> None:
+        """A type-level change renders with its human label, not a raw
+        enum name."""
+        changes = [
+            _make_change(
+                ChangeType.ADD_INTERFACE,
+                file_path="models.ts",
+                symbol_name="User",
+            ),
+        ]
+        messages = PromptBuilder.build(changes)
+        content = messages[1]["content"]
+        assert "Interface added" in content
+        assert "User" in content
+        assert "models.ts" in content
+
     def test_claims_to_changes_skips_calls_function(self) -> None:
         """CALLS_FUNCTION claims are NOT converted to CALL_DETECTED
         changes — they are verified against other changes instead."""

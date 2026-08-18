@@ -84,9 +84,19 @@ def collect_top_level_symbols(
         - ``function foo() {}``  →  SymbolType.FUNCTION
         - ``const foo = () => {}``  →  SymbolType.FUNCTION
         - ``class Foo { ... }``  →  SymbolType.CLASS  (+ methods)
+        - ``interface Foo { ... }``  →  SymbolType.INTERFACE
+        - ``enum Color { ... }``  →  SymbolType.ENUM
+        - ``type T = ...``  →  SymbolType.TYPE_ALIAS
         - ``export function foo() {}``  →  (unwrapped, same as above)
         - ``export class Foo {}``  →  (unwrapped, same as above)
         - ``export const foo = () => {}``  →  (unwrapped, same as above)
+
+    The interface/enum/type-alias node types only ever occur in the
+    TypeScript and TSX grammars, so JavaScript scanning behaviour is
+    untouched by construction.  Members (interface method signatures,
+    enum members, generic parameters) are structural detail and are
+    intentionally NOT captured — same one-level-deep philosophy as class
+    methods.
     """
     symbols: list[Symbol] = []
 
@@ -123,6 +133,36 @@ def collect_top_level_symbols(
                 collect_class_methods(
                     node, source_bytes, file_path, class_name, symbols,
                 )
+
+        elif node.type == "interface_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                symbols.append(Symbol(
+                    name=text_of(name_node, source_bytes),
+                    symbol_type=SymbolType.INTERFACE,
+                    file_path=file_path,
+                    line_number=node.start_point[0] + 1,
+                ))
+
+        elif node.type == "enum_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                symbols.append(Symbol(
+                    name=text_of(name_node, source_bytes),
+                    symbol_type=SymbolType.ENUM,
+                    file_path=file_path,
+                    line_number=node.start_point[0] + 1,
+                ))
+
+        elif node.type == "type_alias_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                symbols.append(Symbol(
+                    name=text_of(name_node, source_bytes),
+                    symbol_type=SymbolType.TYPE_ALIAS,
+                    file_path=file_path,
+                    line_number=node.start_point[0] + 1,
+                ))
 
         elif node.type == "expression_statement":
             # Standalone IIFE: ``(function() { ... })()``

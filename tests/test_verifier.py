@@ -452,6 +452,219 @@ class TestClaimVerifierUnverifiable:
 
 
 # ---------------------------------------------------------------------------
+# ClaimVerifier — type-level claim types (v0.8.0)
+# ---------------------------------------------------------------------------
+
+
+class TestClaimVerifierTypeLevelConfirmed:
+    """All 6 new claim types confirm against their same change type."""
+
+    def test_add_interface_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+        assert report.confirmed == 1
+
+    def test_remove_interface_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_INTERFACE, file_path="models.ts", symbol_name="Old"
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_INTERFACE, file_path="models.ts", symbol_name="Old"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_add_enum_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_remove_enum_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_add_type_alias_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_TYPE_ALIAS,
+                file_path="models.ts",
+                symbol_name="UserStatus",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_remove_type_alias_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_TYPE_ALIAS,
+                file_path="models.ts",
+                symbol_name="UserStatus",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+
+class TestClaimVerifierTypeLevelContradicted:
+    """Add claims contradicted by removes (and vice versa) per kind."""
+
+    def test_add_interface_contradicted_by_remove(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_INTERFACE, file_path="models.ts", symbol_name="User"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_remove_interface_contradicted_by_add(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_add_enum_contradicted_by_remove(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_remove_enum_contradicted_by_add(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_add_type_alias_contradicted_by_remove(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_TYPE_ALIAS,
+                file_path="models.ts",
+                symbol_name="UserStatus",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_remove_type_alias_contradicted_by_add(self) -> None:
+        claim = _make_claim(
+            ClaimType.REMOVE_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_TYPE_ALIAS,
+                file_path="models.ts",
+                symbol_name="UserStatus",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+
+class TestClaimVerifierTypeLevelUnverifiable:
+    """Type-level claims without a matching change are unverifiable."""
+
+    def test_no_changes_at_all(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        report = ClaimVerifier.verify([claim], [])
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+    def test_wrong_symbol_name(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Color"
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+    def test_wrong_file_path(self) -> None:
+        claim = _make_claim(
+            ClaimType.ADD_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_TYPE_ALIAS,
+                file_path="other.ts",
+                symbol_name="UserStatus",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+
+# ---------------------------------------------------------------------------
 # ClaimVerifier — unexplained changes
 # ---------------------------------------------------------------------------
 

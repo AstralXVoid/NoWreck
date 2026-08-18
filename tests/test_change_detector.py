@@ -66,13 +66,20 @@ class TestChangeType:
         assert ChangeType.REMOVE_FUNCTION
         assert ChangeType.ADD_CLASS
         assert ChangeType.REMOVE_CLASS
+        # Type-level kinds added in v0.8.0
+        assert ChangeType.ADD_INTERFACE
+        assert ChangeType.REMOVE_INTERFACE
+        assert ChangeType.ADD_ENUM
+        assert ChangeType.REMOVE_ENUM
+        assert ChangeType.ADD_TYPE_ALIAS
+        assert ChangeType.REMOVE_TYPE_ALIAS
         assert ChangeType.FILE_CREATED
         assert ChangeType.FILE_DELETED
         assert ChangeType.CALL_DETECTED
 
     def test_values_are_distinct(self) -> None:
         values = {m.value for m in ChangeType}
-        assert len(values) == 7
+        assert len(values) == len(ChangeType)
 
 
 class TestDetectedChange:
@@ -429,6 +436,146 @@ class TestDetectMixedChanges:
         types = {c.change_type for c in changes}
         assert ChangeType.FILE_DELETED in types
         assert ChangeType.REMOVE_FUNCTION in types
+
+
+# ---------------------------------------------------------------------------
+# Type-level changes (interface / enum / type alias) — v0.8.0
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTypeLevelChanges:
+    """Add/remove/replace of ``interface`` / ``enum`` / ``type`` alias
+    declarations in ``.ts`` files.
+
+    Uses ``RepositoryScanner`` on temp directories so that ``.ts`` files
+    are discovered, parsed with the TS grammar, and recorded in
+    ``ScanResult.ts_files``.
+    """
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        """Write files to *tmp_path* and scan them."""
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_interface_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.ts": "interface User {\n    name: string;\n}\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        assert [c.symbol_name for c in added] == ["User"]
+
+    def test_interface_removed(self, tmp_path: Path) -> None:
+        source = {"models.ts": "interface User {\n    name: string;\n}\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_INTERFACE)
+        assert [c.symbol_name for c in removed] == ["User"]
+
+    def test_enum_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.ts": "enum Color {\n    Red,\n    Green,\n}\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_ENUM)
+        assert [c.symbol_name for c in added] == ["Color"]
+
+    def test_enum_removed(self, tmp_path: Path) -> None:
+        source = {"models.ts": "enum Color {\n    Red,\n    Green,\n}\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_ENUM)
+        assert [c.symbol_name for c in removed] == ["Color"]
+
+    def test_type_alias_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.ts": 'type Status = "active" | "inactive";\n'},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_TYPE_ALIAS)
+        assert [c.symbol_name for c in added] == ["Status"]
+
+    def test_type_alias_removed(self, tmp_path: Path) -> None:
+        source = {"models.ts": 'type Status = "active" | "inactive";\n'}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_TYPE_ALIAS)
+        assert [c.symbol_name for c in removed] == ["Status"]
+
+    def test_type_replaced_in_single_file(self, tmp_path: Path) -> None:
+        """Replacing an interface with an enum produces add + remove of
+        the correct kinds (and never mislabels either as a function)."""
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"models.ts": "interface Mode {\n    dark: boolean;\n}\n"},
+        )
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.ts": "enum Mode {\n    Dark,\n    Light,\n}\n"},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_ENUM)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_INTERFACE)
+        assert [c.symbol_name for c in added] == ["Mode"]
+        assert [c.symbol_name for c in removed] == ["Mode"]
+        # The old Phase-1 mislabeling window is closed: no bogus functions
+        assert _changes_of_type(changes, ChangeType.ADD_FUNCTION) == []
+        assert _changes_of_type(changes, ChangeType.REMOVE_FUNCTION) == []
+
+    def test_multiple_type_level_changes(self, tmp_path: Path) -> None:
+        """All three kinds added together surface as three change types."""
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "models.ts": (
+                    "interface User {\n    name: string;\n}\n\n"
+                    "enum Role {\n    Admin,\n    Member,\n}\n\n"
+                    'type UserStatus = "active" | "deleted";\n'
+                ),
+            },
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        types = {c.change_type for c in changes}
+        assert ChangeType.ADD_INTERFACE in types
+        assert ChangeType.ADD_ENUM in types
+        assert ChangeType.ADD_TYPE_ALIAS in types
+        assert ChangeType.FILE_CREATED in types
+
+    def test_no_changes_when_identical(self, tmp_path: Path) -> None:
+        source = {"models.ts": "interface User {\n    name: string;\n}\n"}
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, source)
+        post_scan, post_sym = self._write_and_scan(tmp_path, source)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        assert changes == []
 
 
 # ---------------------------------------------------------------------------

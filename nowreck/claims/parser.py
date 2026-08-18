@@ -4,18 +4,11 @@ import json
 import re
 from typing import Any, cast
 
-from nowreck.claims.models import Claim, ClaimType, ParseResult
+from nowreck.claims.models import CLAIM_TYPE_NAMES, Claim, ParseResult
 
-# Public mapping exported for reuse (not prefixed with _)
-CLAIM_TYPE_NAMES: dict[str, ClaimType] = {
-    "ADD_FUNCTION": ClaimType.ADD_FUNCTION,
-    "REMOVE_FUNCTION": ClaimType.REMOVE_FUNCTION,
-    "ADD_CLASS": ClaimType.ADD_CLASS,
-    "REMOVE_CLASS": ClaimType.REMOVE_CLASS,
-    "FILE_CREATED": ClaimType.FILE_CREATED,
-    "FILE_DELETED": ClaimType.FILE_DELETED,
-    "CALLS_FUNCTION": ClaimType.CALLS_FUNCTION,
-}
+# Public mapping re-exported for reuse (not prefixed with _).  The single
+# source of truth lives in claims/models.py — no local copy here, so new
+# claim types flow through automatically.
 
 
 class ClaimParser:

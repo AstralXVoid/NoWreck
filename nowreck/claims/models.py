@@ -8,16 +8,23 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ClaimType(IntEnum):
-    """The seven structural claim types supported in the MVP.
+    """The thirteen structural claim types supported.
 
     Each corresponds one-to-one with the claim taxonomy in the frozen
-    specification.  No additional claim types are defined.
+    specification.  v0.8.0 added the six type-level kinds
+    (ADD/REMOVE × INTERFACE/ENUM/TYPE_ALIAS) for the TS/TSX family.
     """
 
     ADD_FUNCTION = auto()
     REMOVE_FUNCTION = auto()
     ADD_CLASS = auto()
     REMOVE_CLASS = auto()
+    ADD_INTERFACE = auto()
+    REMOVE_INTERFACE = auto()
+    ADD_ENUM = auto()
+    REMOVE_ENUM = auto()
+    ADD_TYPE_ALIAS = auto()
+    REMOVE_TYPE_ALIAS = auto()
     FILE_CREATED = auto()
     FILE_DELETED = auto()
     CALLS_FUNCTION = auto()
@@ -30,6 +37,12 @@ CLAIM_TYPE_NAMES: dict[str, ClaimType] = {
     "REMOVE_FUNCTION": ClaimType.REMOVE_FUNCTION,
     "ADD_CLASS": ClaimType.ADD_CLASS,
     "REMOVE_CLASS": ClaimType.REMOVE_CLASS,
+    "ADD_INTERFACE": ClaimType.ADD_INTERFACE,
+    "REMOVE_INTERFACE": ClaimType.REMOVE_INTERFACE,
+    "ADD_ENUM": ClaimType.ADD_ENUM,
+    "REMOVE_ENUM": ClaimType.REMOVE_ENUM,
+    "ADD_TYPE_ALIAS": ClaimType.ADD_TYPE_ALIAS,
+    "REMOVE_TYPE_ALIAS": ClaimType.REMOVE_TYPE_ALIAS,
     "FILE_CREATED": ClaimType.FILE_CREATED,
     "FILE_DELETED": ClaimType.FILE_DELETED,
     "CALLS_FUNCTION": ClaimType.CALLS_FUNCTION,

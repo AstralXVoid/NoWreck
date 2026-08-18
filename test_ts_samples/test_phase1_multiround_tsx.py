@@ -230,7 +230,7 @@ check("App (default function component) captured", "App" in sym_names)
 check("Counter (class component) captured", "Counter" in sym_names)
 check("increment (method) captured", "increment" in sym_names)
 check("render (method) captured", "render" in sym_names)
-check("ButtonProps interface NOT captured", "ButtonProps" not in sym_names)
+check("ButtonProps interface captured", "ButtonProps" in sym_names)
 os.unlink(fname)
 
 

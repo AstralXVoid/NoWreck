@@ -108,18 +108,39 @@ check("oldStyle var IIFE NOT captured", "oldStyle" not in sym_names)
 check("normalArrow (positive control) captured", "normalArrow" in sym_names)
 check("normalFunc (positive control) captured", "normalFunc" in sym_names)
 
-# --- edge_types_only.ts (negative test) ---
+# --- edge_types_only.ts (type-level constructs — captured since v0.8.0) ---
 path = test_dir / "edge_types_only.ts"
 symbols = scan_ts_file(path)
 sym_names = {s.name for s in symbols}
 
-check("interface User NOT captured", "User" not in sym_names)
-check("type alias Status NOT captured", "Status" not in sym_names)
-check("enum Color NOT captured", "Color" not in sym_names)
+check("interface User captured", "User" in sym_names)
+check("type alias Status captured", "Status" in sym_names)
+check("enum Color captured", "Color" in sym_names)
 check("workingFunction (positive control) captured", "workingFunction" in sym_names)
 check("WorkingClass (positive control) captured", "WorkingClass" in sym_names)
 check("method (inside WorkingClass) captured", "method" in sym_names)
 check("workingArrow (positive control) captured", "workingArrow" in sym_names)
+
+# Type + line-number checks for the type-level symbols
+user_syms = [s for s in symbols if s.name == "User"]
+check("User is type INTERFACE",
+      all(s.symbol_type.name == "INTERFACE" for s in user_syms))
+status_syms = [s for s in symbols if s.name == "Status"]
+check("Status is type TYPE_ALIAS",
+      all(s.symbol_type.name == "TYPE_ALIAS" for s in status_syms))
+color_syms = [s for s in symbols if s.name == "Color"]
+check("Color is type ENUM",
+      all(s.symbol_type.name == "ENUM" for s in color_syms))
+for s in symbols:
+    if s.name == "User":
+        check("User line 5 (interface declaration line)",
+              s.line_number == 5)
+    elif s.name == "Status":
+        check("Status line 10 (type alias line)",
+              s.line_number == 10)
+    elif s.name == "Color":
+        check("Color line 12 (enum declaration line)",
+              s.line_number == 12)
 
 
 # =========================================================================

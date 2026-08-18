@@ -38,3 +38,12 @@ class UserList extends React.Component {
         );
     }
 }
+
+// Type-level contracts (v0.8.0 material)
+enum ViewMode {
+    List,
+    Grid,
+    Detail,
+}
+
+type SortOrder = "asc" | "desc";

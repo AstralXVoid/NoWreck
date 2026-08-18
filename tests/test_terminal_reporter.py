@@ -210,6 +210,33 @@ class TestReporterConfirmed:
         assert "main" in output
         assert "run" in output
 
+    def test_add_interface_evidence(self) -> None:
+        c = _make_claim(
+            ClaimType.ADD_INTERFACE,
+            file_path="models.ts",
+            symbol_name="User",
+        )
+        dc = _make_change(
+            ChangeType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        vr = VerificationResult(claim=c, verdict=Verdict.CONFIRMED, matched_change=dc)
+        vreport = VerificationReport(results=[vr])
+        reporter = TerminalReporter(colour=False)
+        output = _strip_ansi(reporter.report(vreport))
+        assert "ADD_INTERFACE" in output
+        assert "Interface 'User' was added in models.ts" in output
+
+    def test_add_enum_evidence(self) -> None:
+        c = _make_claim(ClaimType.ADD_ENUM, file_path="models.ts", symbol_name="Role")
+        dc = _make_change(
+            ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        vr = VerificationResult(claim=c, verdict=Verdict.CONFIRMED, matched_change=dc)
+        vreport = VerificationReport(results=[vr])
+        reporter = TerminalReporter(colour=False)
+        output = _strip_ansi(reporter.report(vreport))
+        assert "Enum 'Role' was added in models.ts" in output
+
 
 # ---------------------------------------------------------------------------
 # TerminalReporter — CONTRADICTED section
@@ -334,6 +361,22 @@ class TestReporterClaimDescription:
         desc = TerminalReporter._describe_claim(c)
         assert "ADD_FUNCTION greet → app.py" in desc
 
+    def test_add_interface_description(self) -> None:
+        c = _make_claim(
+            ClaimType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        desc = TerminalReporter._describe_claim(c)
+        assert "ADD_INTERFACE User → models.ts" in desc
+
+    def test_add_type_alias_description(self) -> None:
+        c = _make_claim(
+            ClaimType.ADD_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        desc = TerminalReporter._describe_claim(c)
+        assert "ADD_TYPE_ALIAS UserStatus → models.ts" in desc
+
     def test_add_function_with_line_number(self) -> None:
         c = Claim(
             type=ClaimType.ADD_FUNCTION,
@@ -394,6 +437,52 @@ class TestReporterEvidence:
         evidence = TerminalReporter._describe_evidence(dc)
         assert "added" in evidence
         assert "Widget" in evidence
+
+    def test_add_interface_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.ADD_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Interface 'User' was added in models.ts"
+
+    def test_remove_interface_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.REMOVE_INTERFACE, file_path="models.ts", symbol_name="User"
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Interface 'User' was removed from models.ts"
+
+    def test_add_enum_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Enum 'Role' was added in models.ts"
+
+    def test_remove_enum_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Enum 'Role' was removed from models.ts"
+
+    def test_add_type_alias_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.ADD_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Type alias 'UserStatus' was added in models.ts"
+
+    def test_remove_type_alias_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.REMOVE_TYPE_ALIAS,
+            file_path="models.ts",
+            symbol_name="UserStatus",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Type alias 'UserStatus' was removed from models.ts"
 
     def test_contradicted_evidence(self) -> None:
         """Contradicted evidence still describes the actual change."""

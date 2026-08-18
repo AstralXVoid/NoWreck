@@ -28,6 +28,12 @@ Valid claim types:
 - REMOVE_FUNCTION  — A function was removed from a file.
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
+- ADD_INTERFACE    — An interface was added to a file (TypeScript/TSX).
+- REMOVE_INTERFACE — An interface was removed from a file.
+- ADD_ENUM         — An enum was added to a file (TypeScript/TSX).
+- REMOVE_ENUM      — An enum was removed from a file.
+- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX).
+- REMOVE_TYPE_ALIAS — A type alias was removed from a file.
 - FILE_CREATED     — An entirely new file was created.
 - FILE_DELETED     — An entire file was deleted.
 - CALLS_FUNCTION   — A function now calls another function.
@@ -80,6 +86,12 @@ Valid claim types:
 - REMOVE_FUNCTION  — A function was removed from a file.
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
+- ADD_INTERFACE    — An interface was added to a file (TypeScript/TSX).
+- REMOVE_INTERFACE — An interface was removed from a file.
+- ADD_ENUM         — An enum was added to a file (TypeScript/TSX).
+- REMOVE_ENUM      — An enum was removed from a file.
+- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX).
+- REMOVE_TYPE_ALIAS — A type alias was removed from a file.
 - FILE_CREATED     — An entirely new file was created.
 - FILE_DELETED     — An entire file was deleted.
 - CALLS_FUNCTION   — A function now calls another function.
@@ -264,6 +276,12 @@ _CHANGE_LABELS: dict[ChangeType, str] = {
     ChangeType.REMOVE_FUNCTION: "Function removed",
     ChangeType.ADD_CLASS: "Class added",
     ChangeType.REMOVE_CLASS: "Class removed",
+    ChangeType.ADD_INTERFACE: "Interface added",
+    ChangeType.REMOVE_INTERFACE: "Interface removed",
+    ChangeType.ADD_ENUM: "Enum added",
+    ChangeType.REMOVE_ENUM: "Enum removed",
+    ChangeType.ADD_TYPE_ALIAS: "Type alias added",
+    ChangeType.REMOVE_TYPE_ALIAS: "Type alias removed",
     ChangeType.FILE_CREATED: "File created",
     ChangeType.FILE_DELETED: "File deleted",
     ChangeType.CALL_DETECTED: "Call detected",
@@ -281,6 +299,12 @@ _CLAIM_TO_CHANGE_TYPE: dict[ClaimType, ChangeType] = {
     ClaimType.REMOVE_FUNCTION: ChangeType.REMOVE_FUNCTION,
     ClaimType.ADD_CLASS: ChangeType.ADD_CLASS,
     ClaimType.REMOVE_CLASS: ChangeType.REMOVE_CLASS,
+    ClaimType.ADD_INTERFACE: ChangeType.ADD_INTERFACE,
+    ClaimType.REMOVE_INTERFACE: ChangeType.REMOVE_INTERFACE,
+    ClaimType.ADD_ENUM: ChangeType.ADD_ENUM,
+    ClaimType.REMOVE_ENUM: ChangeType.REMOVE_ENUM,
+    ClaimType.ADD_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
+    ClaimType.REMOVE_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
     ClaimType.FILE_CREATED: ChangeType.FILE_CREATED,
     ClaimType.FILE_DELETED: ChangeType.FILE_DELETED,
 }

@@ -390,6 +390,24 @@ class TerminalReporter:
             return f"Class '{change.symbol_name}' was added in {change.file_path}"
         if change.change_type is ChangeType.REMOVE_CLASS:
             return f"Class '{change.symbol_name}' was removed from {change.file_path}"
+        if change.change_type is ChangeType.ADD_INTERFACE:
+            return f"Interface '{change.symbol_name}' was added in {change.file_path}"
+        if change.change_type is ChangeType.REMOVE_INTERFACE:
+            return (
+                f"Interface '{change.symbol_name}' was removed "
+                f"from {change.file_path}"
+            )
+        if change.change_type is ChangeType.ADD_ENUM:
+            return f"Enum '{change.symbol_name}' was added in {change.file_path}"
+        if change.change_type is ChangeType.REMOVE_ENUM:
+            return f"Enum '{change.symbol_name}' was removed from {change.file_path}"
+        if change.change_type is ChangeType.ADD_TYPE_ALIAS:
+            return f"Type alias '{change.symbol_name}' was added in {change.file_path}"
+        if change.change_type is ChangeType.REMOVE_TYPE_ALIAS:
+            return (
+                f"Type alias '{change.symbol_name}' was removed "
+                f"from {change.file_path}"
+            )
         if change.change_type is ChangeType.FILE_CREATED:
             return f"File '{change.file_path}' was created"
         if change.change_type is ChangeType.FILE_DELETED:
@@ -549,6 +567,12 @@ _CLAIM_TYPE_LABELS: dict[ClaimType, str] = {
     ClaimType.REMOVE_FUNCTION: "REMOVE_FUNCTION",
     ClaimType.ADD_CLASS: "ADD_CLASS",
     ClaimType.REMOVE_CLASS: "REMOVE_CLASS",
+    ClaimType.ADD_INTERFACE: "ADD_INTERFACE",
+    ClaimType.REMOVE_INTERFACE: "REMOVE_INTERFACE",
+    ClaimType.ADD_ENUM: "ADD_ENUM",
+    ClaimType.REMOVE_ENUM: "REMOVE_ENUM",
+    ClaimType.ADD_TYPE_ALIAS: "ADD_TYPE_ALIAS",
+    ClaimType.REMOVE_TYPE_ALIAS: "REMOVE_TYPE_ALIAS",
     ClaimType.FILE_CREATED: "FILE_CREATED",
     ClaimType.FILE_DELETED: "FILE_DELETED",
     ClaimType.CALLS_FUNCTION: "CALLS_FUNCTION",
@@ -559,6 +583,12 @@ _CHANGE_TYPE_LABELS: dict[ChangeType, str] = {
     ChangeType.REMOVE_FUNCTION: "REMOVE_FUNCTION",
     ChangeType.ADD_CLASS: "ADD_CLASS",
     ChangeType.REMOVE_CLASS: "REMOVE_CLASS",
+    ChangeType.ADD_INTERFACE: "ADD_INTERFACE",
+    ChangeType.REMOVE_INTERFACE: "REMOVE_INTERFACE",
+    ChangeType.ADD_ENUM: "ADD_ENUM",
+    ChangeType.REMOVE_ENUM: "REMOVE_ENUM",
+    ChangeType.ADD_TYPE_ALIAS: "ADD_TYPE_ALIAS",
+    ChangeType.REMOVE_TYPE_ALIAS: "REMOVE_TYPE_ALIAS",
     ChangeType.FILE_CREATED: "FILE_CREATED",
     ChangeType.FILE_DELETED: "FILE_DELETED",
     ChangeType.CALL_DETECTED: "CALL_DETECTED",

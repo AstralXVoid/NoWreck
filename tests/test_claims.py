@@ -24,13 +24,20 @@ class TestClaimType:
         assert ClaimType.REMOVE_FUNCTION
         assert ClaimType.ADD_CLASS
         assert ClaimType.REMOVE_CLASS
+        # Type-level kinds added in v0.8.0
+        assert ClaimType.ADD_INTERFACE
+        assert ClaimType.REMOVE_INTERFACE
+        assert ClaimType.ADD_ENUM
+        assert ClaimType.REMOVE_ENUM
+        assert ClaimType.ADD_TYPE_ALIAS
+        assert ClaimType.REMOVE_TYPE_ALIAS
         assert ClaimType.FILE_CREATED
         assert ClaimType.FILE_DELETED
         assert ClaimType.CALLS_FUNCTION
 
     def test_values_are_distinct(self) -> None:
         values = {m.value for m in ClaimType}
-        assert len(values) == 7
+        assert len(values) == len(ClaimType)
 
     def test_all_types_in_name_map(self) -> None:
         for member in ClaimType:

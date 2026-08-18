@@ -65,12 +65,16 @@ class TestSymbolType:
     def test_values_are_distinct(self) -> None:
         """Each enum member has a unique value."""
         values = {m.value for m in SymbolType}
-        assert len(values) == 3
+        assert len(values) == len(SymbolType)
 
     def test_has_all_required_types(self) -> None:
         assert SymbolType.FUNCTION
         assert SymbolType.CLASS
         assert SymbolType.METHOD
+        # Type-level kinds added in v0.8.0
+        assert SymbolType.INTERFACE
+        assert SymbolType.ENUM
+        assert SymbolType.TYPE_ALIAS
 
 
 # ---------------------------------------------------------------------------

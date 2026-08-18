@@ -404,6 +404,24 @@ class TestPureTsRepo:
         assert len(idx.classes) >= 3  # Calculator, User, AdminUser
         assert len(idx.methods) >= 6  # add, subtract, multiply, divide, display, toDict, display
 
+    def test_type_level_symbols_captured(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+        """models.ts type-level contracts land as INTERFACE/ENUM/TYPE_ALIAS
+        (v0.8.0 material) without touching the older counts."""
+        _, idx = pure_ts_scan
+        profile = idx.by_name("UserProfile")
+        assert len(profile) == 1
+        assert profile[0].symbol_type is SymbolType.INTERFACE
+        role = idx.by_name("Role")
+        assert len(role) == 1
+        assert role[0].symbol_type is SymbolType.ENUM
+        status = idx.by_name("UserStatus")
+        assert len(status) == 1
+        assert status[0].symbol_type is SymbolType.TYPE_ALIAS
+        # Index properties expose the new kinds
+        assert "UserProfile" in {s.name for s in idx.interfaces}
+        assert "Role" in {s.name for s in idx.enums}
+        assert "UserStatus" in {s.name for s in idx.type_aliases}
+
     def test_call_detection(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
         scan, idx = pure_ts_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
@@ -435,6 +453,17 @@ class TestPureTsRepo:
         created = _changes_of_type(changes, ChangeType.FILE_CREATED)
         assert len(created) == EXPECTED_TS_FILES
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
+
+    def test_type_level_change_detection(self) -> None:
+        """Empty → repo emits the six type-level kinds with the right
+        names (no mislabeling as functions)."""
+        changes = _changes_between(None, PURE_TS_REPO)
+        added_interfaces = _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        added_enums = _changes_of_type(changes, ChangeType.ADD_ENUM)
+        added_aliases = _changes_of_type(changes, ChangeType.ADD_TYPE_ALIAS)
+        assert [c.symbol_name for c in added_interfaces] == ["UserProfile"]
+        assert [c.symbol_name for c in added_enums] == ["Role"]
+        assert [c.symbol_name for c in added_aliases] == ["UserStatus"]
 
     def test_no_changes_when_identical(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
         scan, idx = pure_ts_scan
@@ -510,6 +539,23 @@ class TestPureTsxRepo:
         assert len(idx.functions) >= 6  # Greeting, formatGreeting, Farewell, computeAverage, UserCard, AdminCard
         assert len(idx.classes) >= 2  # Calculator, UserList
         assert len(idx.methods) >= 6  # add, subtract, multiply, divide, render (Calculator), render (UserList)
+
+    def test_type_level_symbols_captured(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+        """models.tsx type-level contracts land as INTERFACE/ENUM/TYPE_ALIAS
+        (v0.8.0 material) without touching the older counts."""
+        _, idx = pure_tsx_scan
+        props = idx.by_name("UserProps")
+        assert len(props) == 1
+        assert props[0].symbol_type is SymbolType.INTERFACE
+        view_mode = idx.by_name("ViewMode")
+        assert len(view_mode) == 1
+        assert view_mode[0].symbol_type is SymbolType.ENUM
+        sort_order = idx.by_name("SortOrder")
+        assert len(sort_order) == 1
+        assert sort_order[0].symbol_type is SymbolType.TYPE_ALIAS
+        assert "UserProps" in {s.name for s in idx.interfaces}
+        assert "ViewMode" in {s.name for s in idx.enums}
+        assert "SortOrder" in {s.name for s in idx.type_aliases}
 
     def test_call_detection(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
         scan, idx = pure_tsx_scan

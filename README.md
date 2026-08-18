@@ -275,7 +275,8 @@ about code changes.** No other tool does this.
 - TypeScript support (Tree-sitter scanner + symbol index + full pipeline) ✅ *(done in v0.5.0)*
 - `--verbose` mode showing full deterministic evidence per claim ✅ *(done in v0.6.0)*
 - TSX (`.tsx` files) support ✅ *(done in v0.7.0)*
-- Interfaces / enums / type aliases as claim types 🗓 *(planned for v0.8.0)*
+- Interfaces / enums / type aliases as claim types ✅ *(done in v0.8.0)*
+- Rust + Go language support 🗓 *(planned for v0.9.0)*
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
 - CI/CD integration

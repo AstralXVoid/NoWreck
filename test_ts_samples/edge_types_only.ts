@@ -1,4 +1,7 @@
-// Negative test: TypeScript-only constructs that must NOT be captured
+// TypeScript-only constructs — captured as INTERFACE / TYPE_ALIAS / ENUM
+// since v0.8.0 (previously a negative test asserting they were NOT captured).
+// Members (method signatures, enum members) are structural detail and are
+// intentionally NOT captured.
 interface User {
     name: string;
     age: number;

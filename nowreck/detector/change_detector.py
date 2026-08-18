@@ -40,6 +40,12 @@ class ChangeType(IntEnum):
     REMOVE_FUNCTION = auto()
     ADD_CLASS = auto()
     REMOVE_CLASS = auto()
+    ADD_INTERFACE = auto()
+    REMOVE_INTERFACE = auto()
+    ADD_ENUM = auto()
+    REMOVE_ENUM = auto()
+    ADD_TYPE_ALIAS = auto()
+    REMOVE_TYPE_ALIAS = auto()
     FILE_CREATED = auto()
     FILE_DELETED = auto()
     CALL_DETECTED = auto()
@@ -162,6 +168,22 @@ class ChangeDetector:
         elif symbol.symbol_type is SymbolType.CLASS:
             change_type = (
                 ChangeType.ADD_CLASS if is_addition else ChangeType.REMOVE_CLASS
+            )
+        elif symbol.symbol_type is SymbolType.INTERFACE:
+            change_type = (
+                ChangeType.ADD_INTERFACE
+                if is_addition
+                else ChangeType.REMOVE_INTERFACE
+            )
+        elif symbol.symbol_type is SymbolType.ENUM:
+            change_type = (
+                ChangeType.ADD_ENUM if is_addition else ChangeType.REMOVE_ENUM
+            )
+        elif symbol.symbol_type is SymbolType.TYPE_ALIAS:
+            change_type = (
+                ChangeType.ADD_TYPE_ALIAS
+                if is_addition
+                else ChangeType.REMOVE_TYPE_ALIAS
             )
         else:
             # Methods are tracked under function changes since the claim

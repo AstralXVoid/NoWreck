@@ -30,3 +30,17 @@ class AdminUser extends User {
         return info;
     }
 }
+
+// Type-level contracts (v0.8.0 material)
+interface UserProfile {
+    username: string;
+    email: string;
+}
+
+enum Role {
+    Admin,
+    Member,
+    Guest,
+}
+
+type UserStatus = "active" | "suspended" | "deleted";

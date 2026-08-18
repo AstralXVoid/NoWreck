@@ -19,6 +19,9 @@ class SymbolType(IntEnum):
     FUNCTION = auto()
     CLASS = auto()
     METHOD = auto()
+    INTERFACE = auto()
+    ENUM = auto()
+    TYPE_ALIAS = auto()
 
 
 @dataclass(frozen=True, order=True)
@@ -94,6 +97,21 @@ class SymbolIndex:
     def methods(self) -> list[Symbol]:
         """All methods (inside classes) in the index."""
         return self.by_type(SymbolType.METHOD)
+
+    @property
+    def interfaces(self) -> list[Symbol]:
+        """All top-level interfaces (TypeScript) in the index."""
+        return self.by_type(SymbolType.INTERFACE)
+
+    @property
+    def enums(self) -> list[Symbol]:
+        """All top-level enums (TypeScript) in the index."""
+        return self.by_type(SymbolType.ENUM)
+
+    @property
+    def type_aliases(self) -> list[Symbol]:
+        """All top-level type aliases (TypeScript) in the index."""
+        return self.by_type(SymbolType.TYPE_ALIAS)
 
     @property
     def all_symbols(self) -> list[Symbol]:

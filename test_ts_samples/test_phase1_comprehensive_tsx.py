@@ -170,8 +170,11 @@ check(
     all(s.parent_class == "AdminPanel" for s in syms.get("render", [])),
 )
 
-# Interfaces are not captured (still deferred)
-check("ListProps interface NOT captured", "ListProps" not in syms)
+# Interfaces are captured as INTERFACE symbols (since v0.8.0)
+check("ListProps interface captured", "ListProps" in syms)
+listprops_syms = syms.get("ListProps", [])
+check("ListProps is type INTERFACE",
+      all(s.symbol_type.name == "INTERFACE" for s in listprops_syms))
 
 # Line numbers
 for s in scan_ts_file(path):
@@ -213,10 +216,20 @@ syms = symbols_by_name(path)
 check("useUser captured", "useUser" in syms)
 check("Dashboard captured", "Dashboard" in syms)
 check("workingArrow captured", "workingArrow" in syms)
-check("interface User NOT captured", "User" not in syms)
-check("type Status NOT captured", "Status" not in syms)
-check("enum Color NOT captured", "Color" not in syms)
+check("interface User captured", "User" in syms)
+check("type Status captured", "Status" in syms)
+check("enum Color captured", "Color" in syms)
 check("config IIFE NOT captured", "config" not in syms)
+
+user_syms = syms.get("User", [])
+check("User is type INTERFACE",
+      all(s.symbol_type.name == "INTERFACE" for s in user_syms))
+status_syms = syms.get("Status", [])
+check("Status is type TYPE_ALIAS",
+      all(s.symbol_type.name == "TYPE_ALIAS" for s in status_syms))
+color_syms = syms.get("Color", [])
+check("Color is type ENUM",
+      all(s.symbol_type.name == "ENUM" for s in color_syms))
 
 calls = call_tuples(path)
 check("Dashboard -> useUser (call in JSX-in-body)", ("Dashboard", "useUser") in calls)

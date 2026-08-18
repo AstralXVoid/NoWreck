@@ -141,7 +141,7 @@ The roadmap remains focused on narrow, testable increments, each with its own sc
 
 - `explanation` field on claims — model + prompt change (README documents it, the `Claim` model doesn't have it yet) — deferred from v6
 - Scan-summary expansion in verbose mode (per-language file counts) — deferred from v6
-- Interfaces / enums / type aliases as claim types (`ADD_INTERFACE` / `REMOVE_INTERFACE`) — still deferred; needs new claim types first
+- Interfaces / enums / type aliases as claim types (`ADD_INTERFACE` / `REMOVE_INTERFACE`) — **done in v0.8.0** (see `docs/release8.md`)
 - TS polish (from v5): abstract methods, constructor parameter properties, decorators — separate polish increment
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
