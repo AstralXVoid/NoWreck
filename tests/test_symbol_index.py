@@ -851,3 +851,125 @@ class TestSymbolIndexBuilderFromSymbols:
         assert js_idx.functions == py_idx.functions
         assert js_idx.classes == py_idx.classes
         assert js_idx.methods == py_idx.methods
+
+
+# ------------------------------------------------------------------
+# Rust / Go symbol index integration
+# ------------------------------------------------------------------
+
+
+class TestSymbolIndexRust:
+    """build_symbol_index processes rust_files from ScanResult."""
+
+    def test_build_with_rust_files(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.rust_scanner import scan_rust_file
+        test_file = Path("test_rust_samples/basic.rs")
+        if not test_file.exists():
+            pytest.skip("test_rust_samples/basic.rs not found")
+
+        symbols = scan_rust_file(test_file, repo_root=Path("test_rust_samples"))
+        result = ScanResult(
+            rust_files={Path("basic.rs"): symbols},
+        )
+        idx = build_symbol_index(result)
+
+        # basic.rs has: greet, add, User, new, display, Drawable, Color, UserId
+        assert len(idx.by_name("greet")) == 1
+        assert len(idx.by_name("User")) == 1
+        assert len(idx.by_name("Drawable")) == 1
+        assert len(idx.by_name("Color")) == 1
+        assert len(idx.by_name("UserId")) == 1
+
+        # Type checks
+        assert idx.by_name("greet")[0].symbol_type is SymbolType.FUNCTION
+        assert idx.by_name("User")[0].symbol_type is SymbolType.CLASS
+        assert idx.by_name("Drawable")[0].symbol_type is SymbolType.INTERFACE
+        assert idx.by_name("Color")[0].symbol_type is SymbolType.ENUM
+        assert idx.by_name("UserId")[0].symbol_type is SymbolType.TYPE_ALIAS
+
+    def test_build_rust_interfaces_property(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.rust_scanner import scan_rust_file
+        test_file = Path("test_rust_samples/basic.rs")
+        if not test_file.exists():
+            pytest.skip("test_rust_samples/basic.rs not found")
+
+        symbols = scan_rust_file(test_file, repo_root=Path("test_rust_samples"))
+        result = ScanResult(rust_files={Path("basic.rs"): symbols})
+        idx = build_symbol_index(result)
+
+        assert len(idx.interfaces) >= 1
+        assert any(s.name == "Drawable" for s in idx.interfaces)
+        assert len(idx.enums) >= 1
+        assert any(s.name == "Color" for s in idx.enums)
+        assert len(idx.type_aliases) >= 1
+        assert any(s.name == "UserId" for s in idx.type_aliases)
+
+    def test_build_rust_methods_have_parent(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.rust_scanner import scan_rust_file
+        test_file = Path("test_rust_samples/basic.rs")
+        if not test_file.exists():
+            pytest.skip("test_rust_samples/basic.rs not found")
+
+        symbols = scan_rust_file(test_file, repo_root=Path("test_rust_samples"))
+        result = ScanResult(rust_files={Path("basic.rs"): symbols})
+        idx = build_symbol_index(result)
+
+        new_methods = idx.by_name("new")
+        assert len(new_methods) == 1
+        assert new_methods[0].parent_class == "User"
+        assert new_methods[0].symbol_type is SymbolType.METHOD
+
+        display_methods = idx.by_name("display")
+        assert len(display_methods) == 1
+        assert display_methods[0].parent_class == "User"
+
+
+class TestSymbolIndexGo:
+    """build_symbol_index processes go_files from ScanResult."""
+
+    def test_build_with_go_files(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.go_scanner import scan_go_file
+        test_file = Path("test_go_samples/basic.go")
+        if not test_file.exists():
+            pytest.skip("test_go_samples/basic.go not found")
+
+        symbols = scan_go_file(test_file, repo_root=Path("test_go_samples"))
+        result = ScanResult(
+            go_files={Path("basic.go"): symbols},
+        )
+        idx = build_symbol_index(result)
+
+        assert len(idx.by_name("greet")) == 1
+        assert len(idx.by_name("User")) == 1
+        assert len(idx.by_name("Shape")) == 1
+        assert len(idx.by_name("UserID")) == 1
+
+        assert idx.by_name("greet")[0].symbol_type is SymbolType.FUNCTION
+        assert idx.by_name("User")[0].symbol_type is SymbolType.CLASS
+        assert idx.by_name("Shape")[0].symbol_type is SymbolType.INTERFACE
+        assert idx.by_name("UserID")[0].symbol_type is SymbolType.TYPE_ALIAS
+
+    def test_build_go_methods_have_parent(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.go_scanner import scan_go_file
+        test_file = Path("test_go_samples/basic.go")
+        if not test_file.exists():
+            pytest.skip("test_go_samples/basic.go not found")
+
+        symbols = scan_go_file(test_file, repo_root=Path("test_go_samples"))
+        result = ScanResult(go_files={Path("basic.go"): symbols})
+        idx = build_symbol_index(result)
+
+        display_methods = idx.by_name("Display")
+        assert len(display_methods) == 1
+        assert display_methods[0].parent_class == "User"
+        assert display_methods[0].symbol_type is SymbolType.METHOD

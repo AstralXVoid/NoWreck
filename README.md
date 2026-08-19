@@ -1,5 +1,5 @@
    +------------------------------------+
-   |            NoWreck v0.8.0          |
+   |            NoWreck v0.9.0          |
    |    Deterministic AI Verifier       |
    +------------------------------------+
 
@@ -164,7 +164,7 @@ Great for:
 
 NoWreck's verification pipeline has three stages:
 
-1. **Scan** — recursively discovers `.py`, `.js`, and `.ts` files in
+1. **Scan** — recursively discovers `.py`, `.js`, `.ts`, `.rs`, and `.go` files in
    both snapshots, parses each with the appropriate parser, and builds a
    symbol index of every function, class, and method.
 
@@ -173,8 +173,12 @@ NoWreck's verification pipeline has three stages:
      (the `tree-sitter-javascript` grammar)
    - **TypeScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
      (the `tree-sitter-typescript` grammar)
+   - **Rust files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
+     (the `tree-sitter-rust` grammar)
+   - **Go files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
+     (the `tree-sitter-go` grammar)
 
-   All three parsers produce the same `Symbol` / `SymbolType` data shapes,
+   All parsers produce the same `Symbol` / `SymbolType` data shapes,
    so the rest of the pipeline never knows (or cares) which language
    produced the data.
 
@@ -254,11 +258,10 @@ about code changes.** No other tool does this.
 
 ## Limitations
 
-- **Python + JavaScript + TypeScript** — NoWreck supports all three
+- **Python + JavaScript + TypeScript + Rust + Go** — NoWreck supports all five
   languages. Python files are parsed with the built-in `ast` module;
-  JavaScript files use Tree-sitter with the `tree-sitter-javascript`
-  grammar; TypeScript files use Tree-sitter with the
-  `tree-sitter-typescript` grammar.
+  JavaScript, TypeScript, Rust, and Go files use Tree-sitter with their
+  respective grammars.
 - **Cannot see through dynamic behavior** — `exec()`, `eval()`, dynamic
   imports, `getattr()`/`setattr()` with dynamic arguments, metaclasses,
   monkey-patching, and reflection will all yield `UNVERIFIABLE`
@@ -266,10 +269,9 @@ about code changes.** No other tool does this.
   chained calls
 - **No cross-file resolution** beyond direct name matching
 - **No semantic analysis** — it verifies structure, not intent
-- **TypeScript types are invisible** — interfaces, type aliases, and enums
-  define types, not runtime symbols, so they are not captured (there is no
-  claim type that would consume them). The functions, classes, and methods
-  in `.ts` files are fully supported.
+- **Interfaces, enums, and type aliases** are captured as structural symbols
+  (since v0.8.0) but cannot be verified for semantic correctness — only
+  structural existence (added/removed) is checked.
 
 ---
 
@@ -282,7 +284,8 @@ about code changes.** No other tool does this.
 - `--verbose` mode showing full deterministic evidence per claim ✅ *(done in v0.6.0)*
 - TSX (`.tsx` files) support ✅ *(done in v0.7.0)*
 - Interfaces / enums / type aliases as claim types ✅ *(done in v0.8.0)*
-- Rust + Go language support 🗓 *(planned for v0.9.0)*
+- Rust + Go language support ✅ *(done in v0.9.0)*
+- Independent verification architecture (fix Prompt Mode circularity) 🗓 *(planned for v0.10.0)*
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
 - CI/CD integration
@@ -332,7 +335,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.8.0
+# → nowreck 0.9.0
 
 nowreck
 # → shows banner + usage
@@ -712,7 +715,7 @@ Output schema:
 
 ```json
 {
-*NoWreck v0.8.0 — August 2026*
+*NoWreck v0.9.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -835,7 +838,7 @@ Make sure:
 
 
 
-*NoWreck v0.8.0 — August 2026*
+*NoWreck v0.9.0 — August 2026*
 
 
 

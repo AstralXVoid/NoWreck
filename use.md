@@ -45,7 +45,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.8.0
+# → nowreck 0.9.0
 
 nowreck
 # → shows banner + usage
@@ -386,6 +386,12 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `REMOVE_FUNCTION` | `symbol_name`, `file_path` | A function was removed |
 | `ADD_CLASS` | `symbol_name`, `file_path` | A class was added |
 | `REMOVE_CLASS` | `symbol_name`, `file_path` | A class was removed |
+| `ADD_INTERFACE` | `symbol_name`, `file_path` | An interface was added (TS/TSX/Rust/Go) |
+| `REMOVE_INTERFACE` | `symbol_name`, `file_path` | An interface was removed |
+| `ADD_ENUM` | `symbol_name`, `file_path` | An enum was added (TS/TSX/Rust/Go) |
+| `REMOVE_ENUM` | `symbol_name`, `file_path` | An enum was removed |
+| `ADD_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was added (TS/TSX/Rust/Go) |
+| `REMOVE_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was removed |
 | `FILE_CREATED` | `file_path` | An entirely new file appeared |
 | `FILE_DELETED` | `file_path` | An entire file was deleted |
 | `CALLS_FUNCTION` | `symbol_name`, `file_path`, `caller_name`, `called_name` | A function calls another function |
@@ -428,7 +434,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.8.0",
+  "version": "0.9.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -524,7 +530,7 @@ Failed responses are saved to `.nowreck/failed/` for debugging.
 
 Make sure:
 - Both `--pre` and `--post` paths exist and are directories
-- The directories contain `.py`, `.js`, or `.ts` files
+- The directories contain `.py`, `.js`, `.ts`, `.tsx`, `.rs`, or `.go` files
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
@@ -546,4 +552,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.8.0 — August 2026*
+*NoWreck v0.9.0 — August 2026*

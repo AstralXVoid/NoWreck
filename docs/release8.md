@@ -181,7 +181,7 @@ The roadmap remains focused on narrow, testable increments, each with its own sc
 - TS polish (from v5): abstract methods, constructor parameter properties, decorators — separate polish increment
 - Interface method signatures / enum members as symbols — polish increment, not done yet
 - Python type-level capture — Python's `Enum`/`TypeAlias`/`TypedDict` mapping needs its own design conversation
-- Rust + Go language support 🗓 *(planned for v0.9.0 — see `docs/nowreck-v9-scope.md`)*
+- Rust + Go language support — **done in v0.9.0** (see `docs/release9.md`)
 - Additional model providers (Anthropic, Gemini)
 - Caching for large repositories
 - CI/CD integration

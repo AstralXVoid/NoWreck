@@ -476,7 +476,7 @@ class TerminalReporter:
         The JSON schema::
 
             {
-              "version": "0.8.0",
+              "version": "0.9.0",
               "success": true|false,
               "summary": {
                 "total_claims": int,

@@ -987,3 +987,219 @@ class TestDetectTsxChanges:
         types = {c.change_type for c in changes}
         assert ChangeType.FILE_DELETED in types
         assert ChangeType.REMOVE_FUNCTION in types
+
+
+# ------------------------------------------------------------------
+# Rust / Go change detection — v0.9.0
+# ------------------------------------------------------------------
+
+
+class TestDetectRustChanges:
+    """Add/remove/replace of Rust declarations via RepositoryScanner."""
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_rust_function_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"main.rs": "fn greet() -> i32 { 0 }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["greet"]
+
+    def test_rust_function_removed(self, tmp_path: Path) -> None:
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"main.rs": "fn greet() -> i32 { 0 }\n"},
+        )
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [c.symbol_name for c in removed] == ["greet"]
+
+    def test_rust_struct_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.rs": "struct User { name: String }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert [c.symbol_name for c in added] == ["User"]
+
+    def test_rust_trait_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"traits.rs": "trait Drawable { fn draw(&self); }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        assert [c.symbol_name for c in added] == ["Drawable"]
+
+    def test_rust_enum_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"enums.rs": "enum Color { Red, Green, Blue }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_ENUM)
+        assert [c.symbol_name for c in added] == ["Color"]
+
+    def test_rust_file_created(self, tmp_path: Path) -> None:
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"new.rs": "fn hello() {}\n"},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        created = _changes_of_type(changes, ChangeType.FILE_CREATED)
+        assert any(c.file_path == Path("new.rs") for c in created)
+
+    def test_rust_file_deleted(self, tmp_path: Path) -> None:
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"old.rs": "fn old_fn() {}\n"},
+        )
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        deleted = _changes_of_type(changes, ChangeType.FILE_DELETED)
+        assert any(c.file_path == Path("old.rs") for c in deleted)
+
+    def test_rust_call_detected(self, tmp_path: Path) -> None:
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"calls.rs": "fn helper() {}\nfn main() { helper(); }\n"},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        main_calls = {c.called_name for c in calls if c.caller_name == "main"}
+        assert "helper" in main_calls
+
+
+class TestDetectGoChanges:
+    """Add/remove/replace of Go declarations via RepositoryScanner."""
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def test_go_function_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"main.go": "package main\n\nfunc greet() string { return \"hi\" }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["greet"]
+
+    def test_go_function_removed(self, tmp_path: Path) -> None:
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"main.go": "package main\n\nfunc greet() string { return \"hi\" }\n"},
+        )
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [c.symbol_name for c in removed] == ["greet"]
+
+    def test_go_struct_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"models.go": "package main\n\ntype User struct { Name string }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert [c.symbol_name for c in added] == ["User"]
+
+    def test_go_interface_added(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"iface.go": "package main\n\ntype Shape interface { Area() float64 }\n"},
+        )
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        added = _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        assert [c.symbol_name for c in added] == ["Shape"]
+
+    def test_go_file_created(self, tmp_path: Path) -> None:
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"new.go": "package main\n\nfunc hello() {}\n"},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        created = _changes_of_type(changes, ChangeType.FILE_CREATED)
+        assert any(c.file_path == Path("new.go") for c in created)
+
+    def test_go_file_deleted(self, tmp_path: Path) -> None:
+        pre_scan, pre_sym = self._write_and_scan(
+            tmp_path,
+            {"old.go": "package main\n\nfunc old_fn() {}\n"},
+        )
+        post_scan = ScanResult()
+        post_sym = SymbolIndex()
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        deleted = _changes_of_type(changes, ChangeType.FILE_DELETED)
+        assert any(c.file_path == Path("old.go") for c in deleted)
+
+    def test_go_call_detected(self, tmp_path: Path) -> None:
+        pre_scan = ScanResult()
+        pre_sym = SymbolIndex()
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {"calls.go": (
+                "package main\n\n"
+                "func helper() int { return 42 }\n\n"
+                "func main() { helper() }\n"
+            )},
+        )
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        main_calls = {c.called_name for c in calls if c.caller_name == "main"}
+        assert "helper" in main_calls

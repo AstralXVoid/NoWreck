@@ -27,6 +27,12 @@ class ScanResult:
         ts_files: Mapping of file paths (relative to repo root) to the
             list of ``Symbol`` objects extracted from each successfully
             parsed TypeScript-family file (``.ts`` and ``.tsx``).
+        rust_files: Mapping of file paths (relative to repo root) to the
+            list of ``Symbol`` objects extracted from each successfully
+            parsed Rust file (``.rs``).
+        go_files: Mapping of file paths (relative to repo root) to the
+            list of ``Symbol`` objects extracted from each successfully
+            parsed Go file (``.go``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -34,12 +40,20 @@ class ScanResult:
     modules: dict[Path, ast.Module] = field(default_factory=dict)
     js_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     ts_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    rust_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    go_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
     repo_root: Path | None = None
 
     @property
     def success_count(self) -> int:
-        return len(self.modules) + len(self.js_files) + len(self.ts_files)
+        return (
+            len(self.modules)
+            + len(self.js_files)
+            + len(self.ts_files)
+            + len(self.rust_files)
+            + len(self.go_files)
+        )
 
     @property
     def failure_count(self) -> int:
@@ -47,15 +61,17 @@ class ScanResult:
 
 
 class RepositoryScanner:
-    """Scans a repository directory for Python, JavaScript, and TypeScript
-    files and parses them into their respective structural representations.
+    """Scans a repository directory for Python, JavaScript, TypeScript,
+    Rust, and Go files and parses them into their respective structural
+    representations.
 
     This scanner discovers ``.py`` files recursively and parses each with
-    ``ast.parse``, discovers ``.js`` files recursively and parses each
-    with the tree-sitter-based JavaScript scanner, and discovers ``.ts``
-    files recursively and parses each with the tree-sitter-based TypeScript
-    scanner (``.ts`` and ``.tsx``).  The results are collected into a
-    :class:`ScanResult`.
+    ``ast.parse``, discovers ``.js`` files and parses each with the
+    tree-sitter-based JavaScript scanner, discovers ``.ts``/``.tsx`` files
+    and parses each with the tree-sitter-based TypeScript scanner,
+    discovers ``.rs`` files and parses each with the Rust scanner, and
+    discovers ``.go`` files and parses each with the Go scanner.  The
+    results are collected into a :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
     ``OSError`` are recorded in ``failed_files`` rather than halting the
@@ -77,17 +93,19 @@ class RepositoryScanner:
         return self._repo_path
 
     def scan(self) -> ScanResult:
-        """Discover and parse all ``.py``, ``.js``, and ``.ts`` files
-        under the repository root.
+        """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
+        and ``.go`` files under the repository root.
 
         Returns:
             A :class:`ScanResult` containing all successfully parsed
-            modules, JS symbol lists, and TS symbol lists, and any files
+            modules, JS/TS/Rust/Go symbol lists, and any files
             that failed to parse.
         """
         modules: dict[Path, ast.Module] = {}
         js_files: dict[Path, list[Symbol]] = {}
         ts_files: dict[Path, list[Symbol]] = {}
+        rust_files: dict[Path, list[Symbol]] = {}
+        go_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         for py_file in self._discover_python_files():
@@ -117,10 +135,30 @@ class RepositoryScanner:
                 assert error is not None
                 failed[relative] = error
 
+        for rust_file in self._discover_rust_files():
+            relative = rust_file.relative_to(self._repo_path)
+            symbols, error = self._parse_rust_file(rust_file)
+            if symbols is not None:
+                rust_files[relative] = symbols
+            else:
+                assert error is not None
+                failed[relative] = error
+
+        for go_file in self._discover_go_files():
+            relative = go_file.relative_to(self._repo_path)
+            symbols, error = self._parse_go_file(go_file)
+            if symbols is not None:
+                go_files[relative] = symbols
+            else:
+                assert error is not None
+                failed[relative] = error
+
         return ScanResult(
             modules=modules,
             js_files=js_files,
             ts_files=ts_files,
+            rust_files=rust_files,
+            go_files=go_files,
             failed_files=failed,
             repo_root=self._repo_path,
         )
@@ -276,6 +314,100 @@ class RepositoryScanner:
 
         try:
             symbols = scan_ts_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # Rust discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_rust_files(self) -> list[Path]:
+        """Recursively discover all ``.rs`` files, skipping hidden dirs.
+
+        Hidden directories (names starting with ``.``) are excluded by
+        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+        """
+        rust_files: list[Path] = []
+        if not self._repo_path.is_dir():
+            logger.warning("Repository path is not a directory: %s", self._repo_path)
+            return rust_files
+
+        for entry in self._repo_path.rglob("*.rs"):
+            # Skip files inside hidden directories (e.g. .git, .venv)
+            if any(
+                part.startswith(".")
+                for part in entry.relative_to(self._repo_path).parts
+            ):
+                continue
+            rust_files.append(entry)
+
+        return sorted(rust_files)  # deterministic ordering
+
+    def _parse_rust_file(
+        self, file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single Rust file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        from nowreck.scanner.rust_scanner import scan_rust_file  # noqa: PLC0415
+
+        try:
+            symbols = scan_rust_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # Go discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_go_files(self) -> list[Path]:
+        """Recursively discover all ``.go`` files, skipping hidden dirs.
+
+        Hidden directories (names starting with ``.``) are excluded by
+        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+        """
+        go_files: list[Path] = []
+        if not self._repo_path.is_dir():
+            logger.warning("Repository path is not a directory: %s", self._repo_path)
+            return go_files
+
+        for entry in self._repo_path.rglob("*.go"):
+            # Skip files inside hidden directories (e.g. .git, .venv)
+            if any(
+                part.startswith(".")
+                for part in entry.relative_to(self._repo_path).parts
+            ):
+                continue
+            go_files.append(entry)
+
+        return sorted(go_files)  # deterministic ordering
+
+    def _parse_go_file(
+        self, file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single Go file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        from nowreck.scanner.go_scanner import scan_go_file  # noqa: PLC0415
+
+        try:
+            symbols = scan_go_file(file_path, repo_root=self._repo_path)
             return symbols, None
         except (FileNotFoundError, SyntaxError, OSError) as exc:
             exc_type = type(exc).__name__

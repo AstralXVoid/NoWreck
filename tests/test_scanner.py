@@ -350,3 +350,162 @@ class TestRepositoryScannerScan:
             syms1 = [(s.name, s.symbol_type) for s in result1.js_files[rel_path]]
             syms2 = [(s.name, s.symbol_type) for s in result2.js_files[rel_path]]
             assert syms1 == syms2
+
+
+# ------------------------------------------------------------------
+# Rust discovery and parsing
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def rust_only_repo(tmp_path: Path) -> Path:
+    """A repo with Rust files only."""
+    (tmp_path / "main.rs").write_text(
+        "fn greet() -> &'static str { \"hello\" }\n",
+    )
+    (tmp_path / "utils.rs").write_text(
+        "fn helper() -> i32 { 42 }\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def go_only_repo(tmp_path: Path) -> Path:
+    """A repo with Go files only."""
+    (tmp_path / "main.go").write_text(
+        'package main\n\nfunc greet() string { return "hello" }\n',
+    )
+    (tmp_path / "utils.go").write_text(
+        "package main\n\nfunc helper() int { return 42 }\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def multi_lang_repo(tmp_path: Path) -> Path:
+    """A repo with Python, JS, TS, Rust, and Go files."""
+    (tmp_path / "app.py").write_text("def run(): ...\n")
+    (tmp_path / "util.js").write_text("function greet() {}\n")
+    (tmp_path / "mod.ts").write_text("function hello(): void {}\n")
+    (tmp_path / "lib.rs").write_text("fn compute() -> i32 { 0 }\n")
+    (tmp_path / "srv.go").write_text(
+        "package main\n\nfunc serve() {}\n",
+    )
+    return tmp_path
+
+
+class TestRepositoryScannerRust:
+    """Rust file discovery and parsing."""
+
+    def test_scan_finds_rust_files(self, rust_only_repo: Path) -> None:
+        scanner = RepositoryScanner(rust_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("main.rs") in result.rust_files
+        assert Path("utils.rs") in result.rust_files
+
+        main_syms = result.rust_files[Path("main.rs")]
+        assert len(main_syms) == 1
+        assert main_syms[0].name == "greet"
+
+    def test_scan_rust_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "visible.rs").write_text("fn visible() {}\n")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "ignored.rs").write_text("fn ignored() {}\n")
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("visible.rs") in result.rust_files
+        assert Path("ignored.rs") not in result.rust_files
+
+    def test_scan_rust_deterministic(self, rust_only_repo: Path) -> None:
+        scanner = RepositoryScanner(rust_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.rust_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.rust_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.rust_files[path]]
+            assert syms1 == syms2
+
+
+class TestRepositoryScannerGo:
+    """Go file discovery and parsing."""
+
+    def test_scan_finds_go_files(self, go_only_repo: Path) -> None:
+        scanner = RepositoryScanner(go_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("main.go") in result.go_files
+        assert Path("utils.go") in result.go_files
+
+        main_syms = result.go_files[Path("main.go")]
+        assert len(main_syms) == 1
+        assert main_syms[0].name == "greet"
+
+    def test_scan_go_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "visible.go").write_text(
+            "package main\n\nfunc visible() {}\n",
+        )
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "ignored.go").write_text(
+            "package main\n\nfunc ignored() {}\n",
+        )
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("visible.go") in result.go_files
+        assert Path("ignored.go") not in result.go_files
+
+    def test_scan_go_deterministic(self, go_only_repo: Path) -> None:
+        scanner = RepositoryScanner(go_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.go_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.go_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.go_files[path]]
+            assert syms1 == syms2
+
+
+class TestRepositoryScannerMultiLang:
+    """Multi-language repo with all 5 families."""
+
+    def test_scan_discovers_all_languages(self, multi_lang_repo: Path) -> None:
+        scanner = RepositoryScanner(multi_lang_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 5
+        assert Path("app.py") in result.modules
+        assert Path("util.js") in result.js_files
+        assert Path("mod.ts") in result.ts_files
+        assert Path("lib.rs") in result.rust_files
+        assert Path("srv.go") in result.go_files
+
+    def test_scan_success_count_includes_all(
+        self, multi_lang_repo: Path,
+    ) -> None:
+        scanner = RepositoryScanner(multi_lang_repo)
+        result = scanner.scan()
+        expected = (
+            len(result.modules)
+            + len(result.js_files)
+            + len(result.ts_files)
+            + len(result.rust_files)
+            + len(result.go_files)
+        )
+        assert result.success_count == expected

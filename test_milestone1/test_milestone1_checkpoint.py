@@ -50,12 +50,16 @@ PURE_PY_REPO = REPOS / "pure-python" / "src"
 PURE_JS_REPO = REPOS / "pure-js" / "src"
 PURE_TS_REPO = REPOS / "pure-ts" / "src"
 PURE_TSX_REPO = REPOS / "pure-tsx" / "src"
+PURE_RUST_REPO = REPOS / "pure-rust" / "src"
+PURE_GO_REPO = REPOS / "pure-go" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3     # greeter.py, calculator.py, models.py
 EXPECTED_JS_FILES = 3     # greeter.js, calculator.js, models.js
 EXPECTED_TS_FILES = 3     # greeter.ts, calculator.ts, models.ts
 EXPECTED_TSX_FILES = 3    # greeter.tsx, calculator.tsx, models.tsx
+EXPECTED_RUST_FILES = 3   # greeter.rs, calculator.rs, models.rs
+EXPECTED_GO_FILES = 3     # greeter.go, calculator.go, models.go
 EXPECTED_MIXED_PY = 2     # utils.py, main.py
 EXPECTED_MIXED_JS = 2     # utils.js, ui_handler.js
 
@@ -125,6 +129,16 @@ def pure_ts_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_tsx_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_TSX_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_rust_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_RUST_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_go_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_GO_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -613,7 +627,184 @@ class TestPureTsxRepo:
 
 
 # ---------------------------------------------------------------------------
-# 4. Mixed Python + JavaScript repo
+# 4. Pure Rust repo
+# ---------------------------------------------------------------------------
+
+
+class TestPureRustRepo:
+    """3 Rust files with functions, structs, impl methods, traits, enums, type aliases."""
+
+    def test_discovers_all_files(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_rust_scan
+        assert scan.success_count == EXPECTED_RUST_FILES
+        assert scan.failure_count == 0
+        assert len(scan.rust_files) == EXPECTED_RUST_FILES
+        assert set(scan.rust_files) == {
+            Path("greeter.rs"),
+            Path("calculator.rs"),
+            Path("models.rs"),
+        }
+
+    def test_greeter_has_symbols(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_rust_scan
+        greet = idx.by_name("greet")
+        assert len(greet) == 1
+        assert greet[0].symbol_type is SymbolType.FUNCTION
+        fmt = idx.by_name("format_greeting")
+        assert len(fmt) == 1
+        assert fmt[0].symbol_type is SymbolType.FUNCTION
+        farewell = idx.by_name("farewell")
+        assert len(farewell) == 1
+        assert farewell[0].symbol_type is SymbolType.FUNCTION
+
+    def test_calculator_has_class_and_methods(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_rust_scan
+        calc = idx.by_name("Calculator")
+        assert len(calc) == 1
+        assert calc[0].symbol_type is SymbolType.CLASS
+        # Methods: new, add, subtract, multiply, divide, display
+        add_methods = [s for s in idx.by_name("add") if s.parent_class == "Calculator"]
+        assert len(add_methods) == 1
+        assert add_methods[0].symbol_type is SymbolType.METHOD
+
+    def test_models_has_types(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_rust_scan
+        user = idx.by_name("User")
+        assert len(user) == 1
+        assert user[0].symbol_type is SymbolType.CLASS
+        admin = idx.by_name("AdminUser")
+        assert len(admin) == 1
+        assert admin[0].symbol_type is SymbolType.CLASS
+        display_trait = idx.by_name("Display")
+        assert len(display_trait) == 1
+        assert display_trait[0].symbol_type is SymbolType.INTERFACE
+        role = idx.by_name("Role")
+        assert len(role) == 1
+        assert role[0].symbol_type is SymbolType.ENUM
+        status = idx.by_name("UserStatus")
+        assert len(status) == 1
+        assert status[0].symbol_type is SymbolType.TYPE_ALIAS
+
+    def test_symbol_index_has_rust_symbols(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_rust_scan
+        assert len(idx.functions) >= 4   # greet, format_greeting, farewell, compute_average
+        assert len(idx.classes) >= 3     # Calculator, User, AdminUser
+        assert len(idx.methods) >= 7     # Calculator methods + User methods + AdminUser methods
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_RUST_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        # greeter.rs: greet -> format_greeting
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        assert ("greet", "format_greeting") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_RUST_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_RUST_FILES
+        assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
+
+    def test_no_changes_when_identical(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        scan, idx = pure_rust_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+        scan1, idx1 = pure_rust_scan
+        scan2, idx2 = _scan_and_index(PURE_RUST_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
+
+
+# 5. Pure Go repo
+# ---------------------------------------------------------------------------
+
+
+class TestPureGoRepo:
+    """3 Go files with functions, methods, structs, interfaces, type aliases."""
+
+    def test_discovers_all_files(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_go_scan
+        assert scan.success_count == EXPECTED_GO_FILES
+        assert scan.failure_count == 0
+        assert len(scan.go_files) == EXPECTED_GO_FILES
+        assert set(scan.go_files) == {
+            Path("greeter.go"),
+            Path("calculator.go"),
+            Path("models.go"),
+        }
+
+    def test_greeter_has_symbols(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_go_scan
+        greet = idx.by_name("Greet")
+        assert len(greet) == 1
+        assert greet[0].symbol_type is SymbolType.FUNCTION
+        fmt = idx.by_name("FormatGreeting")
+        assert len(fmt) == 1
+        assert fmt[0].symbol_type is SymbolType.FUNCTION
+        farewell = idx.by_name("Farewell")
+        assert len(farewell) == 1
+        assert farewell[0].symbol_type is SymbolType.FUNCTION
+
+    def test_calculator_has_class_and_methods(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_go_scan
+        calc = idx.by_name("Calculator")
+        assert len(calc) == 1
+        assert calc[0].symbol_type is SymbolType.CLASS
+        # Methods: Add, Subtract, Multiply, Divide, Display
+        add_methods = [s for s in idx.by_name("Add") if s.parent_class == "Calculator"]
+        assert len(add_methods) == 1
+        assert add_methods[0].symbol_type is SymbolType.METHOD
+
+    def test_models_has_types(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_go_scan
+        user = idx.by_name("User")
+        assert len(user) == 1
+        assert user[0].symbol_type is SymbolType.CLASS
+        admin = idx.by_name("AdminUser")
+        assert len(admin) == 1
+        assert admin[0].symbol_type is SymbolType.CLASS
+        reader = idx.by_name("Reader")
+        assert len(reader) == 1
+        assert reader[0].symbol_type is SymbolType.INTERFACE
+        status = idx.by_name("Status")
+        assert len(status) == 1
+        assert status[0].symbol_type is SymbolType.TYPE_ALIAS
+
+    def test_symbol_index_has_go_symbols(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_go_scan
+        assert len(idx.functions) >= 4   # Greet, FormatGreeting, Farewell, ComputeAverage
+        assert len(idx.classes) >= 2     # Calculator, User, AdminUser
+        assert len(idx.methods) >= 7     # Calculator methods + User methods + AdminUser methods
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_GO_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        # greeter.go: Greet -> FormatGreeting
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        assert ("Greet", "FormatGreeting") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_GO_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_GO_FILES
+        assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
+
+    def test_no_changes_when_identical(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        scan, idx = pure_go_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+        scan1, idx1 = pure_go_scan
+        scan2, idx2 = _scan_and_index(PURE_GO_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
+
+
+# 6. Mixed Python + JavaScript repo
 # ---------------------------------------------------------------------------
 
 
@@ -707,13 +898,15 @@ class TestMixedRepo:
 
 
 class TestAllReposDeterministic:
-    """All 3 repos, scanned 3x each — every field must be identical."""
+    """All repos, scanned 3x each — every field must be identical."""
 
     REPOS = [
         ("pure-python", PURE_PY_REPO),
         ("pure-js", PURE_JS_REPO),
         ("pure-ts", PURE_TS_REPO),
         ("pure-tsx", PURE_TSX_REPO),
+        ("pure-rust", PURE_RUST_REPO),
+        ("pure-go", PURE_GO_REPO),
         ("mixed", MIXED_REPO),
     ]
 
@@ -728,6 +921,8 @@ class TestAllReposDeterministic:
             assert list(results[i][0].modules) == list(results[0][0].modules)
             assert results[i][0].js_files == results[0][0].js_files
             assert results[i][0].ts_files == results[0][0].ts_files
+            assert results[i][0].rust_files == results[0][0].rust_files
+            assert results[i][0].go_files == results[0][0].go_files
             assert results[i][0].failed_files == results[0][0].failed_files
             assert results[i][1].symbols == results[0][1].symbols, (
                 f"{name}: symbol index differs on run {i + 1}"

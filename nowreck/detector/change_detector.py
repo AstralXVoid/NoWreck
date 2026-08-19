@@ -221,12 +221,16 @@ class ChangeDetector:
             set(pre.modules)
             | set(pre.js_files)
             | set(pre.ts_files)
+            | set(pre.rust_files)
+            | set(pre.go_files)
             | set(pre.failed_files)
         )
         post_files: set[Path] = (
             set(post.modules)
             | set(post.js_files)
             | set(post.ts_files)
+            | set(post.rust_files)
+            | set(post.go_files)
             | set(post.failed_files)
         )
 
@@ -289,15 +293,16 @@ class ChangeDetector:
         """Extract all (file_path, caller_name, called_name) tuples from
         a scan result.
 
-        Handles both Python and JavaScript source files:
+        Handles Python, JavaScript, TypeScript, Rust, and Go source files:
 
         **Python:** walks every function/method body looking for
         ``ast.Call`` nodes with a simple ``ast.Name`` function
         expression.
 
-        **JavaScript:** re-parses each file listed in
-        ``scan.js_files`` using the tree-sitter scanner and extracts
-        ``call_expression`` nodes whose target is a simple
+        **JavaScript/TypeScript/Rust/Go:** re-parses each file listed in
+        ``scan.js_files``, ``scan.ts_files``, ``scan.rust_files``, or
+        ``scan.go_files`` using the respective tree-sitter scanner and
+        extracts ``call_expression`` nodes whose target is a simple
         ``identifier``.
         """
         # Local import to avoid circular dependency at module level:
@@ -352,6 +357,40 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read TS file for call detection: %s — %s",
+                    abs_path, exc,
+                )
+
+        # --- Rust calls ---
+        from nowreck.scanner.rust_scanner import scan_rust_calls  # noqa: PLC0415
+
+        for file_path in scan.rust_files:
+            if repo_root is not None:
+                abs_path = repo_root / file_path
+            else:
+                abs_path = file_path
+            try:
+                rust_calls = scan_rust_calls(abs_path, repo_root=repo_root)
+                calls.update(rust_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read Rust file for call detection: %s — %s",
+                    abs_path, exc,
+                )
+
+        # --- Go calls ---
+        from nowreck.scanner.go_scanner import scan_go_calls  # noqa: PLC0415
+
+        for file_path in scan.go_files:
+            if repo_root is not None:
+                abs_path = repo_root / file_path
+            else:
+                abs_path = file_path
+            try:
+                go_calls = scan_go_calls(abs_path, repo_root=repo_root)
+                calls.update(go_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read Go file for call detection: %s — %s",
                     abs_path, exc,
                 )
 
