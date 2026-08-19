@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 from nowreck.claims.models import Claim, ClaimType
 from nowreck.detector.change_detector import ChangeType, DetectedChange, change_sort_key
 
@@ -67,6 +69,8 @@ Field notes:
 # Prompt system prompt — describes the task for single-prompt mode.
 # ---------------------------------------------------------------------------
 
+# DEPRECATED since v0.10.0 — use PROMPT_SYSTEM_PROMPT_V10 instead.
+# Will be removed in v11.
 PROMPT_SYSTEM_PROMPT = """\
 You are Nowreck, an AI assistant that analyzes descriptions of code changes.
 
@@ -121,6 +125,71 @@ Field notes:
 """
 
 
+# ---------------------------------------------------------------------------
+# v10 prompt — asks model for claims + a unified diff patch.
+# ---------------------------------------------------------------------------
+
+PROMPT_SYSTEM_PROMPT_V10 = """\
+You are Nowreck, an AI assistant that describes and implements code changes.
+
+You will receive a natural-language description of changes to make to a
+code repository. You must:
+1. Produce a structured list of claims describing EXACTLY what changes you
+   are making.
+2. Produce a unified diff patch that applies those changes.
+
+Rules:
+1. The claims must describe every change in the patch — nothing more,
+   nothing less.
+2. Every claim must include a confidence score (0.0 to 1.0).
+3. The patch must be a valid unified diff format.
+4. Do NOT invent changes not described in the user's request.
+5. Respond ONLY with valid JSON in the format specified below.
+
+Valid claim types:
+- ADD_FUNCTION     — A function was added to a file.
+- REMOVE_FUNCTION  — A function was removed from a file.
+- ADD_CLASS        — A class was added to a file.
+- REMOVE_CLASS     — A class was removed from a file.
+- ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go).
+- REMOVE_INTERFACE — An interface was removed.
+- ADD_ENUM         — An enum was added.
+- REMOVE_ENUM      — An enum was removed.
+- ADD_TYPE_ALIAS   — A type alias was added.
+- REMOVE_TYPE_ALIAS — A type alias was removed.
+- FILE_CREATED     — An entirely new file was created.
+- FILE_DELETED     — An entire file was deleted.
+- CALLS_FUNCTION   — A function now calls another function.
+
+Required JSON format:
+{
+  "claims": [
+    {
+      "type": "ADD_FUNCTION",
+      "symbol_name": "function_name",
+      "file_path": "path/to/file.py",
+      "parent_class": null,
+      "caller_name": null,
+      "called_name": null,
+      "confidence": 0.95,
+      "explanation": "Why this change was made."
+    }
+  ],
+  "patch": "--- a/file.py\n+++ b/file.py\n@@ ... @@\n ...diff..."
+}
+
+Field notes:
+- symbol_name: Required for function/class/interface/enum claims.
+- file_path: Required for all claims. Relative to repository root.
+- parent_class: Required when the symbol is a method inside a class.
+- caller_name / called_name: Required for CALLS_FUNCTION claims.
+- confidence: 0.0 (guess) to 1.0 (certain).
+- patch: A unified diff string. Use --- a/ and +++ b/ prefixes.
+  Include hunk headers (@@ ... @@). The patch must be valid and
+  applicable with ``git apply``.\
+"""
+
+
 class PromptBuilder:
     """Builds the system and user messages for the model conversation.
 
@@ -146,8 +215,11 @@ class PromptBuilder:
 
     @staticmethod
     def for_prompt(prompt: str) -> list[dict[str, str]]:
-        """Build a message list for the single-prompt workflow where the
-        model generates both the diff and its explanation from scratch.
+        """Build a message list for the single-prompt workflow.
+
+        .. deprecated:: 0.10.0
+            Use ``for_prompt_v10()`` for independent verification.
+            Will be removed in v11.
 
         Args:
             prompt: A natural-language description of code changes.
@@ -169,6 +241,43 @@ class PromptBuilder:
             },
         ]
 
+    @staticmethod
+    def for_prompt_v10(
+        prompt: str,
+        repo_context: str = "",
+    ) -> list[dict[str, str]]:
+        """Build a message list for v10 independent verification.
+
+        The model returns both claims AND a unified diff patch.  The
+        patch is applied to the working tree, and the resulting
+        before/after state is scanned independently for verification.
+
+        Args:
+            prompt: A natural-language description of code changes.
+            repo_context: Optional context about the repository
+                (e.g. file listing, existing symbols).
+
+        Returns:
+            A list of ``{"role": ..., "content": ...}`` dicts.
+        """
+        user_content = (
+            "Make the following changes to the code repository:\n\n"
+            f"{prompt}\n\n"
+        )
+        if repo_context:
+            user_content += (
+                "Repository context (files and symbols):\n"
+                f"{repo_context}\n\n"
+            )
+        user_content += (
+            "Produce the required JSON with 'claims' and 'patch' fields. "
+            "The patch must be a valid unified diff."
+        )
+        return [
+            {"role": "system", "content": PROMPT_SYSTEM_PROMPT_V10},
+            {"role": "user", "content": user_content},
+        ]
+
     # ------------------------------------------------------------------
     # Claim → DetectedChange conversion
     # ------------------------------------------------------------------
@@ -177,6 +286,11 @@ class PromptBuilder:
     def claims_to_changes(claims: list[Claim]) -> list[DetectedChange]:
         """Convert a list of :class:`Claim` objects into a corresponding
         list of :class:`DetectedChange` objects.
+
+        .. deprecated:: 0.10.0
+            This method creates a circular confirmation loop in Prompt
+            Mode.  Use ``ChangeDetector.detect(before, after)`` for
+            independent verification instead.  Will be removed in v11.
 
         This enables the single-prompt workflow: the model generates
         claims describing the changes, and those claims are converted to
@@ -189,6 +303,13 @@ class PromptBuilder:
             A sorted list of ``DetectedChange`` objects derived from
             the claims.
         """
+        warnings.warn(
+            "claims_to_changes() is deprecated since v0.10.0 and will be "
+            "removed in v11. Use ChangeDetector.detect(before, after) "
+            "for independent verification.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         changes: list[DetectedChange] = []
 
         for claim in claims:

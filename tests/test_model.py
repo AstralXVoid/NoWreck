@@ -707,3 +707,183 @@ class TestModelProviderFailedContent:
             content = failed_files[0].read_text(encoding="utf-8")
             data = json.loads(content)
             assert "timestamp" in data
+
+
+# ===========================================================================
+# Phase 2 — v10 prompt: claims + patch extraction
+# ===========================================================================
+
+
+def _mock_http_v10_ok(
+    messages: list[dict], config: ModelConfig,
+) -> str:
+    """Mock HTTP call returning valid v10 JSON (claims + patch)."""
+    return json.dumps({
+        "claims": [
+            {
+                "type": "ADD_FUNCTION",
+                "symbol_name": "validate",
+                "file_path": "auth.py",
+                "confidence": 0.95,
+                "explanation": "Added validation function.",
+            },
+        ],
+        "patch": (
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -1 +1,4 @@\n"
+            "+def validate(x):\n"
+            "+    if not x:\n"
+            "+        raise ValueError('empty')\n"
+            "+    return True\n"
+        ),
+    })
+
+
+def _mock_http_v10_no_patch(
+    messages: list[dict], config: ModelConfig,
+) -> str:
+    """Mock HTTP call returning claims WITHOUT a patch field."""
+    return json.dumps({
+        "claims": [
+            {
+                "type": "ADD_FUNCTION",
+                "symbol_name": "validate",
+                "file_path": "auth.py",
+                "confidence": 0.9,
+                "explanation": "Added validation.",
+            },
+        ],
+    })
+
+
+class TestPromptBuilderV10:
+    """PromptBuilder.for_prompt_v10() tests."""
+
+    def test_for_prompt_v10_returns_messages(self) -> None:
+        messages = PromptBuilder.for_prompt_v10("Add a function")
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "claims" in messages[0]["content"]
+        assert "patch" in messages[0]["content"]
+
+    def test_for_prompt_v10_includes_prompt(self) -> None:
+        messages = PromptBuilder.for_prompt_v10("Add validate()")
+        assert "Add validate()" in messages[1]["content"]
+
+    def test_for_prompt_v10_includes_repo_context(self) -> None:
+        messages = PromptBuilder.for_prompt_v10(
+            "Add function",
+            repo_context="app.py: def hello(): pass",
+        )
+        assert "app.py" in messages[1]["content"]
+
+    def test_for_prompt_v10_without_context(self) -> None:
+        messages = PromptBuilder.for_prompt_v10("Add function")
+        assert "Repository context" not in messages[1]["content"]
+
+
+class TestParseResultPatch:
+    """ParseResult.patch extraction from model JSON."""
+
+    def test_patch_extracted_when_present(self) -> None:
+        from nowreck.claims.parser import ClaimParser
+
+        result = ClaimParser.parse(json.dumps({
+            "claims": [
+                {
+                    "type": "ADD_FUNCTION",
+                    "symbol_name": "foo",
+                    "file_path": "a.py",
+                },
+            ],
+            "patch": "--- a/a.py\n+++ b/a.py\n",
+        }))
+        assert result.patch == "--- a/a.py\n+++ b/a.py\n"
+        assert result.success
+
+    def test_patch_none_when_absent(self) -> None:
+        from nowreck.claims.parser import ClaimParser
+
+        result = ClaimParser.parse(json.dumps({
+            "claims": [
+                {
+                    "type": "ADD_FUNCTION",
+                    "symbol_name": "foo",
+                    "file_path": "a.py",
+                },
+            ],
+        }))
+        assert result.patch is None
+        assert result.success
+
+    def test_patch_none_when_empty_string(self) -> None:
+        from nowreck.claims.parser import ClaimParser
+
+        result = ClaimParser.parse(json.dumps({
+            "claims": [
+                {
+                    "type": "ADD_FUNCTION",
+                    "symbol_name": "foo",
+                    "file_path": "a.py",
+                },
+            ],
+            "patch": "",
+        }))
+        assert result.patch is None
+
+
+class TestModelProviderV10:
+    """ModelProvider.changes_from_prompt_v10() tests."""
+
+    def test_v10_returns_claims_and_patch(self) -> None:
+        provider = ModelProvider(http_call=_mock_http_v10_ok)
+        result = provider.changes_from_prompt_v10("Add validate")
+
+        assert len(result.claims) == 1
+        assert result.claims[0].symbol_name == "validate"
+        assert result.patch is not None
+        assert "+++ b/auth.py" in result.patch
+
+    def test_v10_no_patch_returns_none(self) -> None:
+        provider = ModelProvider(http_call=_mock_http_v10_no_patch)
+        result = provider.changes_from_prompt_v10("Add validate")
+
+        assert len(result.claims) == 1
+        assert result.patch is None
+
+    def test_v10_uses_v10_prompt(self) -> None:
+        """Verify v10 sends messages from for_prompt_v10."""
+        captured: list[list[dict]] = []
+
+        def capture_http(
+            messages: list[dict], config: ModelConfig,
+        ) -> str:
+            captured.append(messages)
+            return json.dumps({
+                "claims": [
+                    {
+                        "type": "ADD_FUNCTION",
+                        "symbol_name": "x",
+                        "file_path": "a.py",
+                    },
+                ],
+                "patch": "--- a/a.py\n+++ b/a.py\n",
+            })
+
+        provider = ModelProvider(http_call=capture_http)
+        provider.changes_from_prompt_v10("Add x")
+
+        assert len(captured) == 1
+        msgs = captured[0]
+        assert "patch" in msgs[0]["content"]  # system prompt
+
+    def test_v10_backward_compat_old_still_works(self) -> None:
+        """Old changes_from_prompt still works (no patch in result)."""
+        provider = ModelProvider(http_call=_mock_http_v10_no_patch)
+        result = provider.changes_from_prompt("Add validate")
+
+        assert len(result.claims) == 1
+        # Old path: changes derived from claims
+        assert len(result.changes) >= 1

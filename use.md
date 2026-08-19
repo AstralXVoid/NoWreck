@@ -45,7 +45,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.9.0
+# → nowreck 0.10.0
 
 nowreck
 # → shows banner + usage
@@ -254,11 +254,14 @@ nowreck fix "Add a validation function to app.py"
 ```
 
 **How it works:**
-1. NoWreck sends your prompt to the configured model
-2. The model returns structured JSON with claims describing the changes
-3. NoWreck converts claims to `DetectedChange` objects
-4. The verifier matches each claim against the derived changes
-5. A report is printed with CONFIRMED / CONTRADICTED / UNVERIFIABLE results
+1. NoWreck captures the repository state (before)
+2. NoWreck sends your prompt to the configured model
+3. The model returns structured JSON with claims AND a unified diff patch
+4. NoWreck applies the patch to the working tree
+5. NoWreck captures the repository state (after)
+6. NoWreck scans both states independently to detect real changes
+7. The verifier matches each claim against the independently observed changes
+8. A report is printed with CONFIRMED / CONTRADICTED / UNVERIFIABLE results
 
 **Requirements:**
 - API key configured (or `NOWRECK_API_KEY` env var set)
@@ -434,7 +437,7 @@ Output schema:
 
 ```json
 {
-  "version": "0.9.0",
+  "version": "0.10.0",
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -552,4 +555,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.9.0 — August 2026*
+*NoWreck v0.10.0 — August 2026*

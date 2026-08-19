@@ -102,10 +102,17 @@ class ClaimParser:
             except Exception as exc:
                 errors.append(f"Claim #{i}: validation error: {exc}")
 
+        # --- Step 3: extract optional patch field (v10) ---
+        patch: str | None = None
+        raw_patch: Any = data.get("patch")
+        if isinstance(raw_patch, str) and raw_patch.strip():
+            patch = raw_patch
+
         return ParseResult(
             claims=claims,
             errors=errors,
             raw_json=json_str,
+            patch=patch,
         )
 
     # ------------------------------------------------------------------

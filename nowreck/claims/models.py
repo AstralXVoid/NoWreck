@@ -101,11 +101,15 @@ class ParseResult:
         errors: Human-readable error messages describing what went
             wrong.  Empty when parsing succeeds.
         raw_json: The original JSON string that was parsed (or attempted).
+        patch: An optional unified diff patch extracted from the model
+            response.  ``None`` when the response does not include a
+            patch field (pre-v10 format or patch missing).
     """
 
     claims: list[Claim] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     raw_json: str = ""
+    patch: str | None = None
 
     @property
     def success(self) -> bool:

@@ -8,7 +8,7 @@ from pathlib import Path
 from nowreck.claims.parser import ClaimParser
 from nowreck.cli import build_parser
 from nowreck.detector.change_detector import ChangeDetector
-from nowreck.model.provider import ModelConfig, ModelError, ModelProvider
+from nowreck.model.provider import ModelConfig
 from nowreck.reporter.terminal_reporter import TerminalReporter
 from nowreck.scanner.repository_scanner import RepositoryScanner, ScanResult
 from nowreck.scanner.symbol_index import SymbolIndex, build_symbol_index
@@ -20,7 +20,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.9.0           |
+  |            NoWreck v0.10.0           |
   |    Deterministic AI Verifier        |
   +------------------------------------+"""
 
@@ -194,40 +194,71 @@ def _handle_prompt_mode(
 ) -> int:
     """Run the full verification pipeline in prompt mode.
 
-    Calls the configured AI model with a natural-language prompt, gets
-    claims + derived changes, and verifies them automatically.
+    v10 independent verification (default):
+        ``nowreck fix "<prompt>"``
+        Captures before/after state, applies the model's patch,
+        and verifies claims against independently observed changes.
+
+    Manual snapshot mode:
+        ``nowreck fix "<prompt>" --pre ./before --post ./after``
+        Uses user-provided directories instead of auto-snapshots.
     """
+    from nowreck.verifier.prompt_verifier import PromptModeVerifier
+
     model_config = _build_model_config()
-    provider = ModelProvider(config=model_config)
+    repo_path = Path.cwd()
 
-    log("Calling model to generate claims from prompt...")
-    try:
-        result = provider.changes_from_prompt(prompt)
-    except ModelError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+    verifier = PromptModeVerifier(repo_path, model_config)
 
-    if not result.claims:
-        print("Warning: Model returned no valid claims.", file=sys.stderr)
-        if result.parse_result:
-            for err in result.parse_result.errors:
+    if args.pre and args.post:
+        # Manual snapshot mode
+        before_path = _resolve_path(args.pre)
+        after_path = _resolve_path(args.post)
+        log(f"Using manual snapshots: {before_path} \u2192 {after_path}")
+        result = verifier.verify_with_snapshots(
+            prompt,
+            before_path=before_path,
+            after_path=after_path,
+        )
+    else:
+        # Auto-snapshot mode
+        log("Capturing before state...")
+        result = verifier.verify(
+            prompt,
+            restore_after=True,
+        )
+
+    if not result.model_result or not result.model_result.claims:
+        print(
+            "Warning: Model returned no valid claims.",
+            file=sys.stderr,
+        )
+        if result.model_result and result.model_result.parse_result:
+            for err in result.model_result.parse_result.errors:
                 print(f"  Parse error: {err}", file=sys.stderr)
 
-    if result.attempts > 1:
-        log(f"Claims parsed on attempt {result.attempts}")
-    else:
-        log(f"Claims parsed: {len(result.claims)}")
-
-    log(f"Changes derived: {len(result.changes)}")
-    report = ClaimVerifier.verify(result.claims, result.changes)
+    n_claims = (
+        len(result.model_result.claims) if result.model_result else 0
+    )
+    patch_status = "applied" if result.patch_applied else "not applied"
+    log(
+        f"Claims: {n_claims}, "
+        f"Patch: {patch_status}, "
+        f"Evidence: {'independent' if result.has_independent_evidence else 'none'}"
+    )
 
     if args.json:
-        print(reporter.report_json(report))
+        print(reporter.report_json_v10(result))
     else:
         print()
-        print(reporter.report(report))
+        print(reporter.report_v10(result))
 
-    total_issues = report.unverifiable + report.contradicted + report.unexplained_count
+    report = result.report
+    total_issues = (
+        report.unverifiable
+        + report.contradicted
+        + report.unexplained_count
+    )
     return 0 if total_issues == 0 else 1
 
 

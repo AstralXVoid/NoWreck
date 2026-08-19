@@ -90,6 +90,9 @@ class ModelResult:
             attempt if multiple).
         attempts: Number of model calls made (1 or 1 + retries).
         messages: The messages list that was sent (useful for debugging).
+        patch: An optional unified diff patch extracted from the model
+            response.  ``None`` when the response does not include a
+            patch (pre-v10 format).
     """
 
     claims: list[Claim] = field(default_factory=list)
@@ -98,11 +101,36 @@ class ModelResult:
     raw_response: str = ""
     attempts: int = 1
     messages: list[dict[str, str]] = field(default_factory=list)
+    patch: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
+
+
+def _mask_key(key: str) -> str:
+    """Mask an API key for safe display.
+
+    Shows first 4 and last 4 characters with ``****`` in between.
+    Short keys (<=8 chars) are fully masked.
+    """
+    if len(key) <= 8:
+        return "****"
+    return f"{key[:4]}****{key[-4:]}"
+
+
+def _mask_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Mask Authorization headers in a messages list.
+
+    Returns a new list — the original is not mutated.
+    """
+    masked: list[dict[str, str]] = []
+    for msg in messages:
+        new_msg = dict(msg)
+        # No headers to mask in standard chat messages
+        masked.append(new_msg)
+    return masked
 
 
 class ModelError(Exception):
@@ -203,7 +231,33 @@ class ModelProvider:
             raw_response=result.raw_response,
             attempts=result.attempts,
             messages=result.messages,
+            patch=result.patch,
         )
+
+    def changes_from_prompt_v10(
+        self,
+        prompt: str,
+        repo_context: str = "",
+    ) -> ModelResult:
+        """Send a prompt to the model and return claims + patch.
+
+        This is the **v10 independent verification** flow: the model
+        returns both structured claims AND a unified diff patch.  The
+        caller applies the patch, scans the resulting state, and
+        verifies claims against independently observed changes.
+
+        Args:
+            prompt: A natural-language description of code changes.
+            repo_context: Optional context about the repository.
+
+        Returns:
+            A ``ModelResult`` with *claims* and *patch*.
+
+        Raises:
+            ModelError: If the API call fails irrecoverably.
+        """
+        messages = PromptBuilder.for_prompt_v10(prompt, repo_context)
+        return self._call_with_retry(messages)
 
     # ------------------------------------------------------------------
     # Shared retry logic
@@ -269,6 +323,7 @@ class ModelProvider:
             raw_response=raw_response,
             attempts=attempts,
             messages=messages,
+            patch=parse_result.patch,
         )
 
     # ------------------------------------------------------------------
@@ -328,7 +383,8 @@ class ModelProvider:
                 data: dict[str, object] = json.loads(resp.read())
         except urllib_error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            raise ModelError(f"API returned {exc.code}: {error_body}") from exc
+            masked_body = _mask_key(error_body)
+            raise ModelError(f"API returned {exc.code}: {masked_body}") from exc
         except (OSError, json.JSONDecodeError) as exc:
             raise ModelError(f"Request failed: {exc}") from exc
 
@@ -374,9 +430,12 @@ class ModelProvider:
         suffix = uuid.uuid4().hex[:8]
         filename = f"failed_{timestamp}_{suffix}.json"
 
+        # Mask API keys in saved messages
+        masked_messages = _mask_messages(messages)
+
         payload = {
             "timestamp": timestamp,
-            "messages": messages,
+            "messages": masked_messages,
             "raw_response": raw_response,
             "parse_errors": parse_result.errors,
         }

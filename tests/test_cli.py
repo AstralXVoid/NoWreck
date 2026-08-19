@@ -364,3 +364,25 @@ class TestHandleFix:
         args = parser.parse_args(["fix"])
         rc = handle_fix(args)
         assert rc == 1
+
+
+class TestV10Flags:
+    """Tests for prompt mode with --pre/--post (manual snapshots)."""
+
+    def test_prompt_with_pre_post(self) -> None:
+        """Prompt + --pre/--post uses manual snapshot mode."""
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "Add a function", "--pre", "/tmp/a", "--post", "/tmp/b"]
+        )
+        assert args.prompt == "Add a function"
+        assert args.pre == "/tmp/a"
+        assert args.post == "/tmp/b"
+
+    def test_prompt_without_pre_post(self) -> None:
+        """Prompt without --pre/--post uses auto-snapshot mode."""
+        parser = build_parser()
+        args = parser.parse_args(["fix", "Add a function"])
+        assert args.prompt == "Add a function"
+        assert args.pre is None
+        assert args.post is None

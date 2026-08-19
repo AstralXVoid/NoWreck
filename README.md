@@ -1,16 +1,15 @@
-   +------------------------------------+
-   |            NoWreck v0.9.0          |
-   |    Deterministic AI Verifier       |
-   +------------------------------------+
+# NoWreck
 
-NoWreck is a **deterministic** verifier for AI coding assistants. When an AI
-changes your code and explains what it did, NoWreck checks whether the
-explanation matches reality — using structural AST analysis, not another
-AI's opinion.
+**Deterministic AI Verifier** — v0.10.0
 
+NoWreck is a deterministic structural verifier for AI-generated code-change
+claims. When an AI describes a code change, NoWreck compares the claims
+against structural evidence derived by its own scanners — the verifier never
+asks another AI for an opinion. Where the evidence comes from depends on the
+mode: in Pre/Post and Claims modes, from actual before/after repository
+snapshots; in Prompt Mode, from the model's own proposed diff.
 
-<img width="1536" height="1024" alt="ChatGPT Image Aug 18, 2026, 08_34_26 PM" src="https://github.com/user-attachments/assets/bcc62fa1-9605-498c-b22c-5328556b19d0" />
-
+<img width="1536" height="1024" alt="NoWreck CLI output showing confirmed and contradicted claims" src="https://github.com/user-attachments/assets/bcc62fa1-9605-498c-b22c-5328556b19d0" />
 
 ```
 $ nowreck fix "Add email validation to auth.py"
@@ -27,299 +26,74 @@ $ nowreck fix "Add email validation to auth.py"
 
   CONTRADICTED
   ✗ CALLS_FUNCTION validate_email → sanitize_input
-    Evidence: No call to sanitize_input detected in validate_email's body
+    Evidence: No supported direct call to sanitize_input() was detected
+              in the analyzed function body.
 ```
-
----
 
 ## What it catches
 
-- **Hallucinated functions or classes** — the AI claims it added something
-  that isn't there
-- **Fake internal API calls** — the AI says it called a function it didn't
-- **Explanation-vs-diff mismatches** — the AI describes a change that
-  doesn't match the actual diff
-- **Unexplained changes** — real modifications the AI never mentioned
+- **Hallucinated functions or classes** — a claim that something was added when it isn't there
+- **Fake internal API calls** — a claim that a function was called when it wasn't
+- **Explanation-vs-diff mismatches** — a description of a change that doesn't match the actual diff
+- **Unexplained changes** — structural changes that no supplied claim mentioned
 
-NoWreck answers exactly one question: *does the AI's explanation match what
-actually changed in the repository?* Nothing more, nothing less.
+NoWreck does **not** ask: *"Is this code good?"*
 
----
+NoWreck asks: *"Do the supplied structural claims match the structural
+changes actually detected in the compared repository states?"*
 
-## Install
-
-```bash
-pipx install .
-```
-
-*(from a cloned copy of this repo — PyPI publishing coming later)*
-
-Requires Python 3.10+. Installs `nowreck` as a system-wide command.
-
----
-
-## Setup
-
-NoWreck works with any **OpenAI-compatible** model endpoint — Groq,
-DeepSeek, Ollama, LM Studio, OpenRouter, or OpenAI itself.
-
-```bash
-nowreck config set base_url https://api.groq.com/openai/v1
-nowreck config set api_key        <your-api-key>
-nowreck config set model          llama-3.3-70b-versatile
-```
-
-Or set the `NOWRECK_API_KEY` environment variable instead of storing it in
-config.
-
----
-
-## Quick start
-
-```bash
-# Interactive picker — menu-driven interface (great for new users)
-nowreck --interactive
-
-# Prompt mode — NoWreck calls the model, gets claims, verifies them
-nowreck fix "Add a rate-limiting decorator to api/client.py"
-
-# Pre/Post mode — advanced: scan two snapshots manually
-nowreck fix --pre ./repo-v1 --post ./repo-v2
-
-# Pre/Post with claims — verify specific claims against a diff
-nowreck fix --pre ./before --post ./after --claims '{"claims": [...]}'
-
-# JSON output for CI pipelines
-nowreck fix "Add validation to auth.py" --json
-
-# View or change configuration
-nowreck config show
-nowreck config set base_url https://api.openai.com/v1
-```
-
----
-
-## Interactive Mode (in v0.2.0)
-
-Menu-driven interface for users who prefer exploring options without memorizing commands:
-
-```bash
-nowreck --interactive
-```
-
-This launches a terminal picker where you can:
-
-- Choose from Prompt, Pre/Post, or Claims modes
-- Select your repository path
-- Configure options interactively
-- See verification results with formatted output
-
-Great for:
-
-- Beginners exploring NoWreck
-- One-off verifications without typing complex commands
-- Learning the tool's capabilities
-
----
-
-<img width="961" height="701" alt="final" src="https://github.com/user-attachments/assets/1608ea03-fc56-409e-87dd-42d9025c84e3" />
-
-
-## Command reference
-
-| Command | Description |
-|---------|-------------|
-| `nowreck` | Show help / usage |
-| `nowreck --version` | Show version |
-| `nowreck --interactive` | Launch the interactive terminal picker — menu-driven interface for all operations |
-| `nowreck fix "<prompt>"` | **Prompt mode** — describe a change in natural language. NoWreck calls the configured model, gets a diff + claims, and verifies them automatically. |
-| `nowreck fix --pre PATH --post PATH` | **Pre/Post mode** — scan two directory snapshots and detect structural changes. Add `--claims JSON` to verify specific claims against the detected chang[...] |
-| `nowreck fix --json` | Output structured JSON instead of coloured terminal text (for CI). Works with both prompt and pre/post modes. |
-| `nowreck fix --no-colour` | Disable coloured terminal output. |
-| `nowreck fix --verbose` | Show full deterministic evidence per claim. Works with both prompt and pre/post modes. |
-| `nowreck config show` | Display current configuration. |
-| `nowreck config set <key> <value>` | Set a configuration value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries`. |
-
----
-
-## How it works
+Nothing more, nothing less. NoWreck is deliberately narrow. It is **not** an
+AI code reviewer, a test runner, a security scanner, a semantic verifier, or
+a code-quality judge, and it does not determine whether code is secure,
+performant, idiomatic, bug-free, or semantically correct.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Prompt mode                           │
-│                                                         │
-│  Your prompt ──► AI model ──► diff + claims             │
-│                                   │                     │
-│                                   ▼                     │
-│  Pre-scan ──► Symbol index ──► Change Detector          │
-│  Post-scan ──► Symbol index ────────┘                   │
-│                                         │               │
-│  Claims ──► Claim Verifier ◄────────────┘               │
-│                  │     pure comparison — no AI judgment │
-│                  ▼                                      │
-│          Verification Report                            │
-│   ✓ CONFIRMED  ✗ CONTRADICTED  ? UNVERIFIABLE           │
-└─────────────────────────────────────────────────────────┘
+Claims → structural evidence → deterministic comparison → verdict
 ```
 
-NoWreck's verification pipeline has three stages:
-
-1. **Scan** — recursively discovers `.py`, `.js`, `.ts`, `.rs`, and `.go` files in
-   both snapshots, parses each with the appropriate parser, and builds a
-   symbol index of every function, class, and method.
-
-   - **Python files** → parsed with Python's built-in `ast` module
-   - **JavaScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
-     (the `tree-sitter-javascript` grammar)
-   - **TypeScript files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
-     (the `tree-sitter-typescript` grammar)
-   - **Rust files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
-     (the `tree-sitter-rust` grammar)
-   - **Go files** → parsed with [Tree-sitter](https://tree-sitter.github.io/)
-     (the `tree-sitter-go` grammar)
-
-   All parsers produce the same `Symbol` / `SymbolType` data shapes,
-   so the rest of the pipeline never knows (or cares) which language
-   produced the data.
-
-2. **Detect** — compares the pre and post symbol indices to find
-   structural changes: added/removed functions, classes, files, and new
-   function calls. This produces the **single source of truth** — a
-   `list[DetectedChange]` that the verifier references exclusively.
-
-3. **Verify** — for each claim from the AI model, the verifier looks for
-   a matching `DetectedChange`. If one exists with the same type and
-   identity fields → **CONFIRMED**. If a contradicting change exists
-   (e.g., claim says "added" but detection shows "removed") →
-   **CONTRADICTED**. If nothing matches → **UNVERIFIABLE**.
-
-The verifier never parses AST, never queries the symbol index, and never
-applies AI judgment. Its decisions are purely field-based comparison.
-
----
-
-## Claim types
-
-| Claim type | What it means | Verified by |
-|------------|---------------|-------------|
-| `ADD_FUNCTION` | A function was added | Structural existence check |
-| `REMOVE_FUNCTION` | A function was removed | Structural existence check |
-| `ADD_CLASS` | A class was added | Structural existence check |
-| `REMOVE_CLASS` | A class was removed | Structural existence check |
-| `ADD_INTERFACE` | An interface was added (TS/TSX) | Structural existence check |
-| `REMOVE_INTERFACE` | An interface was removed | Structural existence check |
-| `ADD_ENUM` | An enum was added (TS/TSX) | Structural existence check |
-| `REMOVE_ENUM` | An enum was removed | Structural existence check |
-| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX) | Structural existence check |
-| `REMOVE_TYPE_ALIAS` | A type alias was removed | Structural existence check |
-| `FILE_CREATED` | A new file appeared | File-list diff |
-| `FILE_DELETED` | A file was removed | File-list diff |
-| `CALLS_FUNCTION` | A function now calls another | AST call-site detection |
-
-All thirteen are verified through direct structural facts — no keyword
-guessing, no semantic interpretation. If NoWreck can't determine something
-with certainty, it reports `UNVERIFIABLE` rather than guessing.
-
----
-
-## On confidence
-
-Every result includes a confidence score. This reflects NoWreck's certainty
-in its deterministic check — not a claim that the underlying code is
-bug-free.
-
-- **CONFIRMED** at 100% — the structural fact was found and matched
-- **CONTRADICTED** at 100% — the opposite structural fact was found
-- **UNVERIFIABLE** at 50% — no matching fact exists either way
-
-A `CALLS_FUNCTION` check that finds no matching call is just as certain as
-one that finds a match. An absence, confirmed by direct inspection, is not a
-weaker fact than a presence.
-
-This does **not** mean NoWreck is infallible. Static analysis has real,
-documented limits — see [Limitations](#limitations) below.
-
----
-
-## Comparison
-
-| Tool | What it does | Overlaps with NoWreck? |
-|------|-------------|------------------------|
-| Cursor / Claude Code / Copilot | Generate and edit code | **No** — NoWreck verifies, doesn't generate |
-| CodeRabbit / Qodo / Greptile | AI review of a diff's quality | **No** — subjective AI judgment, not deterministic fact-checking |
-| Agent Verifier (aurite-ai) | AI agent skill for code quality/security | **No** — checks code quality, not claim truthfulness |
-| slopcheck / slop-scan | Check third-party package names against registries | **No** — different hallucination category |
-| ESLint / Ruff / Black | Linting and formatting | **No** — syntax/code style, not structural verification |
-
-NoWreck occupies a unique niche: **deterministic verification of AI claims
-about code changes.** No other tool does this.
-
----
-
-## Limitations
-
-- **Python + JavaScript + TypeScript + Rust + Go** — NoWreck supports all five
-  languages. Python files are parsed with the built-in `ast` module;
-  JavaScript, TypeScript, Rust, and Go files use Tree-sitter with their
-  respective grammars.
-- **Cannot see through dynamic behavior** — `exec()`, `eval()`, dynamic
-  imports, `getattr()`/`setattr()` with dynamic arguments, metaclasses,
-  monkey-patching, and reflection will all yield `UNVERIFIABLE`
-- **Simple calls only** — detects `name()` calls, not `obj.method()` or
-  chained calls
-- **No cross-file resolution** beyond direct name matching
-- **No semantic analysis** — it verifies structure, not intent
-- **Interfaces, enums, and type aliases** are captured as structural symbols
-  (since v0.8.0) but cannot be verified for semantic correctness — only
-  structural existence (added/removed) is checked.
-
----
-
-## Roadmap
-
-- Interactive terminal picker for non-CLI users ✅ *(done in v0.2.0)*
-- JavaScript core support (Tree-sitter scanner + symbol index) ✅ *(done in v0.3.0)*
-- JavaScript polish (generators, export default, IIFEs) ✅ *(done in v0.4.0)*
-- TypeScript support (Tree-sitter scanner + symbol index + full pipeline) ✅ *(done in v0.5.0)*
-- `--verbose` mode showing full deterministic evidence per claim ✅ *(done in v0.6.0)*
-- TSX (`.tsx` files) support ✅ *(done in v0.7.0)*
-- Interfaces / enums / type aliases as claim types ✅ *(done in v0.8.0)*
-- Rust + Go language support ✅ *(done in v0.9.0)*
-- Independent verification architecture (fix Prompt Mode circularity) 🗓 *(planned for v0.10.0)*
-- Additional model providers (Anthropic, Gemini)
-- Caching for large repositories
-- CI/CD integration
-
----
+**The verifier uses no AI judgment.** The decision stage never asks an AI
+whether a claim is true. (NoWreck does use a model in Prompt Mode — to
+generate the proposed diff and claims — but never in the decision stage.)
+"Deterministic" describes *how* NoWreck decides: the scanner and verifier
+follow explicit structural rules. It is not a promise of perfect analysis —
+NoWreck is deterministic within its supported structural analysis model
+(see [Limitations](#limitations)).
 
 ## Table of Contents
 
-1. [Installation](#installation)
-2. [Configuration](#configuration)
-3. [Quick Start](#quick-start)
-4. [Usage Modes](#usage-modes)
-   - [Prompt Mode](#1-prompt-mode-recommended)
-   - [Pre/Post Mode](#2-prepost-mode-advanced)
-   - [Claims Mode](#3-claims-mode)
-5. [Command Reference](#command-reference)
-6. [Understanding the Report](#understanding-the-report)
-7. [Claim Types (MVP)](#claim-types-mvp)
-8. [Confidence System](#confidence-system)
-9. [JSON Output for CI](#json-output-for-ci)
-10. [Troubleshooting](#troubleshooting)
+1. [What it catches](#what-it-catches)
+2. [Installation](#installation)
+3. [Configuration](#configuration)
+4. [Quick Start](#quick-start)
+5. [Usage Modes](#usage-modes)
+   - [Prompt Mode](#prompt-mode)
+   - [Pre/Post Mode](#prepost-mode)
+   - [Claims Mode](#claims-mode)
+   - [Interactive Mode](#interactive-mode)
+6. [Command Reference](#command-reference)
+7. [How It Works](#how-it-works)
+8. [Claim Types](#claim-types)
+9. [Understanding the Report](#understanding-the-report)
+10. [Confidence System](#confidence-system)
+11. [JSON Output for CI](#json-output-for-ci)
+12. [Limitations](#limitations)
+13. [Comparison](#comparison)
+14. [Troubleshooting](#troubleshooting)
+15. [Roadmap](#roadmap)
+16. [License](#license)
 
 ---
 
 ## Installation
 
-### From source (current)
+Requires Python 3.10+.
 
 ```bash
 # Clone the repository
 git clone https://github.com/AstralXVoid/NoWreck.git
 cd NoWreck
 
-# Install system-wide with pipx (recommended)
+# Install with pipx (recommended)
 pipx install .
 
 # Or with pip
@@ -331,11 +105,14 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+`pipx install .` installs `nowreck` as a globally available command in your
+user environment (PyPI publishing is coming later).
+
 ### Verify installation
 
 ```bash
 nowreck --version
-# → nowreck 0.9.0
+# → nowreck 0.10.0
 
 nowreck
 # → shows banner + usage
@@ -356,10 +133,10 @@ pip uninstall nowreck
 NoWreck stores configuration in `.nowreck/config.json` under the current
 working directory.
 
-### Required settings for Prompt mode
+### Required settings for Prompt Mode
 
-Before using `nowreck fix "<prompt>"`, you need to configure an API key
-and model provider:
+Before using `nowreck fix "<prompt>"`, configure an API key and model
+provider:
 
 ```bash
 # Set your API key (or use the NOWRECK_API_KEY env var instead)
@@ -372,7 +149,7 @@ nowreck config set base_url https://api.groq.com/openai/v1
 nowreck config set model llama-3.3-70b-versatile
 ```
 
-### Alternative: Environment variable
+### Alternative: environment variable
 
 Set `NOWRECK_API_KEY` instead of storing the key in config:
 
@@ -422,10 +199,9 @@ nowreck config show
 
 ### Step 1 — Pick a test repo
 
-Create a simple Python project with a before and after snapshot:
+Create a small Python project with before and after snapshots:
 
 ```bash
-# Set up a test repository
 mkdir -p /tmp/myapp/pre /tmp/myapp/post
 
 # Pre: original code
@@ -444,24 +220,19 @@ def greet(name: str) -> str:
 EOF
 ```
 
-### Step 2 — Run detection (no claims)
+### Step 2 — Pre/Post Mode: run detection (no claims)
 
 ```bash
 nowreck fix --pre /tmp/myapp/pre --post /tmp/myapp/post
 ```
 
-This will:
-1. Scan both directories for `.py` files
-2. Parse each into an AST
-3. Build symbol indices
-4. Detect structural changes
-5. Show the unexplained changes (since no claims were provided)
-
-You should see output like:
+This is **Pre/Post Mode** with no claims supplied. NoWreck scans both
+snapshots, detects the structural changes between them, and reports them as
+**unexplained** — because no claims were supplied to match against:
 
 ```
   ═══════════════════════════════════════════════════
-    Nowreck Verification Report
+    NoWreck Verification Report
   ═══════════════════════════════════════════════════
 
     Summary
@@ -474,7 +245,7 @@ You should see output like:
     ! ADD_FUNCTION greet (app.py)
 ```
 
-### Step 3 — Run with claims
+### Step 3 — Claims Mode: run with claims
 
 ```bash
 nowreck fix \
@@ -502,11 +273,14 @@ nowreck fix \
   }'
 ```
 
-Expected output:
+This is **Claims Mode**: the claims are supplied externally, and NoWreck
+verifies them against the structural changes detected from the two
+snapshots. Expected output — the hallucinated `CALLS_FUNCTION` claim is
+caught because the code contains no such call:
 
 ```
   ═══════════════════════════════════════════════════
-    Nowreck Verification Report
+    NoWreck Verification Report
   ═══════════════════════════════════════════════════
 
     Summary
@@ -523,76 +297,132 @@ Expected output:
     CONTRADICTED
     ─────────────
     ✗ CALLS_FUNCTION greet → app.py  (conf: 100%)
-      Evidence: No call to sanitize_input detected in greet's body
+      Evidence: No supported direct call to sanitize_input() was detected
+                in the analyzed function body.
 ```
-
-NoWreck correctly caught the hallucinated `CALLS_FUNCTION` claim — the AI
-said it called `sanitize_input()` but the actual code doesn't contain that
-call.
 
 ---
 
 ## Usage Modes
 
-### 1. Prompt mode (recommended)
+NoWreck has three verification modes. They share the same pipeline and
+differ in where claims and evidence come from.
 
-Let NoWreck call the AI model, get structured claims, and verify them
-automatically:
+### Prompt Mode
+
+Describe a change in natural language. NoWreck calls the configured model
+and verifies the claims that model produces.
+
+How it works:
+
+1. NoWreck sends your prompt to the configured model.
+2. The model returns a **proposed diff** plus **structured claims**
+   describing that diff.
+3. NoWreck derives the post-change repository state implied by the proposed
+   diff, scans it against the current state, and produces `DetectedChange`
+   facts.
+4. The deterministic verifier matches each claim against those facts and
+   prints the report.
+
+**What Prompt Mode verifies.** Since v0.10.0, Prompt Mode uses independent
+verification: NoWreck captures the repository state before and after the
+model applies its patch, scans both states independently, and verifies
+the model's claims against the independently observed changes.
+
+Concretely:
+
+- If the model claims `validate_email()` was added but the patch doesn't
+  add it — NoWreck reports **CONTRADICTED**.
+- If the model claims a function calls `sanitize_input()` but the actual
+  code doesn't — NoWreck reports **CONTRADICTED**.
+- If no before/after transition is available — NoWreck reports
+  **UNVERIFIABLE** (never guesses).
+
+The fundamental invariant: **a model claim must never be used as the
+source of evidence for verifying that same claim.**
+
+**Requirements:** an API key (config or `NOWRECK_API_KEY` env var) and a
+configured model (defaults to `gpt-4o`).
 
 ```bash
 nowreck fix "Add a validation function to app.py"
 ```
 
-**How it works:**
-1. NoWreck sends your prompt to the configured model
-2. The model returns structured JSON with claims describing the changes
-3. NoWreck converts claims to `DetectedChange` objects
-4. The verifier matches each claim against the derived changes
-5. A report is printed with CONFIRMED / CONTRADICTED / UNVERIFIABLE results
+### Pre/Post Mode
 
-**Requirements:**
-- API key configured (or `NOWRECK_API_KEY` env var set)
-- Model configured (or use default `gpt-4o`)
+Two directory snapshots already exist. NoWreck scans both and reports the
+structural changes between them. **No API key or model is required** — this
+mode runs fully offline.
 
-### 2. Pre/Post mode (advanced)
+This is the cleanest independent-verification workflow in v0.10.0:
 
-Scan two directory snapshots and detect structural changes:
+```
+actual before snapshot
++ actual after snapshot
++ external claims (optional, via --claims)
+→ deterministic structural verification
+```
+
+The snapshots are real repository states, and any claims — from any AI,
+another tool, or a person — can be supplied through `--claims`. NoWreck
+does not generate the claims itself; it only verifies them against the
+evidence.
 
 ```bash
 nowreck fix --pre ./repo-before --post ./repo-after
 ```
 
 Useful for:
+
 - Manual testing during development
 - CI/CD pipelines where you have two checkouts
 - Verifying changes without an AI model
 
-### 3. Claims mode
+### Claims Mode
 
-Combine Pre/Post mode with explicit claims for verification:
+Combine Pre/Post Mode with externally supplied claims. NoWreck detects the
+changes *and* verifies the claims against them:
 
 ```bash
 nowreck fix \
   --pre ./repo-before \
   --post ./repo-after \
-  --claims '{"claims": [...]}'
+  --claims '{"claims": [{"type": "ADD_FUNCTION", "symbol_name": "greet", "file_path": "app.py"}]}'
 ```
 
-You can also pipe claims from another tool:
+Because the claims come from outside NoWreck and the evidence comes from
+real before/after snapshots, Claims Mode — together with Pre/Post Mode — is
+a genuinely independent verification path. (Since v0.10.0, Prompt Mode is
+also independent — it captures before/after state automatically.)
 
-```bash
-cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims '{}'
-```
+Claims must be passed inline via `--claims`; the CLI does not currently
+read claims from stdin. If you keep claims in a file, pass its JSON content
+directly as the `--claims` argument.
+
+### Interactive Mode
+
+`nowreck --interactive` launches a menu-driven terminal picker for users who
+prefer exploring options without memorizing commands:
+
+- Choose between Prompt, Pre/Post, or Claims modes
+- Select your repository path
+- Configure options interactively
+- See verification results with formatted output
+
+Great for beginners, one-off verifications, and learning the tool's
+capabilities.
+
+<img width="961" height="701" alt="NoWreck interactive mode menu" src="https://github.com/user-attachments/assets/1608ea03-fc56-409e-87dd-42d9025c84e3" />
 
 ### Flags
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
-| `--json` | All modes | Output structured JSON instead of coloured text |
-| `--no-colour` | All modes | Disable ANSI colour codes in output |
-| `--verbose` | All modes | Show full deterministic evidence per claim (detail blocks instead of one-line summaries); no-op with `--json` |
-| `--pre PATH` | Pre/Post, Claims | Path to pre-change snapshot |
-| `--post PATH` | Pre/Post, Claims | Path to post-change snapshot |
+| `--json` | All modes | Output structured JSON instead of coloured text (for CI) |
+| `--no-colour` | All modes | Disable ANSI colour codes |
+| `--verbose` | All modes | Show full deterministic evidence per claim; no-op with `--json` |
+| `--pre PATH` | Pre/Post, Claims | Path to the pre-change snapshot |
+| `--post PATH` | Pre/Post, Claims | Path to the post-change snapshot |
 | `--claims JSON` | Claims | JSON string of claims to verify |
 
 ---
@@ -601,16 +431,158 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 
 | Command | Description |
 |---------|-------------|
-| `nowreck` | Show ASCII banner + usage help |
-| `nowreck --version` | Show version number |
-| `nowreck fix "<prompt>"` | **Prompt mode** — describe changes; NoWreck calls the model and verifies automatically |
-| `nowreck fix --pre P --post P` | **Pre/Post mode** — scan two directory snapshots, detect changes |
-| `nowreck fix --pre P --post P --claims JSON` | **Claims mode** — detect changes *and* verify claims against them |
-| `nowreck fix --json` | JSON output (works with any mode) |
-| `nowreck fix --no-colour` | Disable colour (works with any mode) |
-| `nowreck fix --verbose` | Full evidence per claim (works with any mode) |
+| `nowreck` | Show help / usage |
+| `nowreck --version` | Show version |
+| `nowreck --interactive` | Launch the interactive terminal picker |
+| `nowreck fix "<prompt>"` | **Prompt Mode** — describe a change; NoWreck calls the model and verifies its claims |
+| `nowreck fix --pre PATH --post PATH` | **Pre/Post Mode** — scan two snapshots and detect structural changes |
+| `nowreck fix --pre PATH --post PATH --claims JSON` | **Claims Mode** — detect changes *and* verify externally supplied claims |
+| `nowreck fix --json` | Output flag — structured JSON instead of coloured text (works with any `nowreck fix` mode) |
+| `nowreck fix --no-colour` | Output flag — disable ANSI colours (works with any `nowreck fix` mode) |
+| `nowreck fix --verbose` | Output flag — full deterministic evidence per claim (works with any `nowreck fix` mode) |
 | `nowreck config show` | Display current configuration |
 | `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries` |
+
+---
+
+## How It Works
+
+From the user's perspective, the pipeline is **Scan → Detect → Verify**.
+Architecturally, **Scan + Detect form the evidence stage** — they parse code
+and produce `DetectedChange` facts — and **Verify is the comparison stage**,
+where the deterministic verifier checks claims against those facts.
+
+```
+  claims source                          repository evidence source
+  (AI model, or external AI /            (actual snapshots, or the
+   tool / person)                        model's proposed diff)
+           │                                   │
+           ▼                                   ▼
+        Claims ──────────────────►  Structural scanner
+           │                                   │
+           │                                   ▼
+           │                     DetectedChange facts  (source of truth)
+           │                                   │
+           └───────────────►  Deterministic verifier
+                                        │
+                                        ▼
+                  CONFIRMED / CONTRADICTED / UNVERIFIABLE
+```
+
+The two boundaries:
+
+```
+Scanner:   source code → structural facts
+Verifier:  claims + structural facts → verdict
+```
+
+- **Claims come from somewhere.** In Prompt Mode, the model generates them.
+  In Claims Mode, they are supplied externally. The verifier treats them
+  the same either way.
+- **The scanner derives structural facts.** It parses both states and
+  produces a `list[DetectedChange]` — the single source of truth that the
+  verifier references exclusively.
+- **The verifier compares fields.** AST and Tree-sitter parsing happen
+  upstream, during scanning. The verifier consumes only `DetectedChange`
+  records and performs deterministic field-based comparison: same type and
+  identity fields → **CONFIRMED**. Contradicting change → **CONTRADICTED**.
+  No match → **UNVERIFIABLE**.
+- **The verifier uses no AI judgment.** It never asks an AI whether a claim
+  is correct, and it never re-reads or re-parses the source code itself.
+- **No guessing.** If NoWreck cannot establish a structural fact, it reports
+  `UNVERIFIABLE` rather than inventing an answer.
+
+### Independence in v0.10.0
+
+Since v0.10.0, **all modes use independent verification.** Claims and
+evidence always come from different sources:
+
+```
+Prompt Mode (v0.10.0):
+  model ──► claims ──────────────────────────────────────────────────────┐
+                                                                         ├──► verifier ──► verdict
+  before state ──┐                                                       │
+  model patch ───┴──► after state ──► scanner ──► DetectedChange facts ─┘
+
+Pre/Post + Claims:
+  external AI / tool ──► claims ──┐
+                                  ├──► deterministic verifier ──► verdict
+  before snapshot ──┐             │
+  after snapshot ───┴──► scanner ─┴──► DetectedChange facts
+```
+
+The fundamental invariant: **a model claim must never be used as the
+source of evidence for verifying that same claim.**
+
+### Stage 1 — Scan
+
+Recursively discovers source files and parses each with the appropriate
+parser, building a symbol index of every function, class, and method:
+
+| Language | Files | Parser |
+|----------|-------|--------|
+| Python | `.py` | Built-in `ast` module |
+| JavaScript | `.js` | Tree-sitter (`tree-sitter-javascript`) |
+| TypeScript | `.ts`, `.tsx` | Tree-sitter (`tree-sitter-typescript`) |
+| Rust | `.rs` | Tree-sitter (`tree-sitter-rust`) |
+| Go | `.go` | Tree-sitter (`tree-sitter-go`) |
+
+All parsers produce the same `Symbol` / `SymbolType` data shapes, so the
+rest of the pipeline never knows (or cares) which language produced the
+data. This is structural parsing, not semantic analysis.
+
+### Stage 2 — Detect
+
+Compares the pre and post symbol indices to find structural changes:
+added/removed functions, classes, files, and new function calls. This
+produces the **single source of truth** — a `list[DetectedChange]` that the
+verifier references exclusively.
+
+### Stage 3 — Verify
+
+For each claim, the verifier looks for a matching `DetectedChange`. If one
+exists with the same type and identity fields → **CONFIRMED**. If a
+contradicting change exists (e.g., claim says "added" but detection shows
+"removed") → **CONTRADICTED**. If nothing matches → **UNVERIFIABLE**.
+
+---
+
+## Claim Types
+
+| Claim type | What it means | Verified by |
+|------------|---------------|-------------|
+| `ADD_FUNCTION` | A function was added | Structural existence check |
+| `REMOVE_FUNCTION` | A function was removed | Structural existence check |
+| `ADD_CLASS` | A class was added | Structural existence check |
+| `REMOVE_CLASS` | A class was removed | Structural existence check |
+| `ADD_INTERFACE` | An interface was added (TS/TSX) | Structural existence check |
+| `REMOVE_INTERFACE` | An interface was removed (TS/TSX) | Structural existence check |
+| `ADD_ENUM` | An enum was added (TS/TSX) | Structural existence check |
+| `REMOVE_ENUM` | An enum was removed (TS/TSX) | Structural existence check |
+| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX) | Structural existence check |
+| `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX) | Structural existence check |
+| `FILE_CREATED` | A new file appeared | File-list diff |
+| `FILE_DELETED` | A file was removed | File-list diff |
+| `CALLS_FUNCTION` | A function now calls another | Structural call-site detection |
+
+All thirteen are evaluated using deterministic structural evidence. Note
+that the mechanisms differ: `CALLS_FUNCTION` uses call-site analysis, while
+the existence-based claim types use symbol-existence comparison.
+
+### Claim fields
+
+Every claim accepts:
+
+- `type` — one of the claim types above (required)
+- `symbol_name` — the symbol the claim is about
+- `file_path` — path to the file, relative to the scanned root
+- `confidence` — 0.0 to 1.0, how certain the claimer is
+- `explanation` — why the change was made
+- `parent_class` — required when the symbol is a method inside a class
+- `line_number` — optional 1-based line number
+
+`CALLS_FUNCTION` additionally requires `caller_name` (the function that
+makes the call) and `called_name` (the function being called).
 
 ---
 
@@ -620,7 +592,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 
 ```
   ═══════════════════════════════════════════════════
-    Nowreck Verification Report
+    NoWreck Verification Report
   ═══════════════════════════════════════════════════
 
     Summary
@@ -639,7 +611,8 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
     CONTRADICTED
     ─────────────
     ✗ CALLS_FUNCTION validate_email → sanitize_input  (conf: 100%)
-      Evidence: No call to sanitize_input detected in validate_email's body
+      Evidence: No supported direct call to sanitize_input() was detected
+                in the analyzed function body.
 
     UNEXPLAINED CHANGES
     ────────────────────
@@ -652,9 +625,9 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 |---------|---------|
 | **Summary** | Counts of total claims, confirmed, contradicted, unverifiable, and unexplained |
 | **CONFIRMED** | Claims that matched a detected structural change |
-| **CONTRADICTED** | Claims that contradict reality (e.g., claimed call doesn't exist) |
+| **CONTRADICTED** | Claims that contradict the structural evidence (e.g., a claimed call doesn't exist) |
 | **UNVERIFIABLE** | Claims with no matching detected change one way or the other |
-| **UNEXPLAINED CHANGES** | Actual changes the AI didn't mention at all |
+| **UNEXPLAINED CHANGES** | Structural changes detected from the compared repository states that no supplied claim matched. NoWreck does not infer intent — it cannot tell you whether a change was necessary, correct, or malicious, only that it exists and was not explained |
 
 ### Exit codes
 
@@ -665,41 +638,24 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 
 ---
 
-## Claim Types (MVP)
-
-| Claim type | Fields | Meaning |
-|------------|--------|---------|
-| `ADD_FUNCTION` | `symbol_name`, `file_path` | A function was added |
-| `REMOVE_FUNCTION` | `symbol_name`, `file_path` | A function was removed |
-| `ADD_CLASS` | `symbol_name`, `file_path` | A class was added |
-| `REMOVE_CLASS` | `symbol_name`, `file_path` | A class was removed |
-| `FILE_CREATED` | `file_path` | An entirely new file appeared |
-| `FILE_DELETED` | `file_path` | An entire file was deleted |
-| `CALLS_FUNCTION` | `symbol_name`, `file_path`, `caller_name`, `called_name` | A function calls another function |
-
-Every claim also accepts:
-- `confidence` — 0.0 to 1.0, how certain the AI is
-- `explanation` — why the change was made
-- `parent_class` — required when the symbol is a method inside a class
-- `line_number` — optional 1-based line number
-
----
-
 ## Confidence System
 
-Confidence reflects NoWreck's certainty in the **verification**, not a
-judgment of the claim's quality.
+Confidence reflects NoWreck's certainty in its **verification result**,
+within its supported structural analysis model. It is not confidence that
+the code change is correct, and it is not a rating of the claim's quality.
 
 | Verdict | Displayed confidence | Meaning |
 |---------|---------------------|---------|
-| **CONFIRMED** | `100%` | The structural fact was found and matched. NoWreck is certain. |
-| **CONTRADICTED** | `100%` | The opposite structural fact was found. An absence, confirmed by direct inspection, is just as certain as a presence. |
-| **UNVERIFIABLE** | AI's original confidence | No matching fact exists either way. The model's own confidence is displayed since the verifier couldn't determine anything. |
+| **CONFIRMED** | `100%` | The verifier deterministically established that the required structural condition for the claim exists within its supported analysis model |
+| **CONTRADICTED** | `100%` | The verifier deterministically established the structural condition required for that verdict — e.g., the detected change is the opposite of the claim, or the claimed supported structural fact is absent from the analyzed state |
+| **UNVERIFIABLE** | The claimer's original confidence | NoWreck could not establish the claim from its supported structural evidence; it reports the claim's own confidence rather than inventing a number |
 
-> **Why 100% for CONTRADICTED?** If the verifier checks every function
-> body and finds no call to `sanitize_input()`, this is a structural fact.
-> A confirmed absence is not weaker than a confirmed presence — both are
-> deterministically verified.
+A 100% verdict applies to the specific claim being checked, within the
+supported analysis model — it does **not** mean the overall code change is
+correct, and it does **not** prove universal semantic facts. For example,
+"no supported direct call to `sanitize_input()` was detected in the analyzed
+function body" states what the structural analysis found; it does not prove
+the function can never be invoked dynamically elsewhere.
 
 ---
 
@@ -715,7 +671,6 @@ Output schema:
 
 ```json
 {
-*NoWreck v0.9.0 — August 2026*
   "success": false,
   "summary": {
     "total_claims": 3,
@@ -734,7 +689,8 @@ Output schema:
         "line_number": null,
         "caller_name": null,
         "called_name": null,
-        "confidence": 0.99
+        "confidence": 0.99,
+        "explanation": "Added email validation as requested."
       },
       "verdict": "CONFIRMED",
       "verifier_confidence": 1.0,
@@ -745,6 +701,7 @@ Output schema:
         "parent_class": null,
         "line_number": 5,
         "caller_name": null,
+        "called_name": null
       }
     }
   ],
@@ -752,19 +709,74 @@ Output schema:
 }
 ```
 
-### CI integration example
+`success` is `true` when every claim is confirmed and there are no
+unexplained changes; otherwise it is `false`. Note that it is a JSON
+boolean (`true` / `false`), not a string.
+
+### CI integration
+
+The simplest and most robust integration is to rely on NoWreck's exit code:
 
 ```yaml
-# GitHub Actions example
+# GitHub Actions — fail the job when verification fails.
+# Exit code 0 → all claims confirmed, nothing unexplained.
+# Exit code 1 → contradicted, unverifiable, or unexplained changes.
 - name: Verify AI changes
-  run: |
-    REPORT=$(nowreck fix "Add validation to auth.py" --json)
-    SUCCESS=$(echo "$REPORT" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])")
-    echo "$REPORT"
-    if [ "$SUCCESS" != "True" ]; then
-      exit 1
-    fi
+  run: nowreck fix "Add validation to auth.py" --json
 ```
+
+If you prefer to parse the JSON instead:
+
+```bash
+REPORT=$(nowreck fix "Add validation to auth.py" --json)
+echo "$REPORT" | python3 -c "import sys, json; d = json.load(sys.stdin); print('success:', d['success'])"
+# 'success' is a JSON boolean — compare with True/False, not the string "True".
+```
+
+---
+
+## Limitations
+
+NoWreck verifies structure, not semantics. Be aware of these boundaries:
+
+- **Supported languages** — Python (`.py`), JavaScript (`.js`), TypeScript
+  (`.ts`, `.tsx`), Rust (`.rs`), and Go (`.go`). Python uses the built-in
+  `ast` module; JavaScript, TypeScript, Rust, and Go use Tree-sitter with
+  their respective grammars.
+- **Dynamic behavior cannot be reliably resolved** — `exec()`, `eval()`,
+  dynamic imports, `getattr()` / `setattr()` with dynamic arguments,
+  metaclasses, monkey-patching, and reflection fall outside the scanner's
+  supported structural analysis and may be reported as `UNVERIFIABLE`.
+- **`CALLS_FUNCTION` checks direct identifier calls only** — it verifies
+  calls of the form `sanitize_input()`. It does **not** resolve
+  `obj.sanitize_input()` or chained expressions, and it does not perform
+  full semantic call-graph resolution.
+- **No cross-file resolution** beyond direct name matching.
+- **No semantic analysis** — NoWreck verifies structural facts, not intent,
+  code quality, or correctness.
+- **Prompt Mode requires a working directory** — if no repository is
+  available (e.g., stdin mode), all claims are UNVERIFIABLE.
+- **Interfaces, enums, and type aliases** (TS/TSX) are captured as
+  structural symbols and verified for existence only (added/removed) — not
+  for semantic correctness.
+- **The verifier works from `DetectedChange` facts**, not by re-reading the
+  repository. It is deterministic within its supported analysis model, not
+  infallible.
+
+---
+
+## Comparison
+
+| Tool | What it does | Relationship to NoWreck |
+|------|-------------|------------------------|
+| Cursor / Claude Code / Copilot | Generate and edit code | **Complementary** — NoWreck verifies claims about changes rather than generating them |
+| CodeRabbit / Qodo / Greptile | AI review of a diff's quality | **Different focus** — AI-assisted review rather than deterministic claim verification |
+| Agent Verifier (aurite-ai) | AI agent skill for code quality/security | **Different focus** — checks quality/security, not claim truthfulness |
+| slopcheck / slop-scan | Check third-party package names against registries | **Different focus** — dependency-name checks, a different hallucination category |
+| ESLint / Ruff / Black | Linting and formatting | **Different focus** — syntax/style enforcement, not structural verification |
+
+NoWreck is designed specifically for deterministic structural verification
+of claims about code changes.
 
 ---
 
@@ -796,51 +808,51 @@ nowreck config show
 This happens with some providers (notably Groq) when Python's `urllib`
 doesn't send a realistic User-Agent. Try:
 
-1. Upgrade Nowreck (built-in fix sends a browser UA)
+1. Upgrade NoWreck (the built-in fix sends a browser UA)
 2. Switch to OpenRouter or another provider
-3. Or use a direct OpenAI key
+3. Use a direct OpenAI API key
 
 ### JSON parsing errors
 
-If the model returns malformed JSON, NoWreck automatically retries once
-by sending the error details back to the model with a repair request.
-Failed responses are saved to `.nowreck/failed/` for debugging.
+If the model returns malformed JSON, NoWreck automatically retries once by
+sending the error details back to the model with a repair request. Failed
+responses are saved to `.nowreck/failed/` for debugging.
 
 ### No changes detected
 
 Make sure:
+
 - Both `--pre` and `--post` paths exist and are directories
-- The directories contain `.py`, `.js`, or `.ts` files
-- The `tree-sitter-javascript` / `tree-sitter-typescript` packages are
-  installed (required for JS/TS scanning)
+- The directories contain supported files (`.py`, `.js`, `.ts`, `.tsx`,
+  `.rs`, or `.go`)
+- The Tree-sitter packages are installed for the languages you scan
+  (`tree-sitter-javascript`, `tree-sitter-typescript`,
+  `tree-sitter-rust`, `tree-sitter-go`)
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
 
-## Tips
+## Roadmap
 
-- **Prompt mode** is the most convenient — let NoWreck handle the model
-  interaction. Just make sure you have an API key configured.
-- **Pre/Post mode** doesn't require an API key — it scans directories
-  and detects changes entirely offline.
-- **Mix Python, JavaScript, and TypeScript freely** — NoWreck handles
-  all three languages in the same scan. The pre/post summaries show
-  separate file counts for each language.
-- **Test with hallucinated claims** — create claims that include a
-  `CALLS_FUNCTION` to a function that doesn't exist in the code. NoWreck
-  should flag it as CONTRADICTED.
-- **JSON output** is great for CI pipelines. Use `--json` and parse the
-  `success` field.
-- **Check failed responses** in `.nowreck/failed/` if prompt mode isn't
-  returning expected results — the model may be having trouble with the
-  JSON format.
+**v0.10.0 is the current release.** Items marked 🗓 are planned future work,
+not present in v0.10.0.
 
+| Item | Status |
+|------|--------|
+| Interactive terminal picker | ✅ v0.2.0 |
+| JavaScript support (Tree-sitter scanner + symbol index) | ✅ v0.3.0 |
+| JavaScript polish (generators, export default, IIFEs) | ✅ v0.4.0 |
+| TypeScript support (Tree-sitter scanner + symbol index + full pipeline) | ✅ v0.5.0 |
+| `--verbose` mode showing full deterministic evidence per claim | ✅ v0.6.0 |
+| TSX (`.tsx` files) support | ✅ v0.7.0 |
+| Interfaces / enums / type aliases as claim types | ✅ v0.8.0 |
+| Rust + Go language support | ✅ v0.9.0 |
+| Independent verification architecture — make independent verification native and convenient: claims can come from any external AI/tool while NoWreck inspects the actual resulting repository state (Pre/Post + Claims already provides independent verification in v0.10.0) | ✅ done in v0.10.0 |
+| Additional model providers (Anthropic, Gemini) | 🗓 planned |
+| Caching for large repositories | 🗓 planned |
+| CI/CD integration | 🗓 planned |
 
-
-
-*NoWreck v0.9.0 — August 2026*
-
-
+---
 
 ## License
 
@@ -855,3 +867,5 @@ Full terms are in [`LICENSE`](./LICENSE).
 This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
+
+*NoWreck v0.10.0 — August 2026*

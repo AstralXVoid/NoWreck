@@ -466,6 +466,132 @@ class TerminalReporter:
         return f"{int(round(value * 100)):3d}%"
 
     # ------------------------------------------------------------------
+    # v10 Prompt Mode report
+    # ------------------------------------------------------------------
+
+    def report_v10(self, result: object) -> str:
+        """Render a v10-specific verification report.
+
+        *result* is a ``PromptVerificationResult`` from the v10 verifier.
+        """
+        # Avoid circular import at module level
+        from nowreck.verifier.prompt_verifier import PromptVerificationResult
+
+        assert isinstance(result, PromptVerificationResult)
+        report = result.report
+        lines: list[str] = []
+
+        width = 55
+        lines.append(self._colourise(_ANSI_CYAN + _ANSI_BOLD, "=" * width))
+        lines.append(
+            self._colourise(
+                _ANSI_CYAN + _ANSI_BOLD,
+                "  Nowreck v10 Verification Report",
+            )
+        )
+        lines.append(self._colourise(_ANSI_CYAN + _ANSI_BOLD, "=" * width))
+        lines.append("")
+
+        # Evidence chain
+        lines.append(
+            self._colourise(_ANSI_BOLD + _ANSI_WHITE, "  Evidence Chain")
+        )
+        lines.append(self._colourise(_ANSI_DIM, "  " + "-" * 20))
+        lines.append(
+            f"  Independent evidence: "
+            f"{'yes' if result.has_independent_evidence else 'no'}"
+        )
+        if result.patch_result is not None:
+            lines.append(
+                f"  Patch applied: "
+                f"{'yes' if result.patch_applied else 'no'}"
+            )
+            if result.patch_result.applied_files:
+                lines.append(
+                    f"  Files modified: "
+                    f"{', '.join(result.patch_result.applied_files)}"
+                )
+            if result.patch_result.errors:
+                for err in result.patch_result.errors:
+                    lines.append(
+                        self._colourise(
+                            _ANSI_YELLOW, f"  Patch error: {err}"
+                        )
+                    )
+        lines.append("")
+
+        # Summary
+        self._append_summary(lines, report)
+        lines.append("")
+
+        # Claim sections
+        confirmed = [
+            r for r in report.results if r.verdict is Verdict.CONFIRMED
+        ]
+        contradicted = [
+            r for r in report.results if r.verdict is Verdict.CONTRADICTED
+        ]
+        unverifiable = [
+            r for r in report.results if r.verdict is Verdict.UNVERIFIABLE
+        ]
+
+        self._append_claim_section(
+            lines, confirmed, "CONFIRMED", _ANSI_GREEN
+        )
+        self._append_claim_section(
+            lines, contradicted, "CONTRADICTED", _ANSI_YELLOW
+        )
+        self._append_unverifiable_section(lines, unverifiable)
+        self._append_unexplained_section(
+            lines, report.unexplained_changes
+        )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def report_json_v10(result: object) -> str:
+        """Render a v10-specific JSON report for CI tools.
+
+        *result* is a ``PromptVerificationResult``.
+        """
+        from nowreck.verifier.prompt_verifier import PromptVerificationResult
+
+        assert isinstance(result, PromptVerificationResult)
+        report = result.report
+
+        data: dict[str, object] = {
+            "version": __version__,
+            "mode": "prompt_v10",
+            "success": report.success,
+            "evidence": {
+                "independent": result.has_independent_evidence,
+                "patch_applied": result.patch_applied,
+                "patch_files": (
+                    result.patch_result.applied_files
+                    if result.patch_result
+                    else []
+                ),
+            },
+            "summary": {
+                "total_claims": report.total_claims,
+                "confirmed": report.confirmed,
+                "contradicted": report.contradicted,
+                "unverifiable": report.unverifiable,
+                "unexplained_count": report.unexplained_count,
+            },
+            "results": [
+                TerminalReporter._result_to_dict(r)
+                for r in report.results
+            ],
+            "unexplained_changes": [
+                TerminalReporter._change_to_dict(c)
+                for c in report.unexplained_changes
+            ],
+        }
+
+        return json.dumps(data, indent=2, default=str)
+
+    # ------------------------------------------------------------------
     # JSON output for CI tools
     # ------------------------------------------------------------------
 
@@ -476,7 +602,7 @@ class TerminalReporter:
         The JSON schema::
 
             {
-              "version": "0.9.0",
+              "version": "0.10.0",
               "success": true|false,
               "summary": {
                 "total_claims": int,
