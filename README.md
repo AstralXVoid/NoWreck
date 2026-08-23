@@ -400,8 +400,9 @@ read claims from stdin. If you keep claims in a file, pass its JSON content
 directly as the `--claims` argument.
 
 ### Interactive Mode
-
+<div align="center">
 <img width="480" height="270" alt="premium_terminal_intercative" src="https://github.com/user-attachments/assets/5294eb73-5073-474e-b772-adfb5d68b372" />
+</div>
 
 
 `nowreck --interactive` launches a menu-driven terminal picker for users who
