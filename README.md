@@ -401,6 +401,9 @@ directly as the `--claims` argument.
 
 ### Interactive Mode
 
+<img width="480" height="270" alt="premium_terminal_intercative" src="https://github.com/user-attachments/assets/5294eb73-5073-474e-b772-adfb5d68b372" />
+
+
 `nowreck --interactive` launches a menu-driven terminal picker for users who
 prefer exploring options without memorizing commands:
 
