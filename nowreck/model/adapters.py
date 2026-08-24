@@ -215,9 +215,7 @@ class AnthropicAdapter(ProviderAdapter):
                 if isinstance(text, str):
                     return text
 
-        raise _AdapterError(
-            "Anthropic response contains no text content block"
-        )
+        raise _AdapterError("Anthropic response contains no text content block")
 
 
 # ---------------------------------------------------------------------------
@@ -262,10 +260,12 @@ class GeminiAdapter(ProviderAdapter):
             else:
                 # Gemini uses "user" and "model" (not "assistant").
                 gemini_role = "model" if role == "assistant" else "user"
-                contents.append({
-                    "role": gemini_role,
-                    "parts": [{"text": content}],
-                })
+                contents.append(
+                    {
+                        "role": gemini_role,
+                        "parts": [{"text": content}],
+                    }
+                )
 
         body_payload: dict[str, object] = {
             "contents": contents,
@@ -312,9 +312,7 @@ class GeminiAdapter(ProviderAdapter):
         if not isinstance(raw_parts, list) or not raw_parts:
             raise _AdapterError("Gemini content missing 'parts'")
 
-        parts: list[dict[str, object]] = cast(
-            "list[dict[str, object]]", raw_parts
-        )
+        parts: list[dict[str, object]] = cast("list[dict[str, object]]", raw_parts)
         for part in parts:
             if not isinstance(part, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
                 continue

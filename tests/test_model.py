@@ -715,46 +715,52 @@ class TestModelProviderFailedContent:
 
 
 def _mock_http_v10_ok(
-    messages: list[dict], config: ModelConfig,
+    messages: list[dict],
+    config: ModelConfig,
 ) -> str:
     """Mock HTTP call returning valid v10 JSON (claims + patch)."""
-    return json.dumps({
-        "claims": [
-            {
-                "type": "ADD_FUNCTION",
-                "symbol_name": "validate",
-                "file_path": "auth.py",
-                "confidence": 0.95,
-                "explanation": "Added validation function.",
-            },
-        ],
-        "patch": (
-            "--- a/auth.py\n"
-            "+++ b/auth.py\n"
-            "@@ -1 +1,4 @@\n"
-            "+def validate(x):\n"
-            "+    if not x:\n"
-            "+        raise ValueError('empty')\n"
-            "+    return True\n"
-        ),
-    })
+    return json.dumps(
+        {
+            "claims": [
+                {
+                    "type": "ADD_FUNCTION",
+                    "symbol_name": "validate",
+                    "file_path": "auth.py",
+                    "confidence": 0.95,
+                    "explanation": "Added validation function.",
+                },
+            ],
+            "patch": (
+                "--- a/auth.py\n"
+                "+++ b/auth.py\n"
+                "@@ -1 +1,4 @@\n"
+                "+def validate(x):\n"
+                "+    if not x:\n"
+                "+        raise ValueError('empty')\n"
+                "+    return True\n"
+            ),
+        }
+    )
 
 
 def _mock_http_v10_no_patch(
-    messages: list[dict], config: ModelConfig,
+    messages: list[dict],
+    config: ModelConfig,
 ) -> str:
     """Mock HTTP call returning claims WITHOUT a patch field."""
-    return json.dumps({
-        "claims": [
-            {
-                "type": "ADD_FUNCTION",
-                "symbol_name": "validate",
-                "file_path": "auth.py",
-                "confidence": 0.9,
-                "explanation": "Added validation.",
-            },
-        ],
-    })
+    return json.dumps(
+        {
+            "claims": [
+                {
+                    "type": "ADD_FUNCTION",
+                    "symbol_name": "validate",
+                    "file_path": "auth.py",
+                    "confidence": 0.9,
+                    "explanation": "Added validation.",
+                },
+            ],
+        }
+    )
 
 
 class TestPromptBuilderV10:
@@ -790,47 +796,59 @@ class TestParseResultPatch:
     def test_patch_extracted_when_present(self) -> None:
         from nowreck.claims.parser import ClaimParser
 
-        result = ClaimParser.parse(json.dumps({
-            "claims": [
+        result = ClaimParser.parse(
+            json.dumps(
                 {
-                    "type": "ADD_FUNCTION",
-                    "symbol_name": "foo",
-                    "file_path": "a.py",
-                },
-            ],
-            "patch": "--- a/a.py\n+++ b/a.py\n",
-        }))
+                    "claims": [
+                        {
+                            "type": "ADD_FUNCTION",
+                            "symbol_name": "foo",
+                            "file_path": "a.py",
+                        },
+                    ],
+                    "patch": "--- a/a.py\n+++ b/a.py\n",
+                }
+            )
+        )
         assert result.patch == "--- a/a.py\n+++ b/a.py\n"
         assert result.success
 
     def test_patch_none_when_absent(self) -> None:
         from nowreck.claims.parser import ClaimParser
 
-        result = ClaimParser.parse(json.dumps({
-            "claims": [
+        result = ClaimParser.parse(
+            json.dumps(
                 {
-                    "type": "ADD_FUNCTION",
-                    "symbol_name": "foo",
-                    "file_path": "a.py",
-                },
-            ],
-        }))
+                    "claims": [
+                        {
+                            "type": "ADD_FUNCTION",
+                            "symbol_name": "foo",
+                            "file_path": "a.py",
+                        },
+                    ],
+                }
+            )
+        )
         assert result.patch is None
         assert result.success
 
     def test_patch_none_when_empty_string(self) -> None:
         from nowreck.claims.parser import ClaimParser
 
-        result = ClaimParser.parse(json.dumps({
-            "claims": [
+        result = ClaimParser.parse(
+            json.dumps(
                 {
-                    "type": "ADD_FUNCTION",
-                    "symbol_name": "foo",
-                    "file_path": "a.py",
-                },
-            ],
-            "patch": "",
-        }))
+                    "claims": [
+                        {
+                            "type": "ADD_FUNCTION",
+                            "symbol_name": "foo",
+                            "file_path": "a.py",
+                        },
+                    ],
+                    "patch": "",
+                }
+            )
+        )
         assert result.patch is None
 
 
@@ -858,19 +876,22 @@ class TestModelProviderV10:
         captured: list[list[dict]] = []
 
         def capture_http(
-            messages: list[dict], config: ModelConfig,
+            messages: list[dict],
+            config: ModelConfig,
         ) -> str:
             captured.append(messages)
-            return json.dumps({
-                "claims": [
-                    {
-                        "type": "ADD_FUNCTION",
-                        "symbol_name": "x",
-                        "file_path": "a.py",
-                    },
-                ],
-                "patch": "--- a/a.py\n+++ b/a.py\n",
-            })
+            return json.dumps(
+                {
+                    "claims": [
+                        {
+                            "type": "ADD_FUNCTION",
+                            "symbol_name": "x",
+                            "file_path": "a.py",
+                        },
+                    ],
+                    "patch": "--- a/a.py\n+++ b/a.py\n",
+                }
+            )
 
         provider = ModelProvider(http_call=capture_http)
         provider.changes_from_prompt_v10("Add x")
@@ -914,9 +935,9 @@ _CLAIMS_TEXT = json.dumps(
 
 
 def _anthropic_response_body() -> bytes:
-    return json.dumps(
-        {"content": [{"type": "text", "text": _CLAIMS_TEXT}]}
-    ).encode("utf-8")
+    return json.dumps({"content": [{"type": "text", "text": _CLAIMS_TEXT}]}).encode(
+        "utf-8"
+    )
 
 
 def _gemini_response_body() -> bytes:
@@ -984,9 +1005,7 @@ class TestPhase4AdapterSelection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="sk-ant-test",
             base_url="https://api.anthropic.com",
@@ -1021,9 +1040,7 @@ class TestPhase4AdapterSelection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="AIzaTest",
             base_url="https://generativelanguage.googleapis.com",
@@ -1059,9 +1076,7 @@ class TestPhase4AdapterSelection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="sk-openai-test",
             base_url="https://api.openai.com/v1",
@@ -1094,9 +1109,7 @@ class TestPhase4AdapterSelection:
     ) -> None:
         """Explicit provider=gemini wins over an OpenAI-compatible base_url."""
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="sk-test",
             base_url="https://api.openai.com/v1",
@@ -1122,9 +1135,7 @@ class TestPhase4AdapterSelection:
     ) -> None:
         """Explicit provider=anthropic wins over an OpenAI-compatible base_url."""
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="sk-test",
             base_url="https://api.openai.com/v1",
@@ -1148,9 +1159,7 @@ class TestPhase4AdapterSelection:
     ) -> None:
         """Unknown base_url keeps the OpenAI passthrough format."""
         fake = _FakeUrlopen()
-        monkeypatch.setattr(
-            "nowreck.model.provider.urllib_request.urlopen", fake
-        )
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
         config = ModelConfig(
             api_key="sk-test",
             base_url="https://my-provider.example.com/v1",
