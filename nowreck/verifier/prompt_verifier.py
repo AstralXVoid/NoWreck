@@ -9,7 +9,7 @@ Architecture:
 
     Prompt + Repo
         ↓
-    SnapshotManager.capture()     → BEFORE state
+    SnapshotManager.save_before() → BEFORE state
         ↓
     ModelProvider.changes_from_prompt_v10()
         ↓
@@ -132,9 +132,7 @@ class PatchApplier:
         return PatchApplier._try_manual_apply(patch, repo_path)
 
     @staticmethod
-    def _try_git_apply(
-        patch: str, repo_path: Path
-    ) -> PatchApplicationResult | None:
+    def _try_git_apply(patch: str, repo_path: Path) -> PatchApplicationResult | None:
         """Try applying via ``git apply``."""
         import subprocess
 
@@ -149,9 +147,7 @@ class PatchApplier:
             )
             if result.returncode != 0:
                 # --check failed, try without it
-                logger.info(
-                    "git apply --check failed: %s", result.stderr.strip()
-                )
+                logger.info("git apply --check failed: %s", result.stderr.strip())
                 return None
 
             # Apply for real
@@ -175,9 +171,7 @@ class PatchApplier:
             return None
 
     @staticmethod
-    def _try_manual_apply(
-        patch: str, repo_path: Path
-    ) -> PatchApplicationResult:
+    def _try_manual_apply(patch: str, repo_path: Path) -> PatchApplicationResult:
         """Apply patch by extracting file changes manually.
 
         This is a simplified parser for unified diffs.  It handles
@@ -296,7 +290,8 @@ class PromptModeVerifier:
     4. Captures AFTER state
     5. Runs ChangeDetector to get OBSERVED changes
     6. Verifies claims against observed changes
-    7. Restores repo state
+    7. Restores repo state (SnapshotManager.restore + cleanup — runs
+       in a finally block, so it happens even when a step raises)
     """
 
     def __init__(
@@ -326,8 +321,9 @@ class PromptModeVerifier:
         Returns:
             A ``PromptVerificationResult`` with independent evidence.
         """
-        # Step 1: Capture BEFORE state
-        before = self._snapshot_mgr.capture()
+        # Step 1: Save BEFORE state (temp copy / git stash so we can
+        # put the working tree back after the model's patch).
+        before = self._snapshot_mgr.save_before()
         n_files = (
             len(before.scan_result.modules)
             + len(before.scan_result.js_files)
@@ -337,71 +333,72 @@ class PromptModeVerifier:
         )
         logger.info("Captured BEFORE state: %d files", n_files)
 
-        # Step 2: Get claims + patch from model
-        model_result = self._model_provider.changes_from_prompt_v10(
-            prompt, repo_context
-        )
-        logger.info(
-            "Model returned %d claims, patch %s",
-            len(model_result.claims),
-            "present" if model_result.patch else "absent",
-        )
-
-        # Step 3: Apply patch (if available)
         patch_applied = False
         patch_result: PatchApplicationResult | None = None
 
-        if model_result.patch:
-            patch_result = PatchApplier.apply(
-                model_result.patch, self._repo_path
+        try:
+            # Step 2: Get claims + patch from model
+            model_result = self._model_provider.changes_from_prompt_v10(
+                prompt, repo_context
             )
-            patch_applied = patch_result.success
             logger.info(
-                "Patch applied: %s (files: %s)",
-                patch_applied,
-                patch_result.applied_files,
-            )
-        else:
-            patch_result = PatchApplicationResult(
-                success=False,
-                errors=["No patch provided by model"],
+                "Model returned %d claims, patch %s",
+                len(model_result.claims),
+                "present" if model_result.patch else "absent",
             )
 
-        # Step 4: Capture AFTER state
-        after = self._snapshot_mgr.capture()
-        n_files_after = (
-            len(after.scan_result.modules)
-            + len(after.scan_result.js_files)
-            + len(after.scan_result.ts_files)
-            + len(after.scan_result.rust_files)
-            + len(after.scan_result.go_files)
-        )
-        logger.info("Captured AFTER state: %d files", n_files_after)
+            # Step 3: Apply patch (if available)
+            if model_result.patch:
+                patch_result = PatchApplier.apply(model_result.patch, self._repo_path)
+                patch_applied = patch_result.success
+                logger.info(
+                    "Patch applied: %s (files: %s)",
+                    patch_applied,
+                    patch_result.applied_files,
+                )
+            else:
+                patch_result = PatchApplicationResult(
+                    success=False,
+                    errors=["No patch provided by model"],
+                )
 
-        # Step 5: Run ChangeDetector — INDEPENDENT of claims
-        observed_changes = detect_changes(
-            before.scan_result,
-            after.scan_result,
-            before.symbol_index,
-            after.symbol_index,
-        )
-        logger.info(
-            "Observed %d changes (independent of claims)",
-            len(observed_changes),
-        )
+            # Step 4: Capture AFTER state
+            after = self._snapshot_mgr.capture()
+            n_files_after = (
+                len(after.scan_result.modules)
+                + len(after.scan_result.js_files)
+                + len(after.scan_result.ts_files)
+                + len(after.scan_result.rust_files)
+                + len(after.scan_result.go_files)
+            )
+            logger.info("Captured AFTER state: %d files", n_files_after)
 
-        # Step 6: Verify claims against observed changes
-        report = ClaimVerifier.verify(model_result.claims, observed_changes)
-        logger.info(
-            "Verification: %d confirmed, %d contradicted, %d unverifiable",
-            report.confirmed,
-            report.contradicted,
-            report.unverifiable,
-        )
+            # Step 5: Run ChangeDetector — INDEPENDENT of claims
+            observed_changes = detect_changes(
+                before.scan_result,
+                after.scan_result,
+                before.symbol_index,
+                after.symbol_index,
+            )
+            logger.info(
+                "Observed %d changes (independent of claims)",
+                len(observed_changes),
+            )
 
-        # Step 7: Restore repo if requested
-        if restore_after and patch_applied:
-            self._restore_from_patch(patch_result, before)
+            # Step 6: Verify claims against observed changes
+            report = ClaimVerifier.verify(model_result.claims, observed_changes)
+            logger.info(
+                "Verification: %d confirmed, %d contradicted, %d unverifiable",
+                report.confirmed,
+                report.contradicted,
+                report.unverifiable,
+            )
+        finally:
+            # Steps 7+8: ALWAYS settle the working tree and release
+            # snapshot resources — on success and on failure alike.
+            self._finalize_repo_state(
+                before, patch_result, patch_applied, restore_after
+            )
 
         # Determine if we have independent evidence
         has_evidence = len(observed_changes) > 0 or patch_applied
@@ -440,9 +437,7 @@ class PromptModeVerifier:
         after = after_mgr.capture()
 
         # Get claims from model (no patch — user provided dirs)
-        model_result = self._model_provider.changes_from_prompt_v10(
-            prompt
-        )
+        model_result = self._model_provider.changes_from_prompt_v10(prompt)
 
         # Detect independent changes
         observed_changes = detect_changes(
@@ -452,9 +447,7 @@ class PromptModeVerifier:
             after.symbol_index,
         )
 
-        report = ClaimVerifier.verify(
-            model_result.claims, observed_changes
-        )
+        report = ClaimVerifier.verify(model_result.claims, observed_changes)
 
         has_evidence = len(observed_changes) > 0
 
@@ -468,20 +461,54 @@ class PromptModeVerifier:
             has_independent_evidence=has_evidence,
         )
 
-    def _restore_from_patch(
+    def _finalize_repo_state(
         self,
-        patch_result: PatchApplicationResult,
         before: Snapshot,
+        patch_result: PatchApplicationResult | None,
+        patch_applied: bool,
+        restore_after: bool,
     ) -> None:
-        """Best-effort restore by re-applying the inverse patch."""
-        # For now, we rely on the caller to manage repo state.
-        # A production implementation would use git checkout or
-        # restore from the before snapshot's temp copy.
-        logger.info(
-            "Restore: patch was applied to %d files. "
-            "Caller should manage repo state.",
-            len(patch_result.applied_files),
+        """Restore the working tree and release snapshot resources.
+
+        Called from ``verify()``'s ``finally`` block, so it runs on the
+        success path **and** whenever any step raises.  Guarantees:
+
+        * Snapshots taken via ``git stash`` are always popped — the
+          stash holds the user's uncommitted changes regardless of
+          whether a patch was applied.
+        * Temp-copy snapshots restore the tree when a patch was
+          actually applied and ``restore_after`` was requested.
+        * Temporary snapshot files are always cleaned up (best-effort).
+        """
+        snapshot_dir = before.snapshot_dir
+        from_git_stash = (
+            snapshot_dir is not None and (snapshot_dir / ".git_stash").exists()
         )
+        try:
+            if from_git_stash:
+                logger.info("Snapshot used git stash — popping to return user changes.")
+                if self._snapshot_mgr.restore(before):
+                    logger.info("git stash pop succeeded.")
+                else:
+                    logger.warning(
+                        "git stash pop failed — uncommitted changes may "
+                        "still be in 'git stash list'."
+                    )
+            elif patch_applied and restore_after:
+                n_files = len(patch_result.applied_files) if patch_result else 0
+                logger.info(
+                    "Restoring repo (%d patched files) from snapshot.",
+                    n_files,
+                )
+                if self._snapshot_mgr.restore(before):
+                    logger.info("Repo restored to pre-patch state.")
+                else:
+                    logger.warning(
+                        "Restore failed — repo may still contain patch changes."
+                    )
+            # else: nothing to undo (tree untouched or restore disabled).
+        finally:
+            self._snapshot_mgr.cleanup(before)
 
 
 def verify_prompt(

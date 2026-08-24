@@ -130,7 +130,10 @@ class SnapshotManager:
             snapshot_dir / "repo",
             dirs_exist_ok=True,
             ignore=shutil.ignore_patterns(
-                ".git", "__pycache__", ".venv", "node_modules",
+                ".git",
+                "__pycache__",
+                ".venv",
+                "node_modules",
             ),
         )
         logger.info("Copied repo to %s for snapshot", snapshot_dir)
@@ -194,10 +197,12 @@ class SnapshotManager:
         if snapshot.snapshot_dir is None:
             return
 
-        # Git stash — nothing to clean up (stash lives in .git)
+        # Git stash — the stash lives in .git, but the sentinel dir
+        # was created with mkdtemp() and must be removed too.
         stash_marker = snapshot.snapshot_dir / ".git_stash"
         if stash_marker.exists():
             stash_marker.unlink(missing_ok=True)
+            shutil.rmtree(snapshot.snapshot_dir, ignore_errors=True)
             return
 
         # Temp directory — remove it
