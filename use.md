@@ -13,7 +13,7 @@
    - [Claims Mode](#3-claims-mode)
 5. [Command Reference](#command-reference)
 6. [Understanding the Report](#understanding-the-report)
-7. [Claim Types (MVP)](#claim-types-mvp)
+7. [Claim Types](#claim-types)
 8. [Confidence System](#confidence-system)
 9. [JSON Output for CI](#json-output-for-ci)
 10. [Troubleshooting](#troubleshooting)
@@ -21,6 +21,8 @@
 ---
 
 ## Installation
+
+Requires Python 3.11+.
 
 ### From source (current)
 
@@ -45,7 +47,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.10.0
+# → nowreck 0.11.0
 
 nowreck
 # → shows banner + usage
@@ -98,28 +100,55 @@ nowreck config set temperature 0.0
 
 # Max retries on parse failure (default: 1)
 nowreck config set max_retries 2
+
+# Explicit provider override (auto-detected from base_url when unset)
+nowreck config set provider anthropic   # or: gemini, openai
 ```
 
 ### View configuration
 
 ```bash
 nowreck config show
-# → api_key = gsk_...
+# → api_key = gsk_your_key_here
 # → base_url = https://api.groq.com/openai/v1
 # → model = llama-3.3-70b-versatile
 ```
 
+> **Heads-up:** `config show` prints stored values as-is — including your
+> full API key. Run it only in trusted environments.
+
 ### Compatible providers
 
-| Provider | Base URL |
-|----------|----------|
-| **OpenAI** | `https://api.openai.com/v1` (default) |
-| **Groq** | `https://api.groq.com/openai/v1` |
-| **OpenRouter** | `https://openrouter.ai/api/v1` |
-| **DeepSeek** | `https://api.deepseek.com/v1` |
-| **Ollama (local)** | `http://localhost:11434/v1` |
-| **LM Studio (local)** | `http://localhost:1234/v1` |
-| **Any OpenAI-compatible** | Your custom endpoint |
+| Provider | Base URL | Format |
+|----------|----------|--------|
+| **OpenAI** | `https://api.openai.com/v1` (default) | OpenAI-compatible |
+| **Anthropic** | `https://api.anthropic.com` | Anthropic Messages API |
+| **Gemini** | `https://generativelanguage.googleapis.com` | Gemini generateContent |
+| **Groq** | `https://api.groq.com/openai/v1` | OpenAI-compatible |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | OpenAI-compatible |
+| **DeepSeek** | `https://api.deepseek.com/v1` | OpenAI-compatible |
+| **Ollama (local)** | `http://localhost:11434/v1` | OpenAI-compatible |
+| **LM Studio (local)** | `http://localhost:1234/v1` | OpenAI-compatible |
+| **Any OpenAI-compatible** | Your custom endpoint | OpenAI-compatible |
+
+Since v0.11.0, Claude and Gemini work natively — the provider is
+auto-detected from the base URL:
+
+```bash
+# Claude
+nowreck config set base_url https://api.anthropic.com
+nowreck config set api_key sk-ant-...
+nowreck config set model claude-sonnet-4-20250514
+
+# Gemini
+nowreck config set base_url https://generativelanguage.googleapis.com
+nowreck config set api_key AIza...
+nowreck config set model gemini-2.0-flash
+```
+
+> **Note:** for Anthropic and Gemini, use the bare domain as the base URL —
+> no `/v1` or `/v1beta` suffix (NoWreck appends the versioned path itself).
+> If needed, force the format with `nowreck config set provider anthropic|gemini|openai`.
 
 > **Note for Groq users:** Groq currently blocks bare Python `urllib`
 > requests with a Cloudflare 1010 error. NoWreck sends a browser-style
@@ -170,18 +199,20 @@ This will:
 You should see output like:
 
 ```
-  ═══════════════════════════════════════════════════
-    Nowreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 0 claims total
-    ● 1 unexplained change
+  Summary
+  ────────────────────
+  ● 0 claims total
+  ● 0 confirmed
+  ● 1 unexplained change
 
-    UNEXPLAINED CHANGES
-    ────────────────────
-    ! ADD_FUNCTION greet (app.py)
+  UNEXPLAINED CHANGES
+  ───────────────────
+  ! ADD_FUNCTION greet (app.py)
+
 ```
 
 ### Step 3 — Run with claims
@@ -215,25 +246,26 @@ nowreck fix \
 Expected output:
 
 ```
-  ═══════════════════════════════════════════════════
-    Nowreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 2 claims total
-    ● 1 confirmed
-    ● 1 contradicted
+  Summary
+  ────────────────────
+  ● 2 claims total
+  ● 1 confirmed
+  ● 1 contradicted
 
-    CONFIRMED
-    ──────────
-    ✓ ADD_FUNCTION greet → app.py  (conf: 100%)
-      Evidence: Function 'greet' was added in app.py
+  CONFIRMED
+  ─────────
+  ✓ ADD_FUNCTION greet → app.py  (conf: 100%)
+    Evidence: Function 'greet' was added in app.py
 
-    CONTRADICTED
-    ─────────────
-    ✗ CALLS_FUNCTION greet → app.py  (conf: 100%)
-      Evidence: No call to sanitize_input detected in greet's body
+  CONTRADICTED
+  ────────────
+  ✗ CALLS_FUNCTION greet → app.py  (conf: 100%)
+    Evidence: Function 'greet' was added in app.py
+
 ```
 
 NoWreck correctly caught the hallucinated `CALLS_FUNCTION` claim — the AI
@@ -326,7 +358,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `nowreck fix --no-colour` | Disable colour (works with any mode) |
 | `nowreck fix --verbose` | Full evidence per claim (works with any mode) |
 | `nowreck config show` | Display current configuration |
-| `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries` |
+| `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries`, `provider` |
 
 ---
 
@@ -335,31 +367,33 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 ### Sample output
 
 ```
-  ═══════════════════════════════════════════════════
-    Nowreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 3 claims total
-    ● 2 confirmed
-    ● 1 contradicted
+  Summary
+  ────────────────────
+  ● 3 claims total
+  ● 2 confirmed
+  ● 1 contradicted
+  ● 1 unexplained change
 
-    CONFIRMED
-    ──────────
-    ✓ ADD_FUNCTION validate_email → auth.py  (conf: 100%)
-      Evidence: Function 'validate_email' was added in auth.py
-    ✓ FILE_CREATED validators.py  (conf: 100%)
-      Evidence: File 'validators.py' was created
+  CONFIRMED
+  ─────────
+  ✓ ADD_FUNCTION validate_email → auth.py  (conf: 100%)
+    Evidence: Function 'validate_email' was added in auth.py
+  ✓ FILE_CREATED → validators.py  (conf: 100%)
+    Evidence: File 'validators.py' was created
 
-    CONTRADICTED
-    ─────────────
-    ✗ CALLS_FUNCTION validate_email → sanitize_input  (conf: 100%)
-      Evidence: No call to sanitize_input detected in validate_email's body
+  CONTRADICTED
+  ────────────
+  ✗ CALLS_FUNCTION validate_email → auth.py  (conf: 100%)
+    Evidence: Function 'validate_email' was added in auth.py
 
-    UNEXPLAINED CHANGES
-    ────────────────────
-    ! REMOVE_FUNCTION legacy_func (app.py)
+  UNEXPLAINED CHANGES
+  ───────────────────
+  ! REMOVE_FUNCTION legacy_func (app.py)
+
 ```
 
 ### Sections explained
@@ -376,12 +410,12 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 
 | Exit code | Meaning |
 |-----------|---------|
-| `0` | All claims confirmed, nothing unexplained |
+| `0` | Every claim confirmed (none contradicted or unverifiable), nothing unexplained |
 | `1` | One or more contradicted, unverifiable, or unexplained changes |
 
 ---
 
-## Claim Types (MVP)
+## Claim Types
 
 | Claim type | Fields | Meaning |
 |------------|--------|---------|
@@ -391,7 +425,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `REMOVE_CLASS` | `symbol_name`, `file_path` | A class was removed |
 | `ADD_INTERFACE` | `symbol_name`, `file_path` | An interface was added (TS/TSX/Rust/Go) |
 | `REMOVE_INTERFACE` | `symbol_name`, `file_path` | An interface was removed |
-| `ADD_ENUM` | `symbol_name`, `file_path` | An enum was added (TS/TSX/Rust/Go) |
+| `ADD_ENUM` | `symbol_name`, `file_path` | An enum was added (TS/TSX/Rust) |
 | `REMOVE_ENUM` | `symbol_name`, `file_path` | An enum was removed |
 | `ADD_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was added (TS/TSX/Rust/Go) |
 | `REMOVE_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was removed |
@@ -433,12 +467,20 @@ Use the `--json` flag to get a machine-readable report:
 nowreck fix "Add validation to auth.py" --json
 ```
 
-Output schema:
+Prompt Mode emits a `prompt_v10` schema with an `evidence` block showing
+whether claims were verified against independently observed repository
+changes:
 
 ```json
 {
-  "version": "0.10.0",
+  "version": "0.11.0",
+  "mode": "prompt_v10",
   "success": false,
+  "evidence": {
+    "independent": true,
+    "patch_applied": true,
+    "patch_files": ["auth.py"]
+  },
   "summary": {
     "total_claims": 3,
     "confirmed": 2,
@@ -474,6 +516,12 @@ Output schema:
   "unexplained_changes": []
 }
 ```
+
+Pre/Post and Claims Mode (`--pre`/`--post`) omit the `mode` and `evidence`
+fields; everything else is identical. Claim objects contain exactly:
+`type`, `symbol_name`, `file_path`, `parent_class`, `line_number`,
+`caller_name`, `called_name`, `confidence` — the free-text `explanation`
+is accepted on input but never rendered in NoWreck's reports.
 
 ### CI integration example
 
@@ -555,4 +603,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.10.0 — August 2026*
+*NoWreck v0.11.0 — August 2026*

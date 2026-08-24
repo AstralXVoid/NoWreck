@@ -1,6 +1,6 @@
 # NoWreck
 
-**Deterministic AI Verifier** — v0.10.0
+**Deterministic AI Verifier** — v0.11.0
 
 NoWreck is a deterministic structural verifier for AI-generated code-change
 claims. When an AI describes a code change, NoWreck compares the claims
@@ -21,13 +21,14 @@ $ nowreck fix "Add email validation to auth.py"
   ● 1 contradicted
 
   CONFIRMED
-  ✓ ADD_FUNCTION validate_email → auth.py
+  ─────────
+  ✓ ADD_FUNCTION validate_email → auth.py  (conf: 100%)
     Evidence: Function 'validate_email' was added in auth.py
 
   CONTRADICTED
-  ✗ CALLS_FUNCTION validate_email → sanitize_input
-    Evidence: No supported direct call to sanitize_input() was detected
-              in the analyzed function body.
+  ────────────
+  ✗ CALLS_FUNCTION validate_email → auth.py  (conf: 100%)
+    Evidence: Function 'validate_email' was added in auth.py
 ```
 
 ## What it catches
@@ -86,7 +87,7 @@ NoWreck is deterministic within its supported structural analysis model
 
 ## Installation
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ```bash
 # Clone the repository
@@ -112,7 +113,7 @@ user environment (PyPI publishing is coming later).
 
 ```bash
 nowreck --version
-# → nowreck 0.10.0
+# → nowreck 0.11.0
 
 nowreck
 # → shows banner + usage
@@ -165,28 +166,57 @@ nowreck config set temperature 0.0
 
 # Max retries on parse failure (default: 1)
 nowreck config set max_retries 2
+
+# Explicit provider override (auto-detected from base_url when unset)
+nowreck config set provider anthropic   # or: gemini, openai
 ```
 
 ### View configuration
 
 ```bash
 nowreck config show
-# → api_key = gsk_...
+# → api_key = gsk_your_key_here
 # → base_url = https://api.groq.com/openai/v1
 # → model = llama-3.3-70b-versatile
 ```
 
+> **Heads-up:** `config show` prints stored values as-is — including your
+> full API key. Run it only in trusted environments.
+
 ### Compatible providers
 
-| Provider | Base URL |
-|----------|----------|
-| **OpenAI** | `https://api.openai.com/v1` (default) |
-| **Groq** | `https://api.groq.com/openai/v1` |
-| **OpenRouter** | `https://openrouter.ai/api/v1` |
-| **DeepSeek** | `https://api.deepseek.com/v1` |
-| **Ollama (local)** | `http://localhost:11434/v1` |
-| **LM Studio (local)** | `http://localhost:1234/v1` |
-| **Any OpenAI-compatible** | Your custom endpoint |
+| Provider | Base URL | Format |
+|----------|----------|--------|
+| **OpenAI** | `https://api.openai.com/v1` (default) | OpenAI-compatible |
+| **Anthropic** | `https://api.anthropic.com` | Anthropic Messages API |
+| **Gemini** | `https://generativelanguage.googleapis.com` | Gemini generateContent |
+| **Groq** | `https://api.groq.com/openai/v1` | OpenAI-compatible |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | OpenAI-compatible |
+| **DeepSeek** | `https://api.deepseek.com/v1` | OpenAI-compatible |
+| **Ollama (local)** | `http://localhost:11434/v1` | OpenAI-compatible |
+| **LM Studio (local)** | `http://localhost:1234/v1` | OpenAI-compatible |
+| **Any OpenAI-compatible** | Your custom endpoint | OpenAI-compatible |
+
+Since v0.11.0, Anthropic and Gemini are supported natively via provider
+adapters. The provider is **auto-detected from `base_url`** — set the
+matching base URL and NoWreck handles the rest:
+
+```bash
+# Claude
+nowreck config set base_url https://api.anthropic.com
+nowreck config set api_key sk-ant-...
+nowreck config set model claude-sonnet-4-20250514
+
+# Gemini
+nowreck config set base_url https://generativelanguage.googleapis.com
+nowreck config set api_key AIza...
+nowreck config set model gemini-2.0-flash
+```
+
+> **Note:** use the bare domain for Anthropic and Gemini base URLs — do
+> not add a `/v1` or `/v1beta` suffix (NoWreck appends the versioned path
+> itself). If auto-detection ever picks the wrong format, force it with
+> `nowreck config set provider anthropic|gemini|openai`.
 
 > **Note for Groq users:** Groq currently blocks bare Python `urllib`
 > requests with a Cloudflare 1010 error. NoWreck sends a browser-style
@@ -228,21 +258,24 @@ nowreck fix --pre /tmp/myapp/pre --post /tmp/myapp/post
 
 This is **Pre/Post Mode** with no claims supplied. NoWreck scans both
 snapshots, detects the structural changes between them, and reports them as
-**unexplained** — because no claims were supplied to match against:
+**unexplained** — because no claims were supplied to match against
+(NoWreck also prints a few scan-progress lines before the report):
 
 ```
-  ═══════════════════════════════════════════════════
-    NoWreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 0 claims total
-    ● 1 unexplained change
+  Summary
+  ────────────────────
+  ● 0 claims total
+  ● 0 confirmed
+  ● 1 unexplained change
 
-    UNEXPLAINED CHANGES
-    ────────────────────
-    ! ADD_FUNCTION greet (app.py)
+  UNEXPLAINED CHANGES
+  ───────────────────
+  ! ADD_FUNCTION greet (app.py)
+
 ```
 
 ### Step 3 — Claims Mode: run with claims
@@ -279,26 +312,26 @@ snapshots. Expected output — the hallucinated `CALLS_FUNCTION` claim is
 caught because the code contains no such call:
 
 ```
-  ═══════════════════════════════════════════════════
-    NoWreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 2 claims total
-    ● 1 confirmed
-    ● 1 contradicted
+  Summary
+  ────────────────────
+  ● 2 claims total
+  ● 1 confirmed
+  ● 1 contradicted
 
-    CONFIRMED
-    ──────────
-    ✓ ADD_FUNCTION greet → app.py  (conf: 100%)
-      Evidence: Function 'greet' was added in app.py
+  CONFIRMED
+  ─────────
+  ✓ ADD_FUNCTION greet → app.py  (conf: 100%)
+    Evidence: Function 'greet' was added in app.py
 
-    CONTRADICTED
-    ─────────────
-    ✗ CALLS_FUNCTION greet → app.py  (conf: 100%)
-      Evidence: No supported direct call to sanitize_input() was detected
-                in the analyzed function body.
+  CONTRADICTED
+  ────────────
+  ✗ CALLS_FUNCTION greet → app.py  (conf: 100%)
+    Evidence: Function 'greet' was added in app.py
+
 ```
 
 ---
@@ -408,10 +441,11 @@ directly as the `--claims` argument.
 `nowreck --interactive` launches a menu-driven terminal picker for users who
 prefer exploring options without memorizing commands:
 
-- Choose between Prompt, Pre/Post, or Claims modes
-- Select your repository path
-- Configure options interactively
-- See verification results with formatted output
+- **Verify with AI prompt** — Prompt Mode against the current repository
+- **Scan two directories for changes** — Pre/Post Mode; optionally supply
+  claims afterwards to switch into Claims Mode
+- **Set up or change your API key** — guided configuration
+- **View last report** — re-render the most recent verification report
 
 Great for beginners, one-off verifications, and learning the tool's
 capabilities.
@@ -445,7 +479,7 @@ capabilities.
 | `nowreck fix --no-colour` | Output flag — disable ANSI colours (works with any `nowreck fix` mode) |
 | `nowreck fix --verbose` | Output flag — full deterministic evidence per claim (works with any `nowreck fix` mode) |
 | `nowreck config show` | Display current configuration |
-| `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries` |
+| `nowreck config set <key> <value>` | Set a config value. Keys: `api_key`, `model`, `base_url`, `temperature`, `max_retries`, `provider` |
 
 ---
 
@@ -559,12 +593,12 @@ contradicting change exists (e.g., claim says "added" but detection shows
 | `REMOVE_FUNCTION` | A function was removed | Structural existence check |
 | `ADD_CLASS` | A class was added | Structural existence check |
 | `REMOVE_CLASS` | A class was removed | Structural existence check |
-| `ADD_INTERFACE` | An interface was added (TS/TSX) | Structural existence check |
-| `REMOVE_INTERFACE` | An interface was removed (TS/TSX) | Structural existence check |
-| `ADD_ENUM` | An enum was added (TS/TSX) | Structural existence check |
-| `REMOVE_ENUM` | An enum was removed (TS/TSX) | Structural existence check |
-| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX) | Structural existence check |
-| `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX) | Structural existence check |
+| `ADD_INTERFACE` | An interface was added (TS/TSX, Rust, Go) | Structural existence check |
+| `REMOVE_INTERFACE` | An interface was removed (TS/TSX, Rust, Go) | Structural existence check |
+| `ADD_ENUM` | An enum was added (TS/TSX, Rust) | Structural existence check |
+| `REMOVE_ENUM` | An enum was removed (TS/TSX, Rust) | Structural existence check |
+| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX, Rust, Go) | Structural existence check |
+| `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX, Rust, Go) | Structural existence check |
 | `FILE_CREATED` | A new file appeared | File-list diff |
 | `FILE_DELETED` | A file was removed | File-list diff |
 | `CALLS_FUNCTION` | A function now calls another | Structural call-site detection |
@@ -595,32 +629,33 @@ makes the call) and `called_name` (the function being called).
 ### Sample output
 
 ```
-  ═══════════════════════════════════════════════════
-    NoWreck Verification Report
-  ═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
+  Nowreck Verification Report
+═══════════════════════════════════════════════════════
 
-    Summary
-    ────────────────────
-    ● 3 claims total
-    ● 2 confirmed
-    ● 1 contradicted
+  Summary
+  ────────────────────
+  ● 3 claims total
+  ● 2 confirmed
+  ● 1 contradicted
+  ● 1 unexplained change
 
-    CONFIRMED
-    ──────────
-    ✓ ADD_FUNCTION validate_email → auth.py  (conf: 100%)
-      Evidence: Function 'validate_email' was added in auth.py
-    ✓ FILE_CREATED validators.py  (conf: 100%)
-      Evidence: File 'validators.py' was created
+  CONFIRMED
+  ─────────
+  ✓ ADD_FUNCTION validate_email → auth.py  (conf: 100%)
+    Evidence: Function 'validate_email' was added in auth.py
+  ✓ FILE_CREATED → validators.py  (conf: 100%)
+    Evidence: File 'validators.py' was created
 
-    CONTRADICTED
-    ─────────────
-    ✗ CALLS_FUNCTION validate_email → sanitize_input  (conf: 100%)
-      Evidence: No supported direct call to sanitize_input() was detected
-                in the analyzed function body.
+  CONTRADICTED
+  ────────────
+  ✗ CALLS_FUNCTION validate_email → auth.py  (conf: 100%)
+    Evidence: Function 'validate_email' was added in auth.py
 
-    UNEXPLAINED CHANGES
-    ────────────────────
-    ! REMOVE_FUNCTION legacy_func (app.py)
+  UNEXPLAINED CHANGES
+  ───────────────────
+  ! REMOVE_FUNCTION legacy_func (app.py)
+
 ```
 
 ### Sections explained
@@ -637,7 +672,7 @@ makes the call) and `called_name` (the function being called).
 
 | Exit code | Meaning |
 |-----------|---------|
-| `0` | All claims confirmed, nothing unexplained |
+| `0` | Every claim confirmed (none contradicted or unverifiable), nothing unexplained |
 | `1` | One or more contradicted, unverifiable, or unexplained changes |
 
 ---
@@ -657,25 +692,33 @@ the code change is correct, and it is not a rating of the claim's quality.
 A 100% verdict applies to the specific claim being checked, within the
 supported analysis model — it does **not** mean the overall code change is
 correct, and it does **not** prove universal semantic facts. For example,
-"no supported direct call to `sanitize_input()` was detected in the analyzed
-function body" states what the structural analysis found; it does not prove
-the function can never be invoked dynamically elsewhere.
+a CONTRADICTED `CALLS_FUNCTION` verdict establishes that no matching
+call-site change exists among the detected structural facts; it does not
+prove the function can never be invoked dynamically elsewhere.
 
 ---
 
 ## JSON Output for CI
 
-Use the `--json` flag to get a machine-readable report:
+Use the `--json` flag to get a machine-readable report. The schema depends
+on the mode:
+
+### Prompt Mode schema
 
 ```bash
 nowreck fix "Add validation to auth.py" --json
 ```
 
-Output schema:
-
 ```json
 {
+  "version": "0.11.0",
+  "mode": "prompt_v10",
   "success": false,
+  "evidence": {
+    "independent": true,
+    "patch_applied": true,
+    "patch_files": ["auth.py"]
+  },
   "summary": {
     "total_claims": 3,
     "confirmed": 2,
@@ -693,8 +736,7 @@ Output schema:
         "line_number": null,
         "caller_name": null,
         "called_name": null,
-        "confidence": 0.99,
-        "explanation": "Added email validation as requested."
+        "confidence": 0.99
       },
       "verdict": "CONFIRMED",
       "verifier_confidence": 1.0,
@@ -713,9 +755,37 @@ Output schema:
 }
 ```
 
-`success` is `true` when every claim is confirmed and there are no
-unexplained changes; otherwise it is `false`. Note that it is a JSON
-boolean (`true` / `false`), not a string.
+The `evidence` block reports whether the v10 independent-verification path
+ran: claims were checked against changes observed in the repository before
+and after the model's patch was applied (see
+[How It Works](#how-it-works)).
+
+### Pre/Post and Claims Mode schema
+
+`--pre`/`--post` runs omit the `mode` and `evidence` fields; everything
+else is identical:
+
+```json
+{
+  "version": "0.11.0",
+  "success": false,
+  "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
+  "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
+  "unexplained_changes": []
+}
+```
+
+Notes:
+
+- `success` is `true` only when every claim is confirmed (none
+  contradicted **or unverifiable**) and there are no unexplained changes;
+  otherwise it is `false`. It is a JSON boolean (`true` / `false`), not a
+  string.
+- Claim objects contain exactly: `type`, `symbol_name`, `file_path`,
+  `parent_class`, `line_number`, `caller_name`, `called_name`,
+  `confidence`. The free-text `explanation` is **not** included in JSON
+  output — it is accepted on input and kept on the claim, but NoWreck's
+  reports do not render it.
 
 ### CI integration
 
@@ -758,11 +828,12 @@ NoWreck verifies structure, not semantics. Be aware of these boundaries:
 - **No cross-file resolution** beyond direct name matching.
 - **No semantic analysis** — NoWreck verifies structural facts, not intent,
   code quality, or correctness.
-- **Prompt Mode requires a working directory** — if no repository is
-  available (e.g., stdin mode), all claims are UNVERIFIABLE.
-- **Interfaces, enums, and type aliases** (TS/TSX) are captured as
-  structural symbols and verified for existence only (added/removed) — not
-  for semantic correctness.
+- **Prompt Mode requires a working repository** — it runs against the
+  current working directory; without a real repository all claims come
+  back UNVERIFIABLE.
+- **Interfaces, enums, and type aliases** (TS/TSX, Rust, Go) are captured
+  as structural symbols and verified for existence only (added/removed) —
+  not for semantic correctness.
 - **The verifier works from `DetectedChange` facts**, not by re-reading the
   repository. It is deterministic within its supported analysis model, not
   infallible.
@@ -838,8 +909,8 @@ Make sure:
 
 ## Roadmap
 
-**v0.10.0 is the current release.** Items marked 🗓 are planned future work,
-not present in v0.10.0.
+**v0.11.0 is the current release.** Items marked 🗓 are planned future work,
+not present in the current release.
 
 | Item | Status |
 |------|--------|
@@ -852,7 +923,7 @@ not present in v0.10.0.
 | Interfaces / enums / type aliases as claim types | ✅ v0.8.0 |
 | Rust + Go language support | ✅ v0.9.0 |
 | Independent verification architecture — make independent verification native and convenient: claims can come from any external AI/tool while NoWreck inspects the actual resulting repository state (Pre/Post + Claims already provides independent verification in v0.10.0) | ✅ done in v0.10.0 |
-| Additional model providers (Anthropic, Gemini) | 🗓 planned |
+| Additional model providers (Anthropic, Gemini) via provider adapters with auto-detection from `base_url` | ✅ v0.11.0 |
 | Caching for large repositories | 🗓 planned |
 | CI/CD integration | 🗓 planned |
 
@@ -872,4 +943,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.10.0 — August 2026*
+*NoWreck v0.11.0 — August 2026*
