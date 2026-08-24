@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from nowreck.claims.models import Claim, ClaimType
-from nowreck.detector.change_detector import ChangeType, DetectedChange
-from nowreck.model.provider import ModelResult
 from nowreck.picker import run_picker
 from nowreck.verifier.verifier import Verdict, VerificationReport, VerificationResult
 
