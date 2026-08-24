@@ -20,10 +20,12 @@ from nowreck.detector.change_detector import (
     ChangeType,
     detect_changes,
 )
+from nowreck.model.provider import ModelConfig, ModelResult
 from nowreck.scanner.snapshot_manager import Snapshot, SnapshotManager
 from nowreck.verifier.prompt_verifier import (
     PatchApplicationResult,
     PatchApplier,
+    PromptModeVerifier,
     PromptVerificationResult,
 )
 from nowreck.verifier.verifier import ClaimVerifier, Verdict
@@ -132,9 +134,7 @@ class TestCircularityPrevention:
     3. The verifier must report CONTRADICTED, not CONFIRMED
     """
 
-    def test_claim_not_used_as_evidence(
-        self, repo_dir: Path
-    ) -> None:
+    def test_claim_not_used_as_evidence(self, repo_dir: Path) -> None:
         """If model claims ADD_FUNCTION but no file was added,
         result must be UNVERIFIABLE (no evidence), not CONFIRMED."""
         # Claims say we added a function
@@ -164,9 +164,7 @@ class TestCircularityPrevention:
         # Must NOT be CONFIRMED — that would mean the claim fabricated evidence
         assert report.results[0].verdict is not Verdict.CONFIRMED
 
-    def test_false_claim_contradicted(
-        self, repo_with_changes: Path
-    ) -> None:
+    def test_false_claim_contradicted(self, repo_with_changes: Path) -> None:
         """If model claims ADD_FUNCTION for a function that was REMOVED,
         result must be CONTRADICTED."""
         # Capture BEFORE state (repo has greet + add)
@@ -204,9 +202,7 @@ class TestCircularityPrevention:
         # greet was removed, claim says added → CONTRADICTED
         assert report.results[0].verdict is Verdict.CONTRADICTED
 
-    def test_honest_claim_confirmed(
-        self, repo_with_changes: Path
-    ) -> None:
+    def test_honest_claim_confirmed(self, repo_with_changes: Path) -> None:
         """If model claims ADD_FUNCTION for a function that WAS added,
         result must be CONFIRMED."""
         before = SnapshotManager(repo_with_changes).capture()
@@ -241,9 +237,7 @@ class TestCircularityPrevention:
 
         assert report.results[0].verdict is Verdict.CONFIRMED
 
-    def test_multiple_claims_partial_match(
-        self, repo_with_changes: Path
-    ) -> None:
+    def test_multiple_claims_partial_match(self, repo_with_changes: Path) -> None:
         """Multiple claims — some verified, some contradicted,
         some unverifiable — each evaluated independently."""
         before = SnapshotManager(repo_with_changes).capture()
@@ -293,9 +287,7 @@ class TestCircularityPrevention:
         assert Verdict.CONFIRMED in verdicts  # multiply
         assert Verdict.UNVERIFIABLE in verdicts  # nonexistent or greet
 
-    def test_no_evidence_produces_unverifiable(
-        self, repo_dir: Path
-    ) -> None:
+    def test_no_evidence_produces_unverifiable(self, repo_dir: Path) -> None:
         """When there's no before/after transition, all claims must be
         UNVERIFIABLE — never CONFIRMED."""
         claims = [
@@ -347,9 +339,7 @@ class TestSnapshotManagerIntegration:
         assert total_files > 0
         assert len(snap.symbol_index.all_symbols) > 0
 
-    def test_two_captures_detect_changes(
-        self, repo_with_changes: Path
-    ) -> None:
+    def test_two_captures_detect_changes(self, repo_with_changes: Path) -> None:
         mgr = SnapshotManager(repo_with_changes)
         before = mgr.capture()
 
@@ -371,9 +361,7 @@ class TestSnapshotManagerIntegration:
         assert len(changes) > 0
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_identical_captures_no_changes(
-        self, repo_dir: Path
-    ) -> None:
+    def test_identical_captures_no_changes(self, repo_dir: Path) -> None:
         mgr = SnapshotManager(repo_dir)
         before = mgr.capture()
         after = mgr.capture()
@@ -458,14 +446,18 @@ class TestClaimParserPatchExtraction:
 
         patch_str = "--- a/src/app.py\n+++ b/src/app.py"
         patch_str += "\n@@ -0,0 +1,2 @@\n+def greet():\n+    pass"
-        response = json.dumps({
-            "claims": [{
-                "type": "ADD_FUNCTION",
-                "symbol_name": "greet",
-                "file_path": "src/app.py",
-            }],
-            "patch": patch_str,
-        })
+        response = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "ADD_FUNCTION",
+                        "symbol_name": "greet",
+                        "file_path": "src/app.py",
+                    }
+                ],
+                "patch": patch_str,
+            }
+        )
         result = ClaimParser.parse(response)
         assert result.success
         assert result.patch is not None
@@ -503,3 +495,167 @@ class TestClaimParserPatchExtraction:
         result = ClaimParser.parse(response)
         assert result.success
         assert result.patch is None
+
+
+# ---------------------------------------------------------------------------
+# Restore-after-patch tests (P0-01)
+#
+# Before the fix, _restore_from_patch() was a no-op stub: Prompt Mode
+# left the model's patch permanently in the user's working tree, and a
+# mid-flow exception (or a git-stash snapshot with no patch) silently
+# skipped cleanup entirely.
+# ---------------------------------------------------------------------------
+
+_PATCH = "fake unified diff — applied by the stubbed PatchApplier"
+
+
+class _StubModelProvider:
+    """Stands in for ModelProvider inside PromptModeVerifier."""
+
+    def __init__(self, result: ModelResult) -> None:
+        self._result = result
+
+    def changes_from_prompt_v10(
+        self, prompt: str, repo_context: str = ""
+    ) -> ModelResult:
+        return self._result
+
+
+def _patched_file_result() -> ModelResult:
+    return ModelResult(claims=[], patch=_PATCH)
+
+
+def _stub_patch_apply(monkeypatch: pytest.MonkeyPatch, repo_dir: Path) -> None:
+    """Replace PatchApplier.apply with a deterministic file creation."""
+
+    def fake_apply(patch: str, repo: Path) -> PatchApplicationResult:
+        target = Path(repo) / "src" / "new.py"
+        target.write_text("def fresh():\n    return 1\n", encoding="utf-8")
+        return PatchApplicationResult(success=True, applied_files=["src/new.py"])
+
+    monkeypatch.setattr(
+        "nowreck.verifier.prompt_verifier.PatchApplier.apply", fake_apply
+    )
+
+
+def _make_verifier(repo_dir: Path, result: ModelResult) -> PromptModeVerifier:
+    verifier = PromptModeVerifier(repo_dir, ModelConfig(api_key="sk-test"))
+    verifier._model_provider = _StubModelProvider(result)
+    return verifier
+
+
+class TestRestoreAfterPatch:
+    """Prove that verify() settles the working tree in every path."""
+
+    def test_restore_removes_patched_file(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A patch that creates src/new.py is undone after verify()."""
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        result = verifier.verify("add fresh function")
+
+        assert not (repo_dir / "src" / "new.py").exists()
+        assert result.patch_applied is True
+
+    def test_no_restore_leaves_patch_when_disabled(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With restore_after=False the patch stays in the tree."""
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        verifier.verify("add fresh function", restore_after=False)
+
+        assert (repo_dir / "src" / "new.py").exists()
+
+    def test_restored_repo_scannable(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After restore, the repo scans cleanly at its original size."""
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        baseline = len(RepositoryScanner(repo_dir).scan().modules)
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        verifier.verify("add fresh function")
+
+        modules = RepositoryScanner(repo_dir).scan().modules
+        assert len(modules) == baseline
+
+    def test_no_patch_skips_restore_but_cleans_up(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No patch → no restore attempt, but snapshot cleanup still runs."""
+        cleaned: list[Snapshot] = []
+        monkeypatch.setattr(
+            SnapshotManager,
+            "cleanup",
+            lambda self, snap: cleaned.append(snap),
+        )
+        verifier = _make_verifier(repo_dir, ModelResult(claims=[]))
+
+        result = verifier.verify("do nothing")
+
+        assert result.patch_applied is False
+        assert not (repo_dir / "src" / "new.py").exists()
+        assert len(cleaned) == 1
+        # save_before() always produces a temp snapshot dir here
+        # (repo_dir is not a git repo), so cleanup had real work.
+        assert cleaned[0].snapshot_dir is not None
+
+    def test_exception_midflow_still_restores(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exception between patch application and verification must
+        still restore the tree (finally-block guarantee)."""
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("mid-flow explosion")
+
+        monkeypatch.setattr("nowreck.verifier.prompt_verifier.detect_changes", boom)
+
+        with pytest.raises(RuntimeError, match="mid-flow explosion"):
+            verifier.verify("add fresh function")
+
+        assert not (repo_dir / "src" / "new.py").exists()
+
+    def test_stash_snapshot_popped_even_without_patch(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git-stash snapshots are popped even when no patch was applied —
+        the stash holds the user's uncommitted changes."""
+        real_capture = SnapshotManager.capture
+        sentinel = Path(repo_dir) / ".stash_sentinel"
+        sentinel.mkdir()
+        (sentinel / ".git_stash").touch()
+
+        restore_calls: list[Snapshot] = []
+
+        def fake_save_before(self: SnapshotManager) -> Snapshot:
+            snap = real_capture(self)
+            return Snapshot(
+                scan_result=snap.scan_result,
+                symbol_index=snap.symbol_index,
+                snapshot_dir=sentinel,
+            )
+
+        def fake_restore(self: SnapshotManager, snap: Snapshot) -> bool:
+            restore_calls.append(snap)
+            return True
+
+        monkeypatch.setattr(SnapshotManager, "save_before", fake_save_before)
+        monkeypatch.setattr(SnapshotManager, "restore", fake_restore)
+
+        verifier = _make_verifier(repo_dir, ModelResult(claims=[]))
+        result = verifier.verify("do nothing")
+
+        assert result.patch_applied is False
+        # THE critical assertion: stash-mode snapshots are popped even
+        # though no patch was applied.
+        assert len(restore_calls) == 1
+        assert not sentinel.exists()  # cleanup removed the sentinel dir
