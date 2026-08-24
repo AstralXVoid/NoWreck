@@ -7,13 +7,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from nowreck.claims.models import Claim
 from nowreck.claims.parser import ClaimParser, ParseResult
 from nowreck.detector.change_detector import DetectedChange
+from nowreck.model.adapters import detect_adapter
 from nowreck.model.prompts import PromptBuilder
 
 # ---------------------------------------------------------------------------
@@ -28,9 +28,9 @@ class ModelConfig:
     Attributes:
         api_key: API key for authentication.  Falls back to the
             ``NOWRECK_API_KEY`` environment variable when empty.
-        base_url: Base URL of the OpenAI-compatible API.  Defaults to
-            the OpenAI API.
-        model: Model identifier (e.g. ``gpt-4o``, ``claude-3-opus``).
+        base_url: Base URL of the API.  Defaults to the OpenAI API.
+            The adapter is auto-detected from this URL.
+        model: Model identifier (e.g. ``gpt-4o``, ``claude-sonnet-4-20250514``).
         temperature: Sampling temperature (0.0 = deterministic).
         max_retries: Number of repair attempts after a failed parse.
             0 means no retry.
@@ -38,6 +38,9 @@ class ModelConfig:
             ``None`` means save to ``.nowreck/failed/`` relative to
             the current working directory.  Set to an empty ``Path``
             to disable saving.
+        provider: Optional explicit provider override (``"openai"``,
+            ``"anthropic"``, ``"gemini"``).  When ``None``, the adapter
+            is auto-detected from ``base_url``.
     """
 
     api_key: str = ""
@@ -46,6 +49,7 @@ class ModelConfig:
     temperature: float = 0.0
     max_retries: int = 1
     failed_dir: Path | None = None
+    provider: str | None = None
 
     def resolve_api_key(self) -> str:
         """Return the API key, falling back to the environment
@@ -135,6 +139,20 @@ def _mask_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
 
 class ModelError(Exception):
     """Raised when the model API call fails irrecoverably."""
+
+
+def _auth_header(api_key: str, base_url: str) -> dict[str, str]:
+    """Return the correct authorization header for the provider.
+
+    Anthropic uses ``x-api-key``, Gemini uses ``x-goog-api-key``,
+    and everything else uses ``Authorization: Bearer``.
+    """
+    url_lower = base_url.lower()
+    if "api.anthropic.com" in url_lower:
+        return {"x-api-key": api_key}
+    if "generativelanguage.googleapis.com" in url_lower:
+        return {"x-goog-api-key": api_key}
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +353,11 @@ class ModelProvider:
         messages: list[dict[str, str]],
         config: ModelConfig,
     ) -> str:
-        """Make a synchronous HTTP POST to the Chat Completions API.
+        """Make a synchronous HTTP POST to the model API.
+
+        Uses a ``ProviderAdapter`` to build the request and parse the
+        response.  The adapter is auto-detected from ``config.base_url``
+        (or overridden by ``config.provider``).
 
         Raises:
             ModelError: On network failure, bad status code, or
@@ -348,39 +370,23 @@ class ModelProvider:
                 "variable or pass api_key to ModelConfig."
             )
 
-        body = json.dumps(
-            {
-                "model": config.model,
-                "messages": messages,
-                "temperature": config.temperature,
-            }
-        ).encode("utf-8")
-
-        # Use a realistic browser User-Agent to avoid Cloudflare 1010
-        # blocks that some providers (e.g. Groq) enforce on bare
-        # urllib requests.
-        browser_ua = (
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
+        adapter = detect_adapter(config.base_url, config.provider)
+        url_suffix, headers, body = adapter.build_request(
+            messages=messages,
+            model=config.model,
+            temperature=config.temperature,
         )
 
         req = urllib_request.Request(
-            url=f"{config.base_url.rstrip('/')}/chat/completions",
+            url=f"{config.base_url.rstrip('/')}{url_suffix}",
             data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": browser_ua,
-                "Accept": "application/json",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
+            headers={**headers, **_auth_header(api_key, config.base_url)},
             method="POST",
         )
 
         try:
             with urllib_request.urlopen(req, timeout=120) as resp:
-                data: dict[str, object] = json.loads(resp.read())
+                raw: bytes = resp.read()
         except urllib_error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             masked_body = _mask_key(error_body)
@@ -388,25 +394,10 @@ class ModelProvider:
         except (OSError, json.JSONDecodeError) as exc:
             raise ModelError(f"Request failed: {exc}") from exc
 
-        raw_choices: object = data.get("choices")
-        if not isinstance(raw_choices, list) or not raw_choices:
-            raise ModelError("API response missing 'choices'")
-
-        raw_choice: object = cast("object", raw_choices[0])
-        if not isinstance(raw_choice, dict):
-            raise ModelError("API response choice is not an object")
-
-        choice: dict[str, object] = cast("dict[str, object]", raw_choice)
-        raw_message: object = choice.get("message")
-        if not isinstance(raw_message, dict):
-            raise ModelError("API response choice missing 'message'")
-
-        message: dict[str, object] = cast("dict[str, object]", raw_message)
-        content: object = message.get("content")
-        if not isinstance(content, str):
-            raise ModelError("API response message missing 'content'")
-
-        return content
+        try:
+            return adapter.parse_response(raw)
+        except Exception as exc:
+            raise ModelError(f"Failed to parse provider response: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Failure persistence

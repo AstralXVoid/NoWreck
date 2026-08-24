@@ -887,3 +887,284 @@ class TestModelProviderV10:
         assert len(result.claims) == 1
         # Old path: changes derived from claims
         assert len(result.changes) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (v11) — adapter selection inside ModelProvider
+#
+# These tests exercise the REAL _default_http_call path by patching
+# urllib.request.urlopen. The fake captures the outgoing Request and
+# replies in the native envelope of whichever provider the URL targets,
+# so a successfully parsed claim proves the full round trip through
+# the correct adapter's build_request()/parse_response().
+# ---------------------------------------------------------------------------
+
+_CLAIMS_TEXT = json.dumps(
+    {
+        "claims": [
+            {
+                "type": "FILE_CREATED",
+                "file_path": "new.py",
+                "confidence": 0.95,
+                "explanation": "A new file was created.",
+            },
+        ],
+    }
+)
+
+
+def _anthropic_response_body() -> bytes:
+    return json.dumps(
+        {"content": [{"type": "text", "text": _CLAIMS_TEXT}]}
+    ).encode("utf-8")
+
+
+def _gemini_response_body() -> bytes:
+    return json.dumps(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": _CLAIMS_TEXT}],
+                        "role": "model",
+                    }
+                }
+            ]
+        }
+    ).encode("utf-8")
+
+
+def _openai_response_body() -> bytes:
+    return json.dumps(
+        {"choices": [{"message": {"role": "assistant", "content": _CLAIMS_TEXT}}]}
+    ).encode("utf-8")
+
+
+class _FakeUrlopen:
+    """Stands in for urllib.request.urlopen and records each Request.
+
+    The response body is chosen from the request URL so that only the
+    matching adapter's parse_response() can extract the claims text.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+
+    def _body_for(self, url: str) -> bytes:
+        if ":generateContent" in url:
+            return _gemini_response_body()
+        if url.endswith("/v1/messages"):
+            return _anthropic_response_body()
+        return _openai_response_body()
+
+    def __call__(self, req: object, timeout: float | None = None) -> _FakeUrlopen:
+        self.requests.append(req)
+        return self
+
+    def __enter__(self) -> _FakeUrlopen:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        pass
+
+    def read(self) -> bytes:
+        req = self.requests[-1]
+        return self._body_for(str(getattr(req, "full_url", "")))
+
+
+def _provider_headers(req: object) -> dict[str, str]:
+    """Return the Request headers as a case-insensitive dict."""
+    return {k.lower(): v for k, v in getattr(req, "header_items", list)()}
+
+
+class TestPhase4AdapterSelection:
+    """v11 Phase 4: ModelProvider transparently uses the correct adapter."""
+
+    def test_anthropic_base_url_uses_anthropic_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="sk-ant-test",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        assert len(fake.requests) == 1
+        req = fake.requests[0]
+        assert str(getattr(req, "full_url")).endswith("/v1/messages")
+
+        headers = _provider_headers(req)
+        assert headers["x-api-key"] == "sk-ant-test"
+        assert "authorization" not in headers
+        assert headers["anthropic-version"] == "2023-06-01"
+
+        body = json.loads(getattr(req, "data"))
+        assert body["model"] == "claude-sonnet-4-20250514"
+        assert "max_tokens" in body
+        assert body["messages"][0]["role"] != "system"
+        assert body["system"].startswith("You are Nowreck")
+
+        # Claims parsed => AnthropicAdapter.parse_response ran.
+        assert len(result.claims) == 1
+        assert result.claims[0].file_path == "new.py"
+
+    def test_gemini_base_url_uses_gemini_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="AIzaTest",
+            base_url="https://generativelanguage.googleapis.com",
+            model="gemini-2.0-flash",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        assert len(fake.requests) == 1
+        req = fake.requests[0]
+        assert str(getattr(req, "full_url")) == (
+            "https://generativelanguage.googleapis.com"
+            "/v1beta/models/gemini-2.0-flash:generateContent"
+        )
+
+        headers = _provider_headers(req)
+        assert headers["x-goog-api-key"] == "AIzaTest"
+        assert "authorization" not in headers
+
+        body = json.loads(getattr(req, "data"))
+        assert body["contents"][0]["role"] == "user"
+        assert "systemInstruction" in body
+        assert "system" not in [c["role"] for c in body["contents"]]
+
+        # Claims parsed => GeminiAdapter.parse_response ran.
+        assert len(result.claims) == 1
+        assert result.claims[0].file_path == "new.py"
+
+    def test_openai_base_url_uses_openai_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="sk-openai-test",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        assert len(fake.requests) == 1
+        req = fake.requests[0]
+        assert (
+            str(getattr(req, "full_url"))
+            == "https://api.openai.com/v1/chat/completions"
+        )
+
+        headers = _provider_headers(req)
+        assert headers["authorization"] == "Bearer sk-openai-test"
+
+        body = json.loads(getattr(req, "data"))
+        assert body["model"] == "gpt-4o"
+        assert body["messages"][0]["role"] == "system"
+
+        assert len(result.claims) == 1
+
+    def test_provider_override_switches_to_gemini_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit provider=gemini wins over an OpenAI-compatible base_url."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            model="gemini-2.0-flash",
+            provider="gemini",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        req = fake.requests[0]
+        assert str(getattr(req, "full_url")).endswith(
+            "/v1beta/models/gemini-2.0-flash:generateContent"
+        )
+        body = json.loads(getattr(req, "data"))
+        assert "contents" in body
+        assert len(result.claims) == 1
+
+    def test_provider_override_switches_to_anthropic_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit provider=anthropic wins over an OpenAI-compatible base_url."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            model="claude-sonnet-4-20250514",
+            provider="anthropic",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        req = fake.requests[0]
+        assert str(getattr(req, "full_url")).endswith("/v1/messages")
+        body = json.loads(getattr(req, "data"))
+        assert "max_tokens" in body
+        assert len(result.claims) == 1
+
+    def test_unknown_base_url_falls_back_to_openai_format(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unknown base_url keeps the OpenAI passthrough format."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr(
+            "nowreck.model.provider.urllib_request.urlopen", fake
+        )
+        config = ModelConfig(
+            api_key="sk-test",
+            base_url="https://my-provider.example.com/v1",
+            model="some-model",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        req = fake.requests[0]
+        assert (
+            str(getattr(req, "full_url"))
+            == "https://my-provider.example.com/v1/chat/completions"
+        )
+        assert len(result.claims) == 1
