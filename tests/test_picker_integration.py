@@ -27,8 +27,7 @@ class TestPickerIntegrationVerify:
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
-    @patch("nowreck.picker.ClaimVerifier")
-    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.verify_prompt")
     @patch("nowreck.picker.NowreckConfig")
     @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker.questionary.text")
@@ -41,8 +40,7 @@ class TestPickerIntegrationVerify:
         mock_text: MagicMock,
         mock_confirm: MagicMock,
         mock_config_cls: MagicMock,
-        mock_provider_cls: MagicMock,
-        mock_verifier_cls: MagicMock,
+        mock_verify_prompt: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
@@ -73,48 +71,8 @@ class TestPickerIntegrationVerify:
         # shared reporter and the v0.5.0 rendering path.
         mock_confirm.return_value.ask.return_value = False
 
-        # --- Model provider returns a result ---
-        mock_provider = MagicMock()
-        mock_result = ModelResult(
-            claims=[
-                Claim(
-                    type=ClaimType.ADD_FUNCTION,
-                    symbol_name="validate_email",
-                    file_path="auth.py",
-                    confidence=0.95,
-                ),
-            ],
-            changes=[
-                DetectedChange(
-                    change_type=ChangeType.ADD_FUNCTION,
-                    file_path=Path("auth.py"),
-                    symbol_name="validate_email",
-                ),
-            ],
-            attempts=1,
-        )
-        mock_provider.changes_from_prompt.return_value = mock_result
-        mock_provider_cls.return_value = mock_provider
-
-        # --- Verifier ---
-        mock_verifier_cls.verify.return_value = VerificationReport(
-            results=[
-                VerificationResult(
-                    claim=Claim(
-                        type=ClaimType.ADD_FUNCTION,
-                        symbol_name="validate_email",
-                        file_path="auth.py",
-                        confidence=0.95,
-                    ),
-                    verdict=Verdict.CONFIRMED,
-                    matched_change=DetectedChange(
-                        change_type=ChangeType.ADD_FUNCTION,
-                        file_path=Path("auth.py"),
-                        symbol_name="validate_email",
-                    ),
-                ),
-            ],
-        )
+        # --- Verifier returns an independent-verification result ---
+        mock_verify_prompt.return_value = MagicMock()
 
         # --- Reporter ---
         mock_reporter = MagicMock()
@@ -134,20 +92,14 @@ class TestPickerIntegrationVerify:
             default=False,
         )
 
-        # Prompt was collected and sent to the model
+        # Prompt was collected and sent to the verifier
         mock_text.return_value.ask.assert_called_once()
-        mock_provider.changes_from_prompt.assert_called_once_with(
-            "Add email validation to auth.py",
+        assert mock_verify_prompt.call_args.args[0] == (
+            "Add email validation to auth.py"
         )
 
         # Endpoint reachability was checked
         mock_check.assert_called_once_with("https://api.test.com/v1")
-
-        # Verify was called with the right args
-        mock_verifier_cls.verify.assert_called_once_with(
-            mock_result.claims,
-            mock_result.changes,
-        )
 
         # Report was rendered
         mock_reporter.report.assert_called_once()
@@ -161,8 +113,7 @@ class TestPickerIntegrationVerify:
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
-    @patch("nowreck.picker.ClaimVerifier")
-    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.verify_prompt")
     @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker.questionary.text")
     @patch("nowreck.picker.questionary.select")
@@ -175,8 +126,7 @@ class TestPickerIntegrationVerify:
         mock_select: MagicMock,
         mock_text: MagicMock,
         mock_confirm: MagicMock,
-        mock_provider_cls: MagicMock,
-        mock_verifier_cls: MagicMock,
+        mock_verify_prompt: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
@@ -204,15 +154,14 @@ class TestPickerIntegrationVerify:
         assert "No prompt provided" in out
 
         # Model should NOT be called
-        mock_provider_cls.assert_not_called()
-        mock_verifier_cls.verify.assert_not_called()
+        mock_verify_prompt.assert_not_called()
+        mock_verify_prompt.assert_not_called()
         mock_save.assert_not_called()
 
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
-    @patch("nowreck.picker.ClaimVerifier")
-    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.verify_prompt")
     @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker.questionary.text")
     @patch("nowreck.picker.questionary.password")
@@ -227,8 +176,7 @@ class TestPickerIntegrationVerify:
         mock_password: MagicMock,
         mock_text: MagicMock,
         mock_confirm: MagicMock,
-        mock_provider_cls: MagicMock,
-        mock_verifier_cls: MagicMock,
+        mock_verify_prompt: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
@@ -261,12 +209,6 @@ class TestPickerIntegrationVerify:
         ]
         mock_config_cls.return_value = mock_config
 
-        mock_provider = MagicMock()
-        mock_provider.changes_from_prompt.return_value = ModelResult(
-            claims=[], changes=[], attempts=1,
-        )
-        mock_provider_cls.return_value = mock_provider
-
         rc = run_picker()
 
         assert rc == 0
@@ -276,8 +218,7 @@ class TestPickerIntegrationVerify:
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
-    @patch("nowreck.picker.ClaimVerifier")
-    @patch("nowreck.picker.ModelProvider")
+    @patch("nowreck.picker.verify_prompt")
     @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker.questionary.text")
     @patch("nowreck.picker.questionary.select")
@@ -290,8 +231,7 @@ class TestPickerIntegrationVerify:
         mock_select: MagicMock,
         mock_text: MagicMock,
         mock_confirm: MagicMock,
-        mock_provider_cls: MagicMock,
-        mock_verifier_cls: MagicMock,
+        mock_verify_prompt: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
@@ -312,13 +252,13 @@ class TestPickerIntegrationVerify:
         rc = run_picker()
 
         assert rc == 0
-        mock_provider_cls.assert_not_called()
-        mock_verifier_cls.verify.assert_not_called()
+        mock_verify_prompt.assert_not_called()
+        mock_verify_prompt.assert_not_called()
 
     @patch("nowreck.picker._check_endpoint_reachable")
     @patch("nowreck.picker._save_last_report")
     @patch("nowreck.picker._pause")
-    @patch("nowreck.picker.ClaimVerifier")
+    @patch("nowreck.picker.verify_prompt")
     @patch("nowreck.picker.questionary.confirm")
     @patch("nowreck.picker.questionary.text")
     @patch("nowreck.picker.questionary.select")
@@ -331,7 +271,7 @@ class TestPickerIntegrationVerify:
         mock_select: MagicMock,
         mock_text: MagicMock,
         mock_confirm: MagicMock,
-        mock_verifier_cls: MagicMock,
+        mock_verify_prompt: MagicMock,
         mock_pause: MagicMock,
         mock_save: MagicMock,
         mock_check: MagicMock,
@@ -354,14 +294,9 @@ class TestPickerIntegrationVerify:
         }
         mock_config_cls.return_value = mock_config
 
-        with patch("nowreck.picker.ModelProvider") as mock_provider_cls:
-            mock_provider = MagicMock()
-            mock_provider.changes_from_prompt.side_effect = ModelError(
-                "API returned 401",
-            )
-            mock_provider_cls.return_value = mock_provider
+        mock_verify_prompt.side_effect = ModelError("API returned 401")
 
-            rc = run_picker()
+        rc = run_picker()
 
         assert rc == 0
         captured = capsys.readouterr()

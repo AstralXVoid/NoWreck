@@ -10,11 +10,12 @@ import questionary
 
 from nowreck.claims.parser import ClaimParser
 from nowreck.detector.change_detector import ChangeDetector
-from nowreck.model.provider import ModelConfig, ModelError, ModelProvider
+from nowreck.model.provider import ModelConfig, ModelError
 from nowreck.reporter.terminal_reporter import TerminalReporter
 from nowreck.scanner.repository_scanner import RepositoryScanner
 from nowreck.scanner.symbol_index import build_symbol_index
 from nowreck.storage.config import NowreckConfig
+from nowreck.verifier.prompt_verifier import verify_prompt
 from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class _ExitPickerError(Exception):
     Propagates up through nested helper functions to ``run_picker()``,
     where it's caught to break the main loop and exit cleanly.
     """
+
     pass
 
 
@@ -186,19 +188,17 @@ def _run_verification(reporter: TerminalReporter) -> None:
     try:
         temp_raw = data.get("temperature", 0.0)
         temperature = (
-            float(temp_raw)
-            if isinstance(temp_raw, (int, float, str))
-            else 0.0
+            float(temp_raw) if isinstance(temp_raw, (int, float, str)) else 0.0
         )
         retries_raw = data.get("max_retries", 1)
         max_retries = (
-            int(retries_raw)
-            if isinstance(retries_raw, (int, float, str))
-            else 1
+            int(retries_raw) if isinstance(retries_raw, (int, float, str)) else 1
         )
     except (ValueError, TypeError):
         temperature = 0.0
         max_retries = 1
+
+    provider_val = str(data.get("provider", "") or "") or None
 
     model_config = ModelConfig(
         api_key=api_key,
@@ -206,31 +206,32 @@ def _run_verification(reporter: TerminalReporter) -> None:
         base_url=base_url,
         temperature=temperature,
         max_retries=max_retries,
+        provider=provider_val,
     )
-
-    provider = ModelProvider(config=model_config)
 
     print("Running verification...")
     try:
-        result = provider.changes_from_prompt(prompt)
+        result = verify_prompt(prompt, Path.cwd(), model_config)
     except ModelError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         _pause()
         return
 
-    if not result.claims:
+    report = result.report
+
+    model_result = result.model_result
+    if model_result is not None and not model_result.claims:
         print("Warning: Model returned no valid claims.", file=sys.stderr)
-        if result.parse_result:
-            for err in result.parse_result.errors:
+        if model_result.parse_result is not None:
+            for err in model_result.parse_result.errors:
                 print(f"  Parse error: {err}", file=sys.stderr)
 
-    if result.attempts > 1:
-        print(f"Claims parsed on attempt {result.attempts}")
-    else:
-        print(f"Claims parsed: {len(result.claims)}")
-
-    print(f"Changes derived: {len(result.changes)}")
-    report = ClaimVerifier.verify(result.claims, result.changes)
+    print(
+        f"Verification complete: "
+        f"{report.confirmed} confirmed, "
+        f"{report.contradicted} contradicted, "
+        f"{report.unverifiable} unverifiable"
+    )
 
     _render_report(reporter, report)
 
@@ -475,10 +476,7 @@ def _print_scan_summary(scan_result: ScanResult) -> None:
     js_files = scan_result.js_files or {}
     ts_files = scan_result.ts_files or {}
 
-    print(
-        f"  \u2192 {success} files parsed, "
-        f"{failure} failed"
-    )
+    print(f"  \u2192 {success} files parsed, {failure} failed")
     if modules:
         py_files = ", ".join(str(p) for p in modules)
         print(f"    Python ({len(modules)}): {py_files}")
