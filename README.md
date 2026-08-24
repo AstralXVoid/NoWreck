@@ -9,7 +9,8 @@ asks another AI for an opinion. Where the evidence comes from depends on the
 mode: in Pre/Post and Claims modes, from actual before/after repository
 snapshots; in Prompt Mode, from the model's own proposed diff.
 
-<img width="1536" height="1024" alt="NoWreck CLI output showing confirmed and contradicted claims" src="https://github.com/user-attachments/assets/bcc62fa1-9605-498c-b22c-5328556b19d0" />
+<img width="1536" height="1024" alt="ChatGPT Image Aug 24, 2026, 03_09_34 PM (1)" src="https://github.com/user-attachments/assets/521ce1aa-3842-4f8a-9834-fc37a3983035" />
+
 
 ```
 $ nowreck fix "Add email validation to auth.py"
