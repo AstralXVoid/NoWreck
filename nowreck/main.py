@@ -274,6 +274,7 @@ def _build_model_config() -> ModelConfig:
         base_url=_get_str_or(data, "base_url", "https://api.openai.com/v1"),
         temperature=_get_float_or(data, "temperature", 0.0),
         max_retries=_get_int_or(data, "max_retries", 1),
+        provider=_get_str_or(data, "provider", "") or None,
     )
 
 
