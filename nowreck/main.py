@@ -8,7 +8,7 @@ from pathlib import Path
 from nowreck.claims.parser import ClaimParser
 from nowreck.cli import build_parser
 from nowreck.detector.change_detector import ChangeDetector
-from nowreck.model.provider import ModelConfig
+from nowreck.model.provider import ModelConfig, ModelError, mask_key
 from nowreck.reporter.terminal_reporter import TerminalReporter
 from nowreck.scanner.repository_scanner import RepositoryScanner, ScanResult
 from nowreck.scanner.symbol_index import SymbolIndex, build_symbol_index
@@ -163,6 +163,9 @@ def handle_config(args: argparse.Namespace) -> int:
         data = config.load()
         if data:
             for key, value in sorted(data.items()):
+                # Never echo credential material back to the terminal.
+                if key == "api_key":
+                    value = mask_key(str(value))
                 print(f"{key} = {value}")
         else:
             print("No configuration found.")
@@ -174,6 +177,8 @@ def handle_config(args: argparse.Namespace) -> int:
         data = config.load()
         data[key] = value
         config.save(data)
+        if key == "api_key":
+            value = mask_key(str(value))
         print(f"Set {key} = {value}")
         return 0
 
@@ -205,7 +210,11 @@ def _handle_prompt_mode(
     """
     from nowreck.verifier.prompt_verifier import PromptModeVerifier
 
-    model_config = _build_model_config()
+    try:
+        model_config = _build_model_config()
+    except ModelError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     repo_path = Path.cwd()
 
     verifier = PromptModeVerifier(repo_path, model_config)
@@ -237,9 +246,7 @@ def _handle_prompt_mode(
             for err in result.model_result.parse_result.errors:
                 print(f"  Parse error: {err}", file=sys.stderr)
 
-    n_claims = (
-        len(result.model_result.claims) if result.model_result else 0
-    )
+    n_claims = len(result.model_result.claims) if result.model_result else 0
     patch_status = "applied" if result.patch_applied else "not applied"
     log(
         f"Claims: {n_claims}, "
@@ -254,11 +261,7 @@ def _handle_prompt_mode(
         print(reporter.report_v10(result))
 
     report = result.report
-    total_issues = (
-        report.unverifiable
-        + report.contradicted
-        + report.unexplained_count
-    )
+    total_issues = report.unverifiable + report.contradicted + report.unexplained_count
     return 0 if total_issues == 0 else 1
 
 
@@ -268,14 +271,19 @@ def _build_model_config() -> ModelConfig:
     cfg = NowreckConfig()
     data = cfg.load()
 
-    return ModelConfig(
-        api_key=_get_str_or(data, "api_key", ""),
-        model=_get_str_or(data, "model", "gpt-4o"),
-        base_url=_get_str_or(data, "base_url", "https://api.openai.com/v1"),
-        temperature=_get_float_or(data, "temperature", 0.0),
-        max_retries=_get_int_or(data, "max_retries", 1),
-        provider=_get_str_or(data, "provider", "") or None,
-    )
+    try:
+        return ModelConfig(
+            api_key=_get_str_or(data, "api_key", ""),
+            model=_get_str_or(data, "model", "gpt-4o"),
+            base_url=_get_str_or(data, "base_url", "https://api.openai.com/v1"),
+            temperature=_get_float_or(data, "temperature", 0.0),
+            max_retries=_get_int_or(data, "max_retries", 1),
+            provider=_get_str_or(data, "provider", "") or None,
+        )
+    except ValueError as exc:
+        # Invalid stored values (e.g. out-of-range temperature) must
+        # fail with a readable message, not a traceback.
+        raise ModelError(f"Invalid configuration: {exc}") from exc
 
 
 def _get_str_or(data: dict[str, object], key: str, default: str) -> str:
@@ -353,7 +361,5 @@ def _resolve_path(raw: str) -> Path:
         if not path.is_dir():
             raise ValueError(f"Path is not a directory: {path}")
     except OSError as exc:
-        raise ValueError(
-            f"Cannot access path: {exc}"
-        ) from exc
+        raise ValueError(f"Cannot access path: {exc}") from exc
     return path

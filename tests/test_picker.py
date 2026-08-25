@@ -301,6 +301,37 @@ class BaseVerificationFixture:
         )
 
 
+class TestRunVerificationBadTemperature(BaseVerificationFixture):
+    """P2-08: an out-of-range stored temperature fails gracefully."""
+
+    @patch("nowreck.picker._pause")
+    @patch("nowreck.picker.questionary.text")
+    @patch("nowreck.picker.NowreckConfig")
+    def test_out_of_range_temperature_is_graceful(
+        self,
+        mock_config_cls: MagicMock,
+        mock_text: MagicMock,
+        mock_pause: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_config = MagicMock()
+        mock_config.load.return_value = {
+            "api_key": "sk-test",
+            "base_url": "https://api.test.com/v1",
+            "model": "test-model",
+            "temperature": 9.9,
+        }
+        mock_config_cls.return_value = mock_config
+        mock_text.return_value.ask.return_value = "my prompt"
+
+        _run_verification(MagicMock(spec=TerminalReporter))
+
+        captured = capsys.readouterr()
+        assert "Invalid configuration" in captured.err
+        assert "temperature" in captured.err
+        mock_pause.assert_called_once()
+
+
 class TestRunVerificationPromptHandling(BaseVerificationFixture):
     """Edge cases around the prompt input."""
 
@@ -778,7 +809,7 @@ class TestRunPrePost:
         mock_save: MagicMock,
         mock_confirm: MagicMock,
     ) -> None:
-        """"Yes, load from a file" with a valid file should verify claims."""
+        """ "Yes, load from a file" with a valid file should verify claims."""
         mock_confirm.return_value.ask.return_value = False
         from nowreck.claims.parser import ParseResult
 
@@ -793,8 +824,7 @@ class TestRunPrePost:
         mock_select.return_value.ask.return_value = "Yes, load from a file"
 
         # Mock file read
-        with patch("nowreck.picker.Path.read_text",
-                   return_value='{"claims": []}'):
+        with patch("nowreck.picker.Path.read_text", return_value='{"claims": []}'):
             # Mock scanner
             mock_scanner = MagicMock()
             mock_pre_scan = MagicMock()
@@ -820,8 +850,9 @@ class TestRunPrePost:
             mock_parse_result.claims = [MagicMock()]
             mock_parse_result.errors = []
 
-            with patch("nowreck.picker.ClaimParser.parse",
-                       return_value=mock_parse_result):
+            with patch(
+                "nowreck.picker.ClaimParser.parse", return_value=mock_parse_result
+            ):
                 mock_report = VerificationReport(
                     results=[
                         VerificationResult(
@@ -859,7 +890,7 @@ class TestRunPrePost:
         mock_pause: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """"Yes, load from a file" with an unreadable file should print error."""
+        """ "Yes, load from a file" with an unreadable file should print error."""
         mock_path.return_value.ask.side_effect = [
             "/pre/path",
             "/post/path",
@@ -867,8 +898,9 @@ class TestRunPrePost:
         ]
         mock_select.return_value.ask.return_value = "Yes, load from a file"
 
-        with patch("nowreck.picker.Path.read_text",
-                   side_effect=OSError("No such file")):
+        with patch(
+            "nowreck.picker.Path.read_text", side_effect=OSError("No such file")
+        ):
             _run_pre_post(MagicMock(spec=TerminalReporter))
 
         captured = capsys.readouterr()
@@ -938,8 +970,7 @@ class TestRunPrePost:
         mock_parse_result.claims = []
         mock_parse_result.errors = ["Invalid JSON at line 1"]
 
-        with patch("nowreck.picker.ClaimParser.parse",
-                   return_value=mock_parse_result):
+        with patch("nowreck.picker.ClaimParser.parse", return_value=mock_parse_result):
             mock_reporter = MagicMock(spec=TerminalReporter)
             mock_reporter.report.return_value = "Fallback report"
 
@@ -1059,11 +1090,13 @@ class TestRunConfigSetup:
 
         _run_config_setup()
 
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-new",
-            "base_url": "https://new.example.com/v1",
-            "model": "new-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-new",
+                "base_url": "https://new.example.com/v1",
+                "model": "new-model",
+            }
+        )
         mock_pause.assert_called_once()
 
     @patch("nowreck.picker._pause")
@@ -1093,11 +1126,13 @@ class TestRunConfigSetup:
         _run_config_setup()
 
         # When values are empty/None, the old data should not be overwritten
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-existing",
-            "base_url": "https://existing.example.com/v1",
-            "model": "existing-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-existing",
+                "base_url": "https://existing.example.com/v1",
+                "model": "existing-model",
+            }
+        )
         mock_pause.assert_called_once()
 
     @patch("nowreck.picker._pause")
@@ -1126,11 +1161,13 @@ class TestRunConfigSetup:
 
         _run_config_setup()
 
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-replacement",
-            "base_url": "https://existing.example.com/v1",
-            "model": "existing-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-replacement",
+                "base_url": "https://existing.example.com/v1",
+                "model": "existing-model",
+            }
+        )
         mock_pause.assert_called_once()
 
     @patch("nowreck.picker._pause")
@@ -1157,11 +1194,13 @@ class TestRunConfigSetup:
 
         _run_config_setup()
 
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-fresh",
-            "base_url": "https://fresh.example.com/v1",
-            "model": "fresh-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-fresh",
+                "base_url": "https://fresh.example.com/v1",
+                "model": "fresh-model",
+            }
+        )
         mock_pause.assert_called_once()
 
     @patch("nowreck.picker._pause")
@@ -1218,6 +1257,7 @@ class TestRunConfigSetup:
 # ============================================================================
 # _view_last_report — showing previous verification output
 # ============================================================================
+
 
 class TestViewLastReport:
     """Reading and displaying the saved report."""

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from nowreck.storage.config import NowreckConfig
 
@@ -96,3 +99,33 @@ class TestNowreckConfigEmptyFile:
 
         result = cfg.load()
         assert result == {}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits not enforced on Windows",
+)
+class TestSavePermissions:
+    def test_saved_file_is_owner_only(self, tmp_path: Path) -> None:
+        """P2-07: config.json must be 0o600 after save."""
+        cfg = NowreckConfig(tmp_path)
+        cfg.save({"api_key": "sk-secret"})
+
+        mode = cfg.config_path.stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_preexisting_loose_file_is_tightened(self, tmp_path: Path) -> None:
+        """A config.json created by an older version (loose perms) must be
+        tightened to 0o600 on the next save — open()'s mode argument only
+        applies at creation, so this needs fchmod()."""
+        import os
+
+        cfg = NowreckConfig(tmp_path)
+        cfg._config_dir.mkdir(parents=True, exist_ok=True)
+        cfg._config_path.write_text("{}", encoding="utf-8")
+        os.chmod(cfg._config_path, 0o666)
+
+        cfg.save({"api_key": "sk-secret"})
+
+        mode = cfg.config_path.stat().st_mode & 0o777
+        assert mode == 0o600
