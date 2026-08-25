@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -1257,3 +1258,29 @@ class TestPhase1AdapterFixes:
             "/v1beta/models/gemini-2.0-flash:generateContent"
         )
         assert len(result.claims) == 1
+
+
+class TestModelConfigTemperatureValidation:
+    """P2-08: temperature is validated at construction time."""
+
+    def test_valid_values_pass_without_warning(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for temp in (0.0, 0.7, 1.0, 2.0):
+                ModelConfig(temperature=temp)
+
+    def test_above_openai_max_warns(self) -> None:
+        with pytest.warns(UserWarning, match="exceeds the OpenAI maximum"):
+            ModelConfig(temperature=2.5)
+
+    def test_above_hard_limit_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[0\.0, 5\.0\]"):
+            ModelConfig(temperature=5.1)
+
+    def test_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[0\.0, 5\.0\]"):
+            ModelConfig(temperature=-0.1)
+
+    def test_nan_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[0\.0, 5\.0\]"):
+            ModelConfig(temperature=float("nan"))

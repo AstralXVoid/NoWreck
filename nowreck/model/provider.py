@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,25 @@ class ModelConfig:
     max_retries: int = 1
     failed_dir: Path | None = None
     provider: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate configuration values at construction time.
+
+        Raises:
+            ValueError: If ``temperature`` is outside ``[0.0, 5.0]``.
+        """
+        # NaN fails the chained comparison, so it is rejected here too.
+        if not 0.0 <= self.temperature <= 5.0:
+            raise ValueError(
+                f"temperature must be within [0.0, 5.0], got {self.temperature!r}"
+            )
+        if self.temperature > 2.0:
+            warnings.warn(
+                f"temperature {self.temperature} exceeds the OpenAI "
+                "maximum (2.0); Anthropic rejects anything above 1.0.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     def resolve_api_key(self) -> str:
         """Return the API key, falling back to the environment
@@ -111,6 +131,15 @@ class ModelResult:
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
+
+
+def mask_key(key: str) -> str:
+    """Public alias for :func:`_mask_key`.
+
+    Provided for cross-module consumers (CLI config display) that need
+    key masking without reaching into private names.
+    """
+    return _mask_key(key)
 
 
 def _mask_key(key: str) -> str:

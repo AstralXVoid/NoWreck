@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,25 @@ class NowreckConfig:
             data: A dictionary of configuration key-value pairs.
         """
         self._config_dir.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+
+        # Create/open with owner-only permissions from the start —
+        # writing first and chmodding after would expose the key to a
+        # brief race window under permissive umasks.  fchmod() is also
+        # required because the open() mode argument applies only when
+        # the file is *created*; a pre-existing (loose) file from an
+        # older version must be tightened on every save.
+        payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+        fd = os.open(
+            self._config_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
         )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+        except BaseException:
+            # Never leave a partially-written or mis-permissioned file
+            # behind on failure.
+            self._config_path.unlink(missing_ok=True)
+            raise

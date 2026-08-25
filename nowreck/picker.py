@@ -200,14 +200,19 @@ def _run_verification(reporter: TerminalReporter) -> None:
 
     provider_val = str(data.get("provider", "") or "") or None
 
-    model_config = ModelConfig(
-        api_key=api_key,
-        model=model_name,
-        base_url=base_url,
-        temperature=temperature,
-        max_retries=max_retries,
-        provider=provider_val,
-    )
+    try:
+        model_config = ModelConfig(
+            api_key=api_key,
+            model=model_name,
+            base_url=base_url,
+            temperature=temperature,
+            max_retries=max_retries,
+            provider=provider_val,
+        )
+    except ValueError as exc:
+        print(f"Error: Invalid configuration: {exc}", file=sys.stderr)
+        _pause()
+        return
 
     print("Running verification...")
     try:

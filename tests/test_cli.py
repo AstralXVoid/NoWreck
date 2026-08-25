@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from nowreck.cli import build_parser
-from nowreck.main import _resolve_path, handle_config, handle_fix, main
+from nowreck.main import (
+    _build_model_config,
+    _resolve_path,
+    handle_config,
+    handle_fix,
+    main,
+)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -160,6 +167,33 @@ class TestHandleConfig:
         out, _ = capsys.readouterr()
         assert rc == 0
         assert "foo = bar" in out
+
+        self._clean_config()
+
+    def test_config_show_masks_api_key(self, capsys: pytest.CaptureFixture) -> None:
+        """P2-06: config show must never print the full API key."""
+        self._clean_config()
+        parser = build_parser()
+        secret = "sk-SUPERSECRET-1234567890"
+        handle_config(parser.parse_args(["config", "set", "api_key", secret]))
+        handle_config(parser.parse_args(["config", "show"]))
+
+        out, _ = capsys.readouterr()
+        assert secret not in out
+        assert "****" in out
+
+        self._clean_config()
+
+    def test_config_set_echo_masks_api_key(self, capsys: pytest.CaptureFixture) -> None:
+        """The confirmation line for api_key is masked too."""
+        self._clean_config()
+        parser = build_parser()
+        secret = "sk-SUPERSECRET-1234567890"
+        handle_config(parser.parse_args(["config", "set", "api_key", secret]))
+
+        out, _ = capsys.readouterr()
+        assert secret not in out
+        assert "****" in out
 
         self._clean_config()
 
@@ -386,3 +420,32 @@ class TestV10Flags:
         assert args.prompt == "Add a function"
         assert args.pre is None
         assert args.post is None
+
+
+class TestBuildModelConfigValidation:
+    """P2-08: invalid stored temperature surfaces as ModelError."""
+
+    def test_invalid_temperature_raises_model_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from nowreck.model.provider import ModelError
+
+        mock_cfg = MagicMock()
+        mock_cfg.load.return_value = {
+            "api_key": "sk-test",
+            "base_url": "https://api.test.com/v1",
+            "model": "m",
+            "temperature": 9.9,
+        }
+        monkeypatch.setattr("nowreck.main.NowreckConfig", lambda: mock_cfg)
+
+        with pytest.raises(ModelError, match="Invalid configuration"):
+            _build_model_config()
+
+    def test_valid_temperature_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.load.return_value = {"temperature": "0.7"}
+        monkeypatch.setattr("nowreck.main.NowreckConfig", lambda: mock_cfg)
+
+        cfg = _build_model_config()
+        assert cfg.temperature == 0.7
