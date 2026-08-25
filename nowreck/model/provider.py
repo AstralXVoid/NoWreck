@@ -11,9 +11,13 @@ from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from nowreck.claims.models import Claim
+from nowreck.claims.models import Claim, ClaimType
 from nowreck.claims.parser import ClaimParser, ParseResult
-from nowreck.detector.change_detector import DetectedChange
+from nowreck.detector.change_detector import (
+    ChangeType,
+    DetectedChange,
+    change_sort_key,
+)
 from nowreck.model.adapters import detect_adapter
 from nowreck.model.prompts import PromptBuilder
 
@@ -133,6 +137,48 @@ class ModelResult:
 # ---------------------------------------------------------------------------
 
 
+_CLAIM_TYPE_TO_CHANGE: dict[ClaimType, ChangeType] = {
+    ClaimType.ADD_FUNCTION: ChangeType.ADD_FUNCTION,
+    ClaimType.REMOVE_FUNCTION: ChangeType.REMOVE_FUNCTION,
+    ClaimType.ADD_CLASS: ChangeType.ADD_CLASS,
+    ClaimType.REMOVE_CLASS: ChangeType.REMOVE_CLASS,
+    ClaimType.ADD_INTERFACE: ChangeType.ADD_INTERFACE,
+    ClaimType.REMOVE_INTERFACE: ChangeType.REMOVE_INTERFACE,
+    ClaimType.ADD_ENUM: ChangeType.ADD_ENUM,
+    ClaimType.REMOVE_ENUM: ChangeType.REMOVE_ENUM,
+    ClaimType.ADD_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
+    ClaimType.REMOVE_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
+    ClaimType.FILE_CREATED: ChangeType.FILE_CREATED,
+    ClaimType.FILE_DELETED: ChangeType.FILE_DELETED,
+}
+
+
+def _claims_to_changes(claims: list[Claim]) -> list[DetectedChange]:
+    """Convert parsed claims into ``DetectedChange`` records.
+
+    Private relocation of the former (deprecated)
+    ``PromptBuilder.claims_to_changes`` — used only by the legacy
+    :meth:`ModelProvider.changes_from_prompt` flow.
+    """
+    changes: list[DetectedChange] = []
+    for claim in claims:
+        change_type = _CLAIM_TYPE_TO_CHANGE.get(claim.type)
+        if change_type is None:
+            continue
+        changes.append(
+            DetectedChange(
+                change_type=change_type,
+                file_path=claim.to_detected_change_path(),
+                symbol_name=claim.symbol_name,
+                parent_class=claim.parent_class,
+                line_number=claim.line_number,
+                caller_name=claim.caller_name,
+                called_name=claim.called_name,
+            )
+        )
+    return sorted(changes, key=change_sort_key)
+
+
 def mask_key(key: str) -> str:
     """Public alias for :func:`_mask_key`.
 
@@ -151,19 +197,6 @@ def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "****"
     return f"{key[:4]}****{key[-4:]}"
-
-
-def _mask_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Mask Authorization headers in a messages list.
-
-    Returns a new list — the original is not mutated.
-    """
-    masked: list[dict[str, str]] = []
-    for msg in messages:
-        new_msg = dict(msg)
-        # No headers to mask in standard chat messages
-        masked.append(new_msg)
-    return masked
 
 
 class ModelError(Exception):
@@ -272,7 +305,13 @@ class ModelProvider:
         self,
         prompt: str,
     ) -> ModelResult:
-        """Send a natural-language prompt to the model and return both
+        """.. deprecated:: v0.11.1
+            Production callers use :meth:`changes_from_prompt_v10` or
+            :func:`nowreck.verifier.prompt_verifier.verify_prompt`.
+            Kept for backwards compatibility; no longer emits
+            deprecation warnings.
+
+        Send a natural-language prompt to the model and return both
         the parsed claims and the ``DetectedChange`` objects derived from
         them.
 
@@ -292,11 +331,11 @@ class ModelProvider:
             ModelError: If the API call fails irrecoverably (network
                 error, bad auth, etc.).
         """
-        messages = PromptBuilder.for_prompt(prompt)
+        messages = PromptBuilder.for_prompt_v10(prompt)
         result = self._call_with_retry(messages)
 
         # Derive DetectedChanges from the parsed claims.
-        changes = PromptBuilder.claims_to_changes(result.claims)
+        changes = _claims_to_changes(result.claims)
 
         return ModelResult(
             claims=result.claims,
@@ -480,8 +519,7 @@ class ModelProvider:
         suffix = uuid.uuid4().hex[:8]
         filename = f"failed_{timestamp}_{suffix}.json"
 
-        # Mask API keys in saved messages
-        masked_messages = _mask_messages(messages)
+        masked_messages = messages  # chat payloads carry no headers
 
         payload = {
             "timestamp": timestamp,

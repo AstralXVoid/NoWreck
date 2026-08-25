@@ -659,3 +659,128 @@ class TestRestoreAfterPatch:
         # though no patch was applied.
         assert len(restore_calls) == 1
         assert not sentinel.exists()  # cleanup removed the sentinel dir
+
+
+class TestManualApplyHunks:
+    """P1-03: the no-git fallback applies hunks positionally, correctly."""
+
+    BASE = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"
+
+    def _write_base(self, repo_dir: Path) -> Path:
+        target = repo_dir / "src" / "mod.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self.BASE, encoding="utf-8")
+        return target
+
+    def test_multi_hunk_modification(self, repo_dir: Path) -> None:
+        target = self._write_base(repo_dir)
+        patch = (
+            "--- a/src/mod.py\n"
+            "+++ b/src/mod.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " one\n"
+            "-two\n"
+            "+TWO\n"
+            " three\n"
+            "@@ -6,2 +6,3 @@\n"
+            " six\n"
+            "+SIX_HALF\n"
+            " seven\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert result.success, result.errors
+        text = target.read_text(encoding="utf-8")
+        assert text == "one\nTWO\nthree\nfour\nfive\nsix\nSIX_HALF\nseven\n"
+
+    def test_insertion_keeps_tail_intact(self, repo_dir: Path) -> None:
+        target = self._write_base(repo_dir)
+        patch = (
+            "--- a/src/mod.py\n"
+            "+++ b/src/mod.py\n"
+            "@@ -3,2 +3,4 @@\n"
+            " three\n"
+            "+inserted_a\n"
+            "+inserted_b\n"
+            " four\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert result.success, result.errors
+        assert target.read_text(encoding="utf-8") == (
+            "one\ntwo\nthree\ninserted_a\ninserted_b\nfour\nfive\nsix\nseven\n"
+        )
+
+    def test_removal_deletes_lines(self, repo_dir: Path) -> None:
+        target = self._write_base(repo_dir)
+        patch = (
+            "--- a/src/mod.py\n"
+            "+++ b/src/mod.py\n"
+            "@@ -1,5 +1,3 @@\n"
+            " one\n"
+            "-two\n"
+            "-three\n"
+            " four\n"
+            " five\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert result.success, result.errors
+        assert target.read_text(encoding="utf-8") == (
+            "one\nfour\nfive\nsix\nseven\n"
+        )
+
+    def test_context_mismatch_fails_without_corruption(
+        self, repo_dir: Path
+    ) -> None:
+        target = self._write_base(repo_dir)
+        patch = (
+            "--- a/src/mod.py\n"
+            "+++ b/src/mod.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " NOT_THE_ACTUAL_LINE\n"
+            "-two\n"
+            "+TWO\n"
+            " three\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert not result.success
+        assert any("context mismatch" in e for e in result.errors)
+        # Original content untouched.
+        assert target.read_text(encoding="utf-8") == self.BASE
+
+    def test_new_file_creation(self, repo_dir: Path) -> None:
+        patch = (
+            "--- /dev/null\n"
+            "+++ b/src/created.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+def fresh():\n"
+            "+    return 1\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert result.success, result.errors
+        created = repo_dir / "src" / "created.py"
+        assert created.read_text(encoding="utf-8") == (
+            "def fresh():\n    return 1\n"
+        )
+
+    def test_file_deletion(self, repo_dir: Path) -> None:
+        target = self._write_base(repo_dir)
+        patch = (
+            "--- a/src/mod.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,7 +0,0 @@\n"
+            "-one\n"
+            "-two\n"
+            "-three\n"
+            "-four\n"
+            "-five\n"
+            "-six\n"
+            "-seven\n"
+        )
+        result = PatchApplier.apply(patch, repo_dir)
+
+        assert result.success, result.errors
+        assert not target.exists()

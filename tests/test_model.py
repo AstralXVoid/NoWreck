@@ -10,7 +10,7 @@ import pytest
 
 from nowreck.claims.models import ClaimType
 from nowreck.detector.change_detector import ChangeType, DetectedChange
-from nowreck.model.prompts import PROMPT_SYSTEM_PROMPT, SYSTEM_PROMPT, PromptBuilder
+from nowreck.model.prompts import SYSTEM_PROMPT, PromptBuilder
 from nowreck.model.provider import (
     ModelConfig,
     ModelError,
@@ -183,156 +183,6 @@ class TestPromptBuilder:
         assert '"claims"' in SYSTEM_PROMPT
         assert "ADD_FUNCTION" in SYSTEM_PROMPT
 
-    def test_for_prompt_system_present(self) -> None:
-        messages = PromptBuilder.for_prompt("Add a function x")
-        assert len(messages) == 2
-        assert messages[0]["role"] == "system"
-        assert "Nowreck" in messages[0]["content"]
-
-    def test_for_prompt_contains_user_text(self) -> None:
-        messages = PromptBuilder.for_prompt("Add validate_email to app.py")
-        assert "validate_email" in messages[1]["content"]
-
-    def test_for_prompt_system_has_json_format(self) -> None:
-        assert '"claims"' in PROMPT_SYSTEM_PROMPT
-        assert "ADD_FUNCTION" in PROMPT_SYSTEM_PROMPT
-
-    def test_claims_to_changes_empty(self) -> None:
-        assert PromptBuilder.claims_to_changes([]) == []
-
-    def test_claims_to_changes_add_function(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.ADD_FUNCTION,
-                symbol_name="validate_email",
-                file_path="app.py",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.ADD_FUNCTION
-        assert changes[0].symbol_name == "validate_email"
-        assert str(changes[0].file_path) == "app.py"
-
-    def test_claims_to_changes_add_class(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.ADD_CLASS,
-                symbol_name="UserService",
-                file_path="services/user.py",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.ADD_CLASS
-        assert changes[0].symbol_name == "UserService"
-
-    def test_claims_to_changes_file_created(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.FILE_CREATED,
-                file_path="new_module.py",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.FILE_CREATED
-        assert str(changes[0].file_path) == "new_module.py"
-
-    def test_claims_to_changes_add_interface(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.ADD_INTERFACE,
-                symbol_name="User",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.ADD_INTERFACE
-        assert changes[0].symbol_name == "User"
-        assert str(changes[0].file_path) == "models.ts"
-
-    def test_claims_to_changes_remove_interface(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.REMOVE_INTERFACE,
-                symbol_name="User",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.REMOVE_INTERFACE
-
-    def test_claims_to_changes_add_enum(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.ADD_ENUM,
-                symbol_name="Role",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.ADD_ENUM
-        assert changes[0].symbol_name == "Role"
-
-    def test_claims_to_changes_remove_enum(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.REMOVE_ENUM,
-                symbol_name="Role",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.REMOVE_ENUM
-
-    def test_claims_to_changes_add_type_alias(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.ADD_TYPE_ALIAS,
-                symbol_name="UserStatus",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.ADD_TYPE_ALIAS
-        assert changes[0].symbol_name == "UserStatus"
-
-    def test_claims_to_changes_remove_type_alias(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.REMOVE_TYPE_ALIAS,
-                symbol_name="UserStatus",
-                file_path="models.ts",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 1
-        assert changes[0].change_type is ChangeType.REMOVE_TYPE_ALIAS
-
     def test_prompt_renders_interface_change(self) -> None:
         """A type-level change renders with its human label, not a raw
         enum name."""
@@ -348,35 +198,6 @@ class TestPromptBuilder:
         assert "Interface added" in content
         assert "User" in content
         assert "models.ts" in content
-
-    def test_claims_to_changes_skips_calls_function(self) -> None:
-        """CALLS_FUNCTION claims are NOT converted to CALL_DETECTED
-        changes — they are verified against other changes instead."""
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(
-                type=ClaimType.CALLS_FUNCTION,
-                caller_name="main",
-                called_name="validate",
-                file_path="app.py",
-            ),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 0  # No change derived from CALLS_FUNCTION
-
-    def test_claims_to_changes_multiple_sorted(self) -> None:
-        from nowreck.claims.models import Claim, ClaimType
-
-        claims = [
-            Claim(type=ClaimType.FILE_CREATED, file_path="z.py"),
-            Claim(type=ClaimType.FILE_CREATED, file_path="a.py"),
-        ]
-        changes = PromptBuilder.claims_to_changes(claims)
-        assert len(changes) == 2
-        # Should be sorted by file_path (a.py before z.py)
-        assert str(changes[0].file_path) == "a.py"
-        assert str(changes[1].file_path) == "z.py"
 
 
 # ---------------------------------------------------------------------------
@@ -1284,3 +1105,63 @@ class TestModelConfigTemperatureValidation:
     def test_nan_raises(self) -> None:
         with pytest.raises(ValueError, match=r"\[0\.0, 5\.0\]"):
             ModelConfig(temperature=float("nan"))
+
+
+class TestLegacyChangesFromPromptDerivation:
+    """Coverage relocated from the removed claims_to_changes unit tests:
+    the legacy flow must still derive sorted DetectedChanges and skip
+    CALLS_FUNCTION claims."""
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch) -> ModelResult:
+        payload = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "FILE_CREATED",
+                        "file_path": "z.py",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "type": "CALLS_FUNCTION",
+                        "symbol_name": "main",
+                        "caller_name": "main",
+                        "called_name": "validate",
+                        "file_path": "app.py",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "type": "FILE_CREATED",
+                        "file_path": "a.py",
+                        "confidence": 0.9,
+                    },
+                ]
+            }
+        )
+
+        def fake_http(messages, config):
+            return payload
+
+        monkeypatch.setattr(
+            ModelProvider, "_default_http_call", staticmethod(fake_http)
+        )
+        return ModelProvider(config=ModelConfig(api_key="sk-test")).changes_from_prompt(
+            "add files"
+        )
+
+    def test_derives_sorted_file_changes_and_skips_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = self._run(monkeypatch)
+
+        assert [str(c.file_path) for c in result.changes] == [
+            "a.py",
+            "z.py",
+        ]
+        # CALLS_FUNCTION produced no standalone change.
+        assert all(
+            c.change_type is not ChangeType.CALL_DETECTED for c in result.changes
+        )
