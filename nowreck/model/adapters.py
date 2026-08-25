@@ -138,8 +138,9 @@ class OpenAIAdapter(ProviderAdapter):
 # ---------------------------------------------------------------------------
 
 
-# Default max_tokens — Anthropic requires this field.
-_ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
+# Default max_tokens — Anthropic requires this field.  Sized for the
+# v10 payload (claims + unified diff); 4096 truncated real responses.
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 16384
 
 
 class AnthropicAdapter(ProviderAdapter):
@@ -172,6 +173,9 @@ class AnthropicAdapter(ProviderAdapter):
             else:
                 conversation.append(msg)
 
+        if not conversation:
+            raise _AdapterError("Request requires at least one non-system message.")
+
         body_payload: dict[str, object] = {
             "model": model,
             "max_tokens": _ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -194,6 +198,14 @@ class AnthropicAdapter(ProviderAdapter):
         import json
 
         data: dict[str, object] = json.loads(raw)
+
+        # A truncated response cannot contain complete JSON — surface
+        # the cause instead of letting JSON parsing fail downstream.
+        if data.get("stop_reason") == "max_tokens":
+            raise _AdapterError(
+                "Anthropic response truncated by the max_tokens limit "
+                "(stop_reason=max_tokens)."
+            )
 
         # Anthropic wraps the response in a "content" array of blocks.
         raw_content: object = data.get("content")
@@ -244,17 +256,25 @@ class GeminiAdapter(ProviderAdapter):
         temperature: float,
     ) -> tuple[str, dict[str, str], bytes]:
         import json
+        from urllib.parse import quote
 
-        # Gemini uses model-specific URL paths.
-        url_suffix = f"/v1beta/models/{model}:generateContent"
+        # Gemini uses model-specific URL paths.  The model name is
+        # URL-encoded so slashes/colons cannot corrupt routing.
+        url_suffix = f"/v1beta/models/{quote(model, safe='')}:generateContent"
 
-        # Separate system messages from conversation.
+        # Separate system messages from conversation.  Message fields
+        # are required — malformed messages fail loudly (mirroring the
+        # strictness of parse_response).
         system_parts: list[str] = []
         contents: list[dict[str, object]] = []
 
         for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
+            if "role" not in msg:
+                raise _AdapterError("Message missing required field 'role'.")
+            if "content" not in msg:
+                raise _AdapterError("Message missing required field 'content'.")
+            role = msg["role"]
+            content = msg["content"]
             if role == "system":
                 system_parts.append(content)
             else:
@@ -266,6 +286,9 @@ class GeminiAdapter(ProviderAdapter):
                         "parts": [{"text": content}],
                     }
                 )
+
+        if not contents:
+            raise _AdapterError("Request requires at least one non-system message.")
 
         body_payload: dict[str, object] = {
             "contents": contents,
@@ -350,6 +373,11 @@ def detect_adapter(
 
     Returns:
         A ``ProviderAdapter`` instance.
+
+    Raises:
+        ValueError: If ``provider_override`` is not a recognized
+            provider name — a typo must fail loudly, not silently send
+            OpenAI-format requests to the wrong endpoint.
     """
     if provider_override:
         key = provider_override.lower().strip()
@@ -357,12 +385,16 @@ def detect_adapter(
             return _make_anthropic()
         if key == "gemini":
             return _make_gemini()
-        # Unknown override — fall through to URL detection.
-        # (OpenAI-compatible is the default.)
+        if key == "openai":
+            return OpenAIAdapter()
+        raise ValueError(
+            f"Unknown provider: {provider_override!r}. "
+            "Expected 'openai', 'anthropic', or 'gemini'."
+        )
 
     url_lower = base_url.lower()
 
-    if "api.anthropic.com" in url_lower:
+    if "api.anthropic.com" in url_lower or "api.anthropic.eu" in url_lower:
         return _make_anthropic()
     if "generativelanguage.googleapis.com" in url_lower:
         return _make_gemini()

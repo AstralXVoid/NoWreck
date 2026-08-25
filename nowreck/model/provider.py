@@ -141,18 +141,45 @@ class ModelError(Exception):
     """Raised when the model API call fails irrecoverably."""
 
 
-def _auth_header(api_key: str, base_url: str) -> dict[str, str]:
+def _auth_header(
+    api_key: str, base_url: str, provider: str | None = None
+) -> dict[str, str]:
     """Return the correct authorization header for the provider.
 
-    Anthropic uses ``x-api-key``, Gemini uses ``x-goog-api-key``,
-    and everything else uses ``Authorization: Bearer``.
+    An explicit *provider* override wins over URL inference.  Anthropic
+    (including the EU endpoint) uses ``x-api-key``, Gemini uses
+    ``x-goog-api-key``, and everything else uses
+    ``Authorization: Bearer``.
     """
+    if provider:
+        key = provider.lower().strip()
+        if key == "anthropic":
+            return {"x-api-key": api_key}
+        if key == "gemini":
+            return {"x-goog-api-key": api_key}
+        # "openai" or unrecognized values fall through to URL detection.
+
     url_lower = base_url.lower()
-    if "api.anthropic.com" in url_lower:
+    if "api.anthropic.com" in url_lower or "api.anthropic.eu" in url_lower:
         return {"x-api-key": api_key}
     if "generativelanguage.googleapis.com" in url_lower:
         return {"x-goog-api-key": api_key}
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _join_url(base_url: str, url_suffix: str) -> str:
+    """Join a configured base URL with an adapter's versioned suffix.
+
+    Strips a redundant trailing version segment (``/v1`` or
+    ``/v1beta``) from the base when the adapter's suffix already
+    carries its own — prevents requests like ``/v1/v1/messages``.
+    """
+    base = base_url.rstrip("/")
+    for segment in ("/v1", "/v1beta"):
+        if url_suffix.startswith(segment) and base.endswith(segment):
+            base = base[: -len(segment)]
+            break
+    return f"{base}{url_suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +405,12 @@ class ModelProvider:
         )
 
         req = urllib_request.Request(
-            url=f"{config.base_url.rstrip('/')}{url_suffix}",
+            url=_join_url(config.base_url, url_suffix),
             data=body,
-            headers={**headers, **_auth_header(api_key, config.base_url)},
+            headers={
+                **headers,
+                **_auth_header(api_key, config.base_url, config.provider),
+            },
             method="POST",
         )
 
