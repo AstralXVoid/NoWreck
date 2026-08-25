@@ -1177,3 +1177,83 @@ class TestPhase4AdapterSelection:
             == "https://my-provider.example.com/v1/chat/completions"
         )
         assert len(result.claims) == 1
+
+
+# ---------------------------------------------------------------------------
+# v0.11.1 Phase 1 — adapter correctness fixes (P1-01, P2-04)
+# ---------------------------------------------------------------------------
+
+
+class TestPhase1AdapterFixes:
+    """Provider override auth + double-path URL dedup, end-to-end."""
+
+    def test_provider_override_sets_auth_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1-01: provider=anthropic on a generic base_url must send
+        x-api-key, not Authorization: Bearer."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
+        config = ModelConfig(
+            api_key="sk-ant-x",
+            base_url="https://proxy.example.com/v1",
+            model="claude-sonnet-4-20250514",
+            provider="anthropic",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        headers = _provider_headers(fake.requests[0])
+        assert headers["x-api-key"] == "sk-ant-x"
+        assert "authorization" not in headers
+        assert len(result.claims) == 1
+
+    def test_anthropic_base_url_with_v1_suffix_not_doubled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-04: a /v1-suffixed Anthropic base_url must not produce
+        /v1/v1/messages."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
+        config = ModelConfig(
+            api_key="sk-ant-x",
+            base_url="https://api.anthropic.com/v1",
+            model="claude-sonnet-4-20250514",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        assert str(getattr(fake.requests[0], "full_url")) == (
+            "https://api.anthropic.com/v1/messages"
+        )
+        assert len(result.claims) == 1
+
+    def test_gemini_base_url_with_v1beta_suffix_not_doubled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-04: a /v1beta-suffixed Gemini base_url must not double the
+        version segment."""
+        fake = _FakeUrlopen()
+        monkeypatch.setattr("nowreck.model.provider.urllib_request.urlopen", fake)
+        config = ModelConfig(
+            api_key="AIzaTest",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-2.0-flash",
+        )
+        provider = ModelProvider(config=config)
+
+        result = provider.explain_changes(
+            [_make_change(ChangeType.FILE_CREATED, file_path="new.py")]
+        )
+
+        assert str(getattr(fake.requests[0], "full_url")) == (
+            "https://generativelanguage.googleapis.com"
+            "/v1beta/models/gemini-2.0-flash:generateContent"
+        )
+        assert len(result.claims) == 1
