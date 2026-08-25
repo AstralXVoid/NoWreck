@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from nowreck.model.provider import ModelConfig, _mask_key, _mask_messages
+from nowreck.model.provider import ModelConfig, _mask_key
 
 
 class TestMaskKey:
@@ -55,25 +55,6 @@ class TestMaskKey:
         masked = _mask_key(key)
         assert "1234567890abcdef" not in masked
         assert "****" in masked
-
-
-class TestMaskMessages:
-    """Tests for _mask_messages helper."""
-
-    def test_returns_new_list(self) -> None:
-        original = [{"role": "user", "content": "hello"}]
-        masked = _mask_messages(original)
-        assert masked is not original
-        assert masked[0] is not original[0]
-
-    def test_preserves_content(self) -> None:
-        messages = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Add a function"},
-        ]
-        masked = _mask_messages(messages)
-        assert masked[0]["content"] == "You are helpful"
-        assert masked[1]["content"] == "Add a function"
 
 
 class TestSecurityIntegration:

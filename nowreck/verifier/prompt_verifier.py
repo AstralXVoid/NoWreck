@@ -39,6 +39,7 @@ The key difference from the old Prompt Mode:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,6 +95,16 @@ class PromptVerificationResult:
     after_snapshot: Snapshot | None = None
     model_result: ModelResult | None = None
     has_independent_evidence: bool = False
+
+
+@dataclass
+class _ManualFilePatch:
+    """One file's parsed section of a unified diff (manual applier)."""
+
+    path: str
+    is_new: bool
+    is_delete: bool
+    hunks: list[tuple[int, list[str]]]
 
 
 class PatchApplier:
@@ -172,25 +183,91 @@ class PatchApplier:
 
     @staticmethod
     def _try_manual_apply(patch: str, repo_path: Path) -> PatchApplicationResult:
-        """Apply patch by extracting file changes manually.
+        """Apply a unified diff without ``git`` — positionally correct.
 
-        This is a simplified parser for unified diffs.  It handles
-        the common case of file additions and modifications.
+        Hunks are applied at their declared line offsets: context is
+        verified against the original, removals advance the read
+        cursor, additions splice into the output, and inter-hunk gaps
+        are copied verbatim.  A hunk that cannot be matched fails its
+        file (reported in ``errors``); unrelated files still apply and
+        the overall result reports failure.
         """
         applied_files: list[str] = []
         errors: list[str] = []
 
-        # Split patch into per-file sections
-        sections = PatchApplier._split_patch_sections(patch)
-
-        for filename, content in sections.items():
-            file_path = repo_path / filename
+        for fp in PatchApplier._parse_patch(patch):
+            target = repo_path / fp.path
             try:
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(content, encoding="utf-8")
-                applied_files.append(filename)
+                if fp.is_delete:
+                    target.unlink(missing_ok=True)
+                    applied_files.append(fp.path)
+                    continue
+
+                original = target.read_text(encoding="utf-8") if target.exists() else ""
+                had_trailing_nl = original.endswith("\n")
+                orig_lines = original.split("\n")
+                if had_trailing_nl:
+                    orig_lines.pop()  # artifact of split on trailing \n
+
+                new_lines: list[str] = []
+                read_pos = 0
+                problem: str | None = None
+
+                for old_start, hunk_lines in fp.hunks:
+                    anchor = max(old_start - 1, 0)
+                    if anchor < read_pos:
+                        problem = f"overlapping hunk at line {anchor + 1}"
+                        break
+                    new_lines.extend(orig_lines[read_pos:anchor])
+                    read_pos = anchor
+
+                    mismatch = False
+                    for raw in hunk_lines:
+                        tag, body = raw[:1], raw[1:]
+                        if tag == "+":
+                            new_lines.append(body)
+                        elif tag == "-":
+                            if (
+                                read_pos >= len(orig_lines)
+                                or orig_lines[read_pos] != body
+                            ):
+                                problem = (
+                                    f"{fp.path}: removed-line mismatch "
+                                    f"near line {read_pos + 1}"
+                                )
+                                mismatch = True
+                                break
+                            read_pos += 1
+                        else:  # context (" " or historically-blank "")
+                            if (
+                                read_pos >= len(orig_lines)
+                                or orig_lines[read_pos] != body
+                            ):
+                                problem = (
+                                    f"{fp.path}: context mismatch near "
+                                    f"line {read_pos + 1}"
+                                )
+                                mismatch = True
+                                break
+                            new_lines.append(body)
+                            read_pos += 1
+                    if mismatch:
+                        break
+
+                if problem is None:
+                    new_lines.extend(orig_lines[read_pos:])
+                    text = "\n".join(new_lines)
+                    if had_trailing_nl or fp.is_new:
+                        text += "\n"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(text, encoding="utf-8")
+                    applied_files.append(fp.path)
+                elif problem.startswith(fp.path):
+                    errors.append(problem)
+                else:
+                    errors.append(f"{fp.path}: {problem}")
             except OSError as exc:
-                errors.append(f"Failed to write {filename}: {exc}")
+                errors.append(f"Failed to write {fp.path}: {exc}")
 
         if errors:
             return PatchApplicationResult(
@@ -207,6 +284,78 @@ class PatchApplier:
         )
 
     @staticmethod
+    def _parse_patch(patch: str) -> list[_ManualFilePatch]:
+        """Parse a unified diff into per-file hunk structures."""
+        files: list[_ManualFilePatch] = []
+        current: _ManualFilePatch | None = None
+        lines = patch.splitlines()
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+
+            if line.startswith("--- ") and i + 1 < len(lines):
+                nxt = lines[i + 1]
+                if nxt.startswith("+++ "):
+                    old_path = line[4:].split("\t")[0].strip()
+                    new_path = nxt[4:].split("\t")[0].strip()
+                    is_new = old_path == "/dev/null"
+                    is_delete = new_path == "/dev/null"
+                    path = new_path if not is_delete else old_path
+                    if path.startswith(("b/", "a/")):
+                        path = path[2:]
+                    current = _ManualFilePatch(
+                        path=path,
+                        is_new=is_new,
+                        is_delete=is_delete,
+                        hunks=[],
+                    )
+                    files.append(current)
+                    i += 2
+                    continue
+
+            if current is not None and line.startswith("@@"):
+                match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                if match:
+                    old_start = int(match.group(1))
+                    hunk_lines: list[str] = []
+                    i += 1
+                    while i < len(lines):
+                        body = lines[i]
+                        if body.startswith("@@"):
+                            break
+                        if body.startswith(("diff ", "index ")):
+                            break
+                        if body.startswith("--- ") and (
+                            i + 1 < len(lines) and lines[i + 1].startswith("+++ ")
+                        ):
+                            break
+                        if body.startswith("\\"):  # "\ No newline ..."
+                            i += 1
+                            continue
+                        if body.strip() == "":
+                            # Blank context line (trailing space often lost).
+                            hunk_lines.append(" ")
+                            i += 1
+                            continue
+                        if body[0] in "+- ":
+                            hunk_lines.append(body)
+                            i += 1
+                            continue
+                        if body.startswith(
+                            ("new file", "old file", "rename ", "similarity")
+                        ):
+                            i += 1
+                            continue
+                        break
+                    current.hunks.append((old_start, hunk_lines))
+                    continue
+
+            i += 1
+
+        return files
+
+    @staticmethod
     def _extract_files_from_patch(patch: str) -> list[str]:
         """Extract file paths from a unified diff header."""
         files: list[str] = []
@@ -220,52 +369,6 @@ class PatchApplier:
                 if path not in files:
                     files.append(path)
         return files
-
-    @staticmethod
-    def _split_patch_sections(patch: str) -> dict[str, str]:
-        """Split a unified diff into per-file sections.
-
-        Returns a dict mapping filename → content (for new files) or
-        the patched content.  This is a simplified parser.
-        """
-        sections: dict[str, str] = {}
-        current_file: str | None = None
-        content_lines: list[str] = []
-
-        for line in patch.splitlines():
-            if line.startswith("+++ b/"):
-                if current_file and content_lines:
-                    sections[current_file] = "\n".join(content_lines)
-                current_file = line[6:]
-                content_lines = []
-            elif line.startswith("--- a/"):
-                continue  # Skip the "from" header
-            elif current_file is not None:
-                if line.startswith("+"):
-                    content_lines.append(line[1:])
-                elif line.startswith("-"):
-                    continue  # Skip removed lines
-                elif line.startswith("@@"):
-                    continue  # Skip hunk headers
-                elif line.startswith("diff "):
-                    continue  # Skip diff headers
-                elif line.startswith("index "):
-                    continue  # Skip index lines
-                elif line.startswith("new file"):
-                    continue
-                elif line.startswith("old file"):
-                    continue
-                elif line.startswith("rename "):
-                    continue
-                elif line.startswith("similarity"):
-                    continue
-                else:
-                    content_lines.append(line)
-
-        if current_file and content_lines:
-            sections[current_file] = "\n".join(content_lines)
-
-        return sections
 
 
 class PromptModeVerifier:

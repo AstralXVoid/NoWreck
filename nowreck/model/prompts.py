@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import warnings
-
-from nowreck.claims.models import Claim, ClaimType
-from nowreck.detector.change_detector import ChangeType, DetectedChange, change_sort_key
+from nowreck.detector.change_detector import ChangeType, DetectedChange
 
 # ---------------------------------------------------------------------------
 # System prompt — describes the task and required JSON format.
@@ -68,62 +65,6 @@ Field notes:
 # ---------------------------------------------------------------------------
 # Prompt system prompt — describes the task for single-prompt mode.
 # ---------------------------------------------------------------------------
-
-# DEPRECATED since v0.10.0 — use PROMPT_SYSTEM_PROMPT_V10 instead.
-# Will be removed in v11.
-PROMPT_SYSTEM_PROMPT = """\
-You are Nowreck, an AI assistant that analyzes descriptions of code changes.
-
-You will receive a natural-language description of changes made to a Python \
-code repository. Your task is to produce a structured list of claims that \
-capture EXACTLY what the description says changed.
-
-Rules:
-1. Only make claims about changes the description explicitly mentions.
-2. Every claim must include a confidence score (0.0 to 1.0) reflecting how \
-certain you are that this change matches the description.
-3. Do NOT invent changes that are not described.
-4. Respond ONLY with valid JSON in the format specified below.
-
-Valid claim types:
-- ADD_FUNCTION     — A function was added to a file.
-- REMOVE_FUNCTION  — A function was removed from a file.
-- ADD_CLASS        — A class was added to a file.
-- REMOVE_CLASS     — A class was removed from a file.
-- ADD_INTERFACE    — An interface was added to a file (TypeScript/TSX).
-- REMOVE_INTERFACE — An interface was removed from a file.
-- ADD_ENUM         — An enum was added to a file (TypeScript/TSX).
-- REMOVE_ENUM      — An enum was removed from a file.
-- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX).
-- REMOVE_TYPE_ALIAS — A type alias was removed from a file.
-- FILE_CREATED     — An entirely new file was created.
-- FILE_DELETED     — An entire file was deleted.
-- CALLS_FUNCTION   — A function now calls another function.
-
-Required JSON format:
-{
-  "claims": [
-    {
-      "type": "ADD_FUNCTION",
-      "symbol_name": "function_name",
-      "file_path": "path/to/file.py",
-      "parent_class": null,
-      "caller_name": null,
-      "called_name": null,
-      "confidence": 0.95,
-      "explanation": "Natural language explanation of why this change was made."
-    }
-  ]
-}
-
-Field notes:
-- symbol_name: Required for function/class claims; omit (null) for file-level claims.
-- file_path: Required for all claims. Relative to repository root.
-- parent_class: Required when the symbol is a method inside a class.
-- caller_name / called_name: Required for CALLS_FUNCTION claims.
-- confidence: 0.0 (guess) to 1.0 (certain).\
-"""
-
 
 # ---------------------------------------------------------------------------
 # v10 prompt — asks model for claims + a unified diff patch.
@@ -214,34 +155,6 @@ class PromptBuilder:
         ]
 
     @staticmethod
-    def for_prompt(prompt: str) -> list[dict[str, str]]:
-        """Build a message list for the single-prompt workflow.
-
-        .. deprecated:: 0.10.0
-            Use ``for_prompt_v10()`` for independent verification.
-            Will be removed in v11.
-
-        Args:
-            prompt: A natural-language description of code changes.
-
-        Returns:
-            A list of ``{"role": ..., "content": ...}`` dicts.
-        """
-        return [
-            {"role": "system", "content": PROMPT_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "Describe the following code changes as a structured "
-                    "list of claims in the required JSON format:\n\n"
-                    f"{prompt}\n\n"
-                    "Explain each change in the required JSON format. "
-                    "Include an 'explanation' field for each claim."
-                ),
-            },
-        ]
-
-    @staticmethod
     def for_prompt_v10(
         prompt: str,
         repo_context: str = "",
@@ -261,13 +174,11 @@ class PromptBuilder:
             A list of ``{"role": ..., "content": ...}`` dicts.
         """
         user_content = (
-            "Make the following changes to the code repository:\n\n"
-            f"{prompt}\n\n"
+            f"Make the following changes to the code repository:\n\n{prompt}\n\n"
         )
         if repo_context:
             user_content += (
-                "Repository context (files and symbols):\n"
-                f"{repo_context}\n\n"
+                f"Repository context (files and symbols):\n{repo_context}\n\n"
             )
         user_content += (
             "Produce the required JSON with 'claims' and 'patch' fields. "
@@ -281,55 +192,6 @@ class PromptBuilder:
     # ------------------------------------------------------------------
     # Claim → DetectedChange conversion
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def claims_to_changes(claims: list[Claim]) -> list[DetectedChange]:
-        """Convert a list of :class:`Claim` objects into a corresponding
-        list of :class:`DetectedChange` objects.
-
-        .. deprecated:: 0.10.0
-            This method creates a circular confirmation loop in Prompt
-            Mode.  Use ``ChangeDetector.detect(before, after)`` for
-            independent verification instead.  Will be removed in v11.
-
-        This enables the single-prompt workflow: the model generates
-        claims describing the changes, and those claims are converted to
-        a ``DetectedChange`` list that the verifier can match against.
-
-        Args:
-            claims: Parsed claims (e.g. from the model response).
-
-        Returns:
-            A sorted list of ``DetectedChange`` objects derived from
-            the claims.
-        """
-        warnings.warn(
-            "claims_to_changes() is deprecated since v0.10.0 and will be "
-            "removed in v11. Use ChangeDetector.detect(before, after) "
-            "for independent verification.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        changes: list[DetectedChange] = []
-
-        for claim in claims:
-            change_type = _CLAIM_TO_CHANGE_TYPE.get(claim.type)
-            if change_type is None:
-                continue
-
-            changes.append(
-                DetectedChange(
-                    change_type=change_type,
-                    file_path=claim.to_detected_change_path(),
-                    symbol_name=claim.symbol_name,
-                    parent_class=claim.parent_class,
-                    line_number=claim.line_number,
-                    caller_name=claim.caller_name,
-                    called_name=claim.called_name,
-                )
-            )
-
-        return sorted(changes, key=change_sort_key)
 
     # ------------------------------------------------------------------
     # Formatting
@@ -406,26 +268,4 @@ _CHANGE_LABELS: dict[ChangeType, str] = {
     ChangeType.FILE_CREATED: "File created",
     ChangeType.FILE_DELETED: "File deleted",
     ChangeType.CALL_DETECTED: "Call detected",
-}
-
-# Mapping from ClaimType to ChangeType for the claims→changes conversion.
-# NOTE: CALLS_FUNCTION is intentionally omitted.  Call relationships
-# describe links between other changes — they are verified by checking
-# whether matching CALL_DETECTED changes exist (from the real scanner)
-# or whether the caller function itself exists among the derived changes
-# (in prompt mode).  Converting them to standalone changes would create
-# a self-consistent loop where hallucinated calls can never be caught.
-_CLAIM_TO_CHANGE_TYPE: dict[ClaimType, ChangeType] = {
-    ClaimType.ADD_FUNCTION: ChangeType.ADD_FUNCTION,
-    ClaimType.REMOVE_FUNCTION: ChangeType.REMOVE_FUNCTION,
-    ClaimType.ADD_CLASS: ChangeType.ADD_CLASS,
-    ClaimType.REMOVE_CLASS: ChangeType.REMOVE_CLASS,
-    ClaimType.ADD_INTERFACE: ChangeType.ADD_INTERFACE,
-    ClaimType.REMOVE_INTERFACE: ChangeType.REMOVE_INTERFACE,
-    ClaimType.ADD_ENUM: ChangeType.ADD_ENUM,
-    ClaimType.REMOVE_ENUM: ChangeType.REMOVE_ENUM,
-    ClaimType.ADD_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
-    ClaimType.REMOVE_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
-    ClaimType.FILE_CREATED: ChangeType.FILE_CREATED,
-    ClaimType.FILE_DELETED: ChangeType.FILE_DELETED,
 }
