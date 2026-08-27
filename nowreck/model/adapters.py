@@ -21,8 +21,16 @@ class ProviderAdapter(ABC):
     """Translates between a provider's native format and OpenAI format.
 
     The adapter receives OpenAI-format messages and returns a
-    provider-specific request body.  It also provides auth headers
-    and response parsing.
+    provider-specific request body.  It also parses provider
+    responses back into the internal OpenAI-compatible format.
+
+    .. note::
+        **Auth is NOT handled here.**  Adapters are stateless w.r.t.
+        credentials.  The ``ModelProvider`` computes the correct
+        ``Authorization`` / ``x-api-key`` / ``x-goog-api-key`` header
+        via :func:`nowreck.model.provider._auth_header` and injects
+        it alongside the adapter's request body.  This split keeps
+        adapter logic purely about request/response shape.
     """
 
     @abstractmethod
