@@ -1296,8 +1296,16 @@ class TestSymbolIdentityIgnoresLineShift:
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
 
-        removed = {c.file_path for c in changes if c.change_type is ChangeType.REMOVE_FUNCTION}
-        added = {c.file_path for c in changes if c.change_type is ChangeType.ADD_FUNCTION}
+        removed = {
+            c.file_path
+            for c in changes
+            if c.change_type is ChangeType.REMOVE_FUNCTION
+        }
+        added = {
+            c.file_path
+            for c in changes
+            if c.change_type is ChangeType.ADD_FUNCTION
+        }
         assert Path("a.py") in removed
         assert Path("b.py") in added
 

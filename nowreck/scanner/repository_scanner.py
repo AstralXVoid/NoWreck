@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import logging
 from dataclasses import dataclass, field
-from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -108,50 +107,72 @@ class RepositoryScanner:
         go_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
-        for py_file in self._discover_python_files():
+        for py_file in self._discover_files(".py"):
             relative = py_file.relative_to(self._repo_path)
             parsed, error = self._parse_file(py_file)
             if parsed is not None:
                 modules[relative] = parsed
-            else:
-                assert error is not None
+            elif error is not None:
                 failed[relative] = error
 
-        for js_file in self._discover_js_files():
+        for js_file in self._discover_files(".js"):
             relative = js_file.relative_to(self._repo_path)
             symbols, error = self._parse_js_file(js_file)
             if symbols is not None:
                 js_files[relative] = symbols
-            else:
-                assert error is not None
+            elif error is not None:
                 failed[relative] = error
 
-        for ts_file in self._discover_ts_files():
+        for ts_file in self._discover_files(".ts", ".tsx"):
             relative = ts_file.relative_to(self._repo_path)
             symbols, error = self._parse_ts_file(ts_file)
             if symbols is not None:
                 ts_files[relative] = symbols
-            else:
-                assert error is not None
+            elif error is not None:
                 failed[relative] = error
 
-        for rust_file in self._discover_rust_files():
+        for rust_file in self._discover_files(".rs"):
             relative = rust_file.relative_to(self._repo_path)
             symbols, error = self._parse_rust_file(rust_file)
             if symbols is not None:
                 rust_files[relative] = symbols
-            else:
-                assert error is not None
+            elif error is not None:
                 failed[relative] = error
 
-        for go_file in self._discover_go_files():
+        for go_file in self._discover_files(".go"):
             relative = go_file.relative_to(self._repo_path)
             symbols, error = self._parse_go_file(go_file)
             if symbols is not None:
                 go_files[relative] = symbols
-            else:
-                assert error is not None
+            elif error is not None:
                 failed[relative] = error
+
+        # Phase 5 / 3.5: Log a one-line failure-rate summary so users
+        # see aggregate parse health even if individual failures were
+        # silently logged at the per-file level.
+        total = (
+            len(modules)
+            + len(js_files)
+            + len(ts_files)
+            + len(rust_files)
+            + len(go_files)
+            + len(failed)
+        )
+        success = total - len(failed)
+        if total > 0 and failed:
+            rate = len(failed) / total * 100
+            logger.warning(
+                "Scan complete: %d/%d files parsed successfully "
+                "(%.1f%% failure rate across %d languages)",
+                success,
+                total,
+                rate,
+                sum(1 for _ in (modules, js_files, ts_files, rust_files, go_files)),
+            )
+        elif total > 0:
+            logger.debug(
+                "Scan complete: %d/%d files parsed successfully", success, total,
+            )
 
         return ScanResult(
             modules=modules,
@@ -163,49 +184,71 @@ class RepositoryScanner:
             repo_root=self._repo_path,
         )
 
+    def _discover_files(self, *suffixes: str) -> list[Path]:
+        """Recursively discover files matching any of the given
+        suffixes, skipping hidden directories.
+
+        Phase 5 / 3.1: replaces the five language-specific discovery
+        methods (``_discover_python_files``, ``_discover_js_files``,
+        ``_discover_ts_files``, ``_discover_rust_files``,
+        ``_discover_go_files``) with one shared implementation.
+        TypeScript uses two suffixes (``.ts`` and ``.tsx``); all other
+        languages use a single suffix.
+
+        Hidden directories (names starting with ``.``) are excluded by
+        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        Args:
+            *suffixes: One or more file suffixes to match (e.g.
+                ``".py"``, or ``".ts"``, ``".tsx"``).
+
+        Returns:
+            A deterministically sorted list of file paths matching
+            any of the supplied suffixes.
+        """
+        if not suffixes:
+            raise ValueError("At least one suffix must be provided")
+
+        found: list[Path] = []
+        if not self._repo_path.is_dir():
+            logger.warning("Repository path is not a directory: %s", self._repo_path)
+            return found
+
+        for suffix in suffixes:
+            for entry in self._repo_path.rglob(f"*{suffix}"):
+                # Skip files inside hidden directories (e.g. .git, .venv)
+                if any(
+                    part.startswith(".")
+                    for part in entry.relative_to(self._repo_path).parts
+                ):
+                    continue
+                found.append(entry)
+
+        return sorted(found)  # deterministic ordering
+
     def _discover_python_files(self) -> list[Path]:
         """Recursively discover all ``.py`` files, skipping hidden dirs.
 
         Hidden directories (names starting with ``.``) are excluded by
         default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly. Retained as a thin
+            wrapper for any external callers and for the scanner's own
+            unit tests that may import it.
         """
-        py_files: list[Path] = []
-        if not self._repo_path.is_dir():
-            logger.warning("Repository path is not a directory: %s", self._repo_path)
-            return py_files
-
-        for entry in self._repo_path.rglob("*.py"):
-            # Skip files inside hidden directories (e.g. .git, .venv, __pycache__)
-            if any(
-                part.startswith(".")
-                for part in entry.relative_to(self._repo_path).parts
-            ):
-                continue
-            py_files.append(entry)
-
-        return sorted(py_files)  # deterministic ordering
+        return self._discover_files(".py")
 
     def _discover_js_files(self) -> list[Path]:
         """Recursively discover all ``.js`` files, skipping hidden dirs.
 
         Hidden directories (names starting with ``.``) are excluded by
         default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
         """
-        js_files: list[Path] = []
-        if not self._repo_path.is_dir():
-            logger.warning("Repository path is not a directory: %s", self._repo_path)
-            return js_files
-
-        for entry in self._repo_path.rglob("*.js"):
-            # Skip files inside hidden directories (e.g. .git, .venv)
-            if any(
-                part.startswith(".")
-                for part in entry.relative_to(self._repo_path).parts
-            ):
-                continue
-            js_files.append(entry)
-
-        return sorted(js_files)  # deterministic ordering
+        return self._discover_files(".js")
 
     def _parse_file(self, file_path: Path) -> tuple[ast.Module | None, str | None]:
         """Parse a single Python file into an ``ast.Module``.
@@ -242,25 +285,11 @@ class RepositoryScanner:
         into the single ``ts_files`` field.  Hidden directories (names
         starting with ``.``) are excluded by default to avoid scanning
         ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
         """
-        ts_files: list[Path] = []
-        if not self._repo_path.is_dir():
-            logger.warning("Repository path is not a directory: %s", self._repo_path)
-            return ts_files
-
-        for entry in chain(
-            self._repo_path.rglob("*.ts"),
-            self._repo_path.rglob("*.tsx"),
-        ):
-            # Skip files inside hidden directories (e.g. .git, .venv)
-            if any(
-                part.startswith(".")
-                for part in entry.relative_to(self._repo_path).parts
-            ):
-                continue
-            ts_files.append(entry)
-
-        return sorted(ts_files)  # deterministic ordering
+        return self._discover_files(".ts", ".tsx")
 
     def _parse_js_file(
         self, file_path: Path,
@@ -330,22 +359,11 @@ class RepositoryScanner:
 
         Hidden directories (names starting with ``.``) are excluded by
         default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
         """
-        rust_files: list[Path] = []
-        if not self._repo_path.is_dir():
-            logger.warning("Repository path is not a directory: %s", self._repo_path)
-            return rust_files
-
-        for entry in self._repo_path.rglob("*.rs"):
-            # Skip files inside hidden directories (e.g. .git, .venv)
-            if any(
-                part.startswith(".")
-                for part in entry.relative_to(self._repo_path).parts
-            ):
-                continue
-            rust_files.append(entry)
-
-        return sorted(rust_files)  # deterministic ordering
+        return self._discover_files(".rs")
 
     def _parse_rust_file(
         self, file_path: Path,
@@ -377,22 +395,11 @@ class RepositoryScanner:
 
         Hidden directories (names starting with ``.``) are excluded by
         default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
         """
-        go_files: list[Path] = []
-        if not self._repo_path.is_dir():
-            logger.warning("Repository path is not a directory: %s", self._repo_path)
-            return go_files
-
-        for entry in self._repo_path.rglob("*.go"):
-            # Skip files inside hidden directories (e.g. .git, .venv)
-            if any(
-                part.startswith(".")
-                for part in entry.relative_to(self._repo_path).parts
-            ):
-                continue
-            go_files.append(entry)
-
-        return sorted(go_files)  # deterministic ordering
+        return self._discover_files(".go")
 
     def _parse_go_file(
         self, file_path: Path,

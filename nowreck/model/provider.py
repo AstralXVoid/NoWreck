@@ -494,7 +494,16 @@ class ModelProvider:
 
         try:
             return adapter.parse_response(raw)
-        except Exception as exc:
+        except (
+            json.JSONDecodeError, ValueError, KeyError, IndexError, TypeError,
+        ) as exc:
+            # Phase 5 / 3.3: narrow the broad ``except Exception`` to the
+            # exception types the adapter is contractually allowed to
+            # raise.  ``_AdapterError`` was considered but does not exist
+            # in ``nowreck.model.adapters`` — the documented exception
+            # surface is the built-ins above plus whatever specific
+            # transport errors the underlying ``urlopen`` call already
+            # raised and converted to ``ModelError`` above.
             raise ModelError(f"Failed to parse provider response: {exc}") from exc
 
     # ------------------------------------------------------------------
