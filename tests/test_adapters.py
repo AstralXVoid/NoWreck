@@ -1,4 +1,4 @@
-"""Tests for the provider adapter system (v11 Phase 1).
+"""Tests for the provider adapter system (v11 Phases 1-3).
 
 Covers:
 - ProviderAdapter ABC contract

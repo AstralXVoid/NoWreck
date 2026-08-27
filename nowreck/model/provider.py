@@ -212,6 +212,13 @@ def _auth_header(
     (including the EU endpoint) uses ``x-api-key``, Gemini uses
     ``x-goog-api-key``, and everything else uses
     ``Authorization: Bearer``.
+
+    .. note::
+        This is the **single source of truth** for auth header
+        construction.  :class:`nowreck.model.adapters.ProviderAdapter`
+        subclasses deliberately do NOT carry auth state — see the
+        note on :class:`ProviderAdapter` for the rationale.  Full
+        ``resolve_provider()`` consolidation is deferred to v0.12.
     """
     if provider:
         key = provider.lower().strip()
