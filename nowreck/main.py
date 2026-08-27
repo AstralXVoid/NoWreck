@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -286,37 +287,94 @@ def _build_model_config() -> ModelConfig:
         raise ModelError(f"Invalid configuration: {exc}") from exc
 
 
+_logger = logging.getLogger(__name__)
+
+
 def _get_str_or(data: dict[str, object], key: str, default: str) -> str:
-    """Get a string value from the config dict, falling back to *default*."""
-    val = data.get(key, default)
-    return str(val)
+    """Get a string value from ``data[key]`` with a safe fallback.
+
+    Phase 5 / 3.4: any non-string value (int, float, bool, None,
+    list, dict, etc.) is coerced via :func:`str` only when the
+    value was already a string; otherwise the supplied *default*
+    is returned and a debug-level log entry is emitted so an
+    operator can spot mis-stored config without crashing the run.
+    """
+    val: object = data.get(key, default)
+    if isinstance(val, str):
+        return val
+    _logger.debug(
+        "Config key %r expected str, got %s; using default %r",
+        key, type(val).__name__, default,
+    )
+    return default
 
 
 def _get_float_or(data: dict[str, object], key: str, default: float) -> float:
-    """Get a float value from the config dict, falling back to *default*."""
+    """Get a float value from ``data[key]`` with a safe fallback.
+
+    Phase 5 / 3.4: accepts ``int``, ``float``, or numeric ``str``.
+    Anything else (including ``None``, ``bool``, ``list``, ``dict``)
+    silently returns *default* with a debug log entry rather than
+    raising, so a corrupted config file cannot break startup.
+    """
     val: object = data.get(key, default)
+    if isinstance(val, bool):
+        # ``bool`` is a subclass of ``int`` in Python — guard against
+        # ``True``/``False`` being silently treated as 1/0 here.
+        _logger.debug(
+            "Config key %r expected float, got bool; using default %r",
+            key, default,
+        )
+        return default
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, str):
         try:
             return float(val)
-        except (ValueError, TypeError):
-            pass
+        except ValueError:
+            _logger.debug(
+                "Config key %r=%r is not a valid float; using default %r",
+                key, val, default,
+            )
     return default
 
 
 def _get_int_or(data: dict[str, object], key: str, default: int) -> int:
-    """Get an int value from the config dict, falling back to *default*."""
+    """Get an int value from ``data[key]`` with a safe fallback.
+
+    Phase 5 / 3.4: accepts ``int``, integral ``float`` (e.g. ``1.0``),
+    or numeric ``str``.  Anything else (including ``bool``,
+    ``None``, ``list``, ``dict``) silently returns *default* with a
+    debug log entry rather than raising, so a corrupted config file
+    cannot break startup.
+    """
     val: object = data.get(key, default)
+    if isinstance(val, bool):
+        # ``bool`` is a subclass of ``int`` in Python — guard against
+        # ``True``/``False`` being silently treated as 1/0 here.
+        _logger.debug(
+            "Config key %r expected int, got bool; using default %r",
+            key, default,
+        )
+        return default
     if isinstance(val, int):
         return val
     if isinstance(val, float):
-        return int(val)
+        if val.is_integer():
+            return int(val)
+        _logger.debug(
+            "Config key %r=%r is not an integral float; using default %r",
+            key, val, default,
+        )
+        return default
     if isinstance(val, str):
         try:
             return int(val)
-        except (ValueError, TypeError):
-            pass
+        except ValueError:
+            _logger.debug(
+                "Config key %r=%r is not a valid int; using default %r",
+                key, val, default,
+            )
     return default
 
 
