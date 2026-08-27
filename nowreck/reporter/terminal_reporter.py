@@ -610,7 +610,7 @@ class TerminalReporter:
         The JSON schema::
 
             {
-              "version": "0.11.0",
+              "version": "0.11.1",
               "success": true|false,
               "summary": {
                 "total_claims": int,

@@ -1,6 +1,6 @@
 # NoWreck
 
-**Deterministic AI Verifier** — v0.11.0
+**Deterministic AI Verifier** — v0.11.1
 
 NoWreck is a deterministic structural verifier for AI-generated code-change
 claims. When an AI describes a code change, NoWreck compares the claims
@@ -113,7 +113,7 @@ user environment (PyPI publishing is coming later).
 
 ```bash
 nowreck --version
-# → nowreck 0.11.0
+# → nowreck 0.11.1
 
 nowreck
 # → shows banner + usage
@@ -711,7 +711,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.11.0",
+  "version": "0.11.1",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -767,7 +767,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.11.0",
+  "version": "0.11.1",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -909,7 +909,7 @@ Make sure:
 
 ## Roadmap
 
-**v0.11.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.11.1 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -943,4 +943,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.11.0 — August 2026*
+*NoWreck v0.11.1 — August 2026*
