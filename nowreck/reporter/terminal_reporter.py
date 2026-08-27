@@ -412,9 +412,17 @@ class TerminalReporter:
             return f"File '{change.file_path}' was created"
         if change.change_type is ChangeType.FILE_DELETED:
             return f"File '{change.file_path}' was deleted"
-        if change.change_type is ChangeType.CALL_DETECTED:
+        if change.change_type in (
+            ChangeType.CALL_DETECTED,
+            ChangeType.CALL_REMOVED,
+        ):
+            verb = (
+                "calls"
+                if change.change_type is ChangeType.CALL_DETECTED
+                else "no longer calls"
+            )
             return (
-                f"Function '{change.caller_name}' calls "
+                f"Function '{change.caller_name}' {verb} "
                 f"'{change.called_name}' in {change.file_path}"
             )
         return f"Change detected: {change}"
