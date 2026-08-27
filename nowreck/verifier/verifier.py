@@ -49,7 +49,9 @@ _OPPOSITE_CHANGE: dict[ClaimType, ChangeType] = {
     ClaimType.REMOVE_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
     ClaimType.FILE_CREATED: ChangeType.FILE_DELETED,
     ClaimType.FILE_DELETED: ChangeType.FILE_CREATED,
-    # CALLS_FUNCTION has no semantic opposite.
+    # A claim that a call exists is contradicted by evidence that the
+    # call site disappeared.
+    ClaimType.CALLS_FUNCTION: ChangeType.CALL_REMOVED,
 }
 
 

@@ -776,3 +776,53 @@ class TestClaimVerifierEdgeCases:
         result = report.results[0]
         assert result.verdict is Verdict.CONTRADICTED
         assert result.matched_change is change
+
+
+class TestCallsFunctionContradictedByRemoval:
+    """P2-03: a claim that a call exists is CONTRADICTED when the call
+    site disappeared, instead of falling through to UNVERIFIABLE."""
+
+    def _claim(self) -> Claim:
+        return Claim(
+            type=ClaimType.CALLS_FUNCTION,
+            symbol_name="main",
+            caller_name="main",
+            called_name="validate",
+            file_path="app.py",
+        )
+
+    def test_call_removed_is_contradicted(self) -> None:
+        changes = [
+            DetectedChange(
+                change_type=ChangeType.CALL_REMOVED,
+                file_path=Path("app.py"),
+                caller_name="main",
+                called_name="validate",
+            ),
+        ]
+        report = ClaimVerifier.verify([self._claim()], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_call_detected_still_confirms(self) -> None:
+        changes = [
+            DetectedChange(
+                change_type=ChangeType.CALL_DETECTED,
+                file_path=Path("app.py"),
+                caller_name="main",
+                called_name="validate",
+            ),
+        ]
+        report = ClaimVerifier.verify([self._claim()], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_unrelated_removal_leaves_unverifiable(self) -> None:
+        changes = [
+            DetectedChange(
+                change_type=ChangeType.CALL_REMOVED,
+                file_path=Path("app.py"),
+                caller_name="main",
+                called_name="lint_check",
+            ),
+        ]
+        report = ClaimVerifier.verify([self._claim()], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE

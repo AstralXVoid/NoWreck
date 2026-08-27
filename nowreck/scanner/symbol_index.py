@@ -38,6 +38,9 @@ class Symbol:
         symbol_type: Whether this is a function, class, or method.
         file_path: Path relative to the repository root.
         line_number: 1-based line number where the definition starts.
+            **Identity-exempt** — excluded from ``__eq__``/``__hash__``
+            so that a pure line-shift is not reported as a structural
+            remove+add pair.
         parent_class: For methods, the enclosing class name.  ``None``
             for top-level functions and classes.
     """
@@ -45,7 +48,7 @@ class Symbol:
     name: str
     symbol_type: SymbolType
     file_path: Path
-    line_number: int
+    line_number: int = field(compare=False)
     parent_class: str | None = None
 
 

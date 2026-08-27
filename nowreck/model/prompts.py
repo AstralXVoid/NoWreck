@@ -226,9 +226,19 @@ class PromptBuilder:
         """Return a one-line detail string for a single change."""
         parts: list[str] = []
 
-        if change.change_type is ChangeType.CALL_DETECTED:
+        if change.change_type in (
+            ChangeType.CALL_DETECTED,
+            ChangeType.CALL_REMOVED,
+        ):
+            verb = (
+                "now calls"
+                if change.change_type is ChangeType.CALL_DETECTED
+                else "no longer calls"
+            )
             if change.caller_name and change.called_name:
-                parts.append(f"{change.caller_name}() now calls {change.called_name}()")
+                parts.append(
+                    f"{change.caller_name}() {verb} {change.called_name}()"
+                )
             parts.append(f"in {change.file_path}")
         else:
             if change.symbol_name is not None:

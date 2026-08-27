@@ -1203,3 +1203,112 @@ class TestDetectGoChanges:
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         main_calls = {c.called_name for c in calls if c.caller_name == "main"}
         assert "helper" in main_calls
+
+
+class TestCallRemovedChanges:
+    """P2-03: disappeared call sites surface as CALL_REMOVED."""
+
+    def test_removed_call_detected(self) -> None:
+        pre_src = {
+            "app.py": (
+                "def main():\n"
+                "    validate('x')\n"
+            )
+        }
+        post_src = {"app.py": "def main():\n    pass\n"}
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre_src, post_src)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+        removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        assert len(removed) == 1
+        assert removed[0].caller_name == "main"
+        assert removed[0].called_name == "validate"
+
+    def test_unchanged_calls_not_reported(self) -> None:
+        src = {"app.py": "def main():\n    validate('x')\n"}
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(src, dict(src))
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        assert not _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        assert not _changes_of_type(changes, ChangeType.CALL_DETECTED)
+
+    def test_moved_call_is_remove_plus_add(self) -> None:
+        """A call relocated to another function is one removal + one
+        addition — both directions reported."""
+        pre_src = {
+            "app.py": (
+                "def a():\n    validate('x')\n\n"
+                "def b():\n    pass\n"
+            )
+        }
+        post_src = {
+            "app.py": (
+                "def a():\n    pass\n\n"
+                "def b():\n    validate('x')\n"
+            )
+        }
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre_src, post_src)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+        removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        added = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert any(
+            c.caller_name == "a" and c.called_name == "validate"
+            for c in removed
+        )
+        assert any(
+            c.caller_name == "b" and c.called_name == "validate"
+            for c in added
+        )
+
+
+class TestSymbolIdentityIgnoresLineShift:
+    """P2-02: pure line-shifts must not produce phantom ADD/REMOVE."""
+
+    def test_blank_line_insertion_is_invisible(self) -> None:
+        pre = {"app.py": "def alpha():\n    return 1\n\ndef beta():\n    return 2\n"}
+        post = {
+            "app.py": (
+                "\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n"
+            )
+        }
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
+        symbol_changes = [
+            c
+            for c in detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+            if c.symbol_name is not None
+        ]
+        assert symbol_changes == []
+
+    def test_renamed_function_still_detected(self) -> None:
+        pre = {"app.py": "def old_name():\n    return 1\n"}
+        post = {"app.py": "def new_name():\n    return 1\n"}
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+        removed = [c for c in changes if c.change_type is ChangeType.REMOVE_FUNCTION]
+        added = [c for c in changes if c.change_type is ChangeType.ADD_FUNCTION]
+        assert {c.symbol_name for c in removed} == {"old_name"}
+        assert {c.symbol_name for c in added} == {"new_name"}
+
+    def test_cross_file_move_detected(self) -> None:
+        pre = {"a.py": "def mover():\n    return 1\n", "b.py": ""}
+        post = {"a.py": "", "b.py": "def mover():\n    return 1\n"}
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+        removed = {c.file_path for c in changes if c.change_type is ChangeType.REMOVE_FUNCTION}
+        added = {c.file_path for c in changes if c.change_type is ChangeType.ADD_FUNCTION}
+        assert Path("a.py") in removed
+        assert Path("b.py") in added
+
+    def test_line_number_still_captured_for_display(self) -> None:
+        pre = {"app.py": "def alpha():\n    return 1\n"}
+        post = {
+            "app.py": "# header comment\n\ndef alpha():\n    return 1\n"
+        }
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        # No phantom pair...
+        assert not [
+            c for c in changes if c.symbol_name == "alpha"
+        ]

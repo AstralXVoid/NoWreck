@@ -49,6 +49,7 @@ class ChangeType(IntEnum):
     FILE_CREATED = auto()
     FILE_DELETED = auto()
     CALL_DETECTED = auto()
+    CALL_REMOVED = auto()
 
 
 @dataclass(frozen=True)
@@ -254,12 +255,12 @@ class ChangeDetector:
 
     @staticmethod
     def _detect_calls(pre: ScanResult, post: ScanResult) -> list[DetectedChange]:
-        """Compare call sets from pre and post states to find **new** calls.
+        """Compare call sets from pre and post states.
 
-        Scans both the pre and post snapshot for function calls, then
-        reports only calls that exist in the post state but **not** in
-        the pre state.  This prevents false positives when a function
-        with calls exists in both states unchanged.
+        Scans both snapshots for function calls and reports calls that
+        **appeared** (``CALL_DETECTED``) or **disappeared**
+        (``CALL_REMOVED``) between the two states.  Unchanged calls are
+        not reported.
 
         Attribute/method calls (e.g. ``obj.method()``) are excluded from
         MVP scope.
@@ -270,14 +271,23 @@ class ChangeDetector:
         pre_calls = ChangeDetector._extract_calls(pre)
         post_calls = ChangeDetector._extract_calls(post)
 
-        # Only new calls — those in post but not in pre
         new_calls = post_calls - pre_calls
+        removed_calls = pre_calls - post_calls
 
         changes: list[DetectedChange] = []
         for file_path, caller_name, called_name in sorted(new_calls):
             changes.append(
                 DetectedChange(
                     change_type=ChangeType.CALL_DETECTED,
+                    file_path=file_path,
+                    caller_name=caller_name,
+                    called_name=called_name,
+                )
+            )
+        for file_path, caller_name, called_name in sorted(removed_calls):
+            changes.append(
+                DetectedChange(
+                    change_type=ChangeType.CALL_REMOVED,
                     file_path=file_path,
                     caller_name=caller_name,
                     called_name=called_name,
