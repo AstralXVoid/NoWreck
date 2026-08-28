@@ -130,10 +130,20 @@ def handle_fix(args: argparse.Namespace) -> int:
     # Pre/Post mode — scan actual repos
     # ------------------------------------------------------------------
 
+    # Handle --compare flag
+    if args.compare:
+        return _handle_compare_mode(
+            args=args,
+            reporter=reporter,
+            log=_log,
+            output_format=output_format,
+        )
+
     if not args.pre or not args.post:
         print(
             "Error: Use either 'nowreck fix \"<prompt>\"' or "
-            "'nowreck fix --pre PATH --post PATH'.",
+            "'nowreck fix --pre PATH --post PATH' or "
+            "'nowreck fix --compare REF'.",
             file=sys.stderr,
         )
         return 1
@@ -497,4 +507,93 @@ def _write_output(output: str, output_path: str | None) -> None:
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(output, encoding="utf-8")
+
+
+def _handle_compare_mode(
+    args: argparse.Namespace,
+    reporter: TerminalReporter,
+    log: Callable[[str], None],
+    output_format: str | None,
+) -> int:
+    """Handle --compare mode: extract git snapshots and scan."""
+    from nowreck.git_integration import GitError, GitSnapshot
+
+    ref = args.compare
+
+    try:
+        with GitSnapshot(ref) as pre_snapshot:
+            # Default post is HEAD
+            post_ref = "HEAD"
+
+            with GitSnapshot(post_ref) as post_snapshot:
+                log(f"Comparing {ref} against {post_ref}")
+                log(f"Pre snapshot:  {pre_snapshot.path}")
+                log(f"Post snapshot: {post_snapshot.path}")
+
+                # 1. Scan
+                pre_scan = RepositoryScanner(pre_snapshot.path).scan()
+                log(
+                    f"  \u2192 {pre_scan.success_count} files parsed, "
+                    f"{pre_scan.failure_count} failed"
+                )
+
+                post_scan = RepositoryScanner(post_snapshot.path).scan()
+                log(
+                    f"  \u2192 {post_scan.success_count} files parsed, "
+                    f"{post_scan.failure_count} failed"
+                )
+
+                # 2. Build symbol indices
+                pre_symbols = build_symbol_index(pre_scan)
+                post_symbols = build_symbol_index(post_scan)
+                log(
+                    f"Symbols: {len(pre_symbols.all_symbols)} pre \u2192 "
+                    f"{len(post_symbols.all_symbols)} post"
+                )
+
+                # 3. Detect changes
+                changes = ChangeDetector.detect(
+                    pre_scan,
+                    post_scan,
+                    pre_symbols,
+                    post_symbols,
+                )
+                log(f"Changes detected: {len(changes)}")
+
+                # 4. Verify claims if provided
+                if args.claims:
+                    parse_result = ClaimParser.parse(args.claims)
+                    if not parse_result.success:
+                        print(
+                            "Warning: Some claims could not be parsed:",
+                            file=sys.stderr,
+                        )
+                        for err in parse_result.errors:
+                            print(f"  - {err}", file=sys.stderr)
+
+                    if parse_result.claims:
+                        log(f"Claims parsed: {len(parse_result.claims)}")
+                        report = ClaimVerifier.verify(
+                            parse_result.claims, changes
+                        )
+                    else:
+                        report = VerificationReport(unexplained_changes=changes)
+                else:
+                    report = VerificationReport(unexplained_changes=changes)
+
+                # 5. Format and output
+                output = _format_report(report, output_format, reporter)
+                _write_output(output, args.output)
+
+                total_issues = (
+                    report.unverifiable
+                    + report.contradicted
+                    + report.unexplained_count
+                )
+                return 0 if total_issues == 0 else 1
+
+    except GitError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     path.write_text(output, encoding="utf-8")
