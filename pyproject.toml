@@ -13,6 +13,9 @@ dependencies = [
     "tree-sitter-go>=0.25",
 ]
 
+[project.optional-dependencies]
+test = ["jsonschema>=4.0"]
+
 [project.scripts]
 nowreck = "nowreck.__main__:main"
 
