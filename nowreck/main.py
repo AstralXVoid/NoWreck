@@ -21,7 +21,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.12.0         |
+  |            NoWreck v0.13.0         |
   |    Deterministic AI Verifier       |
   +------------------------------------+"""
 
@@ -596,4 +596,3 @@ def _handle_compare_mode(
     except GitError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    path.write_text(output, encoding="utf-8")

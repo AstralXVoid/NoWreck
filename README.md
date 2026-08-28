@@ -1,6 +1,6 @@
 # NoWreck
 
-**Deterministic AI Verifier** — v0.12.0
+**Deterministic AI Verifier** — v0.13.0
 
 NoWreck is a deterministic structural verifier for AI-generated code-change
 claims. When an AI describes a code change, NoWreck compares the claims
@@ -114,7 +114,7 @@ user environment (PyPI publishing is coming later).
 
 ```bash
 nowreck --version
-# → nowreck 0.12.0
+# → nowreck 0.13.0
 
 nowreck
 # → shows banner + usage
@@ -712,7 +712,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.12.0",
+  "version": "0.13.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -768,7 +768,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.12.0",
+  "version": "0.13.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -908,9 +908,72 @@ Make sure:
 
 ---
 
+## CI/CD Integration
+
+NoWreck supports CI/CD pipelines with machine-readable output formats and
+automated git comparison.
+
+### Output Formats
+
+```bash
+# JSON (for scripting)
+nowreck fix --compare HEAD~1 --format json > report.json
+
+# SARIF (for GitHub Code Scanning)
+nowreck fix --compare HEAD~1 --format sarif > nowreck.sarif
+
+# JUnit XML (for Jenkins/GitLab CI test reports)
+nowreck fix --compare HEAD~1 --format junit > nowreck-junit.xml
+```
+
+### Git Comparison
+
+```bash
+# Compare current state against previous commit
+nowreck fix --compare HEAD~1
+
+# Compare against a specific branch
+nowreck fix --compare main
+
+# Verify claims against a PR
+nowreck fix --compare main --claims '{...}'
+```
+
+### GitHub Actions Example
+
+```yaml
+name: NoWreck Verification
+on: [pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install nowreck
+
+      - name: Run NoWreck verification
+        run: nowreck fix --compare HEAD~1 --format sarif > nowreck.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: nowreck.sarif
+```
+
+---
+
 ## Roadmap
 
-**v0.12.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.13.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -927,7 +990,7 @@ not present in the current release.
 | Additional model providers (Anthropic, Gemini) via provider adapters with auto-detection from `base_url` | ✅ v0.11.0 |
 | Provider consolidation — single `resolve_provider()` replaces split `_auth_header()` + `detect_adapter()` | ✅ v0.12.0 |
 | Scan caching — file-level cache in `.nowreck/cache/` for faster repeated runs | ✅ v0.12.0 |
-| CI/CD integration | 🗓 planned |
+| CI/CD integration (SARIF, JUnit, --compare) | ✅ v0.13.0 |
 
 ---
 
@@ -945,4 +1008,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.12.0 — August 2026*
+*NoWreck v0.13.0 — August 2026*
