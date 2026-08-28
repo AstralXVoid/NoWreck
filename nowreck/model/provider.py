@@ -18,7 +18,7 @@ from nowreck.detector.change_detector import (
     DetectedChange,
     change_sort_key,
 )
-from nowreck.model.adapters import detect_adapter
+from nowreck.model.adapters import resolve_provider
 from nowreck.model.prompts import PromptBuilder
 
 # ---------------------------------------------------------------------------
@@ -203,36 +203,25 @@ class ModelError(Exception):
     """Raised when the model API call fails irrecoverably."""
 
 
-def _auth_header(
-    api_key: str, base_url: str, provider: str | None = None
-) -> dict[str, str]:
-    """Return the correct authorization header for the provider.
+def _auth_header_from_type(api_key: str, auth_type: str) -> dict[str, str]:
+    """Return the authorization header for the given auth type.
 
-    An explicit *provider* override wins over URL inference.  Anthropic
-    (including the EU endpoint) uses ``x-api-key``, Gemini uses
-    ``x-goog-api-key``, and everything else uses
-    ``Authorization: Bearer``.
+    This is a simple type-to-header mapping with **no URL inference**.
+    All URL matching and provider detection happens in
+    :func:`nowreck.model.adapters.resolve_provider`, which returns the
+    ``auth_type`` string consumed here.
 
-    .. note::
-        This is the **single source of truth** for auth header
-        construction.  :class:`nowreck.model.adapters.ProviderAdapter`
-        subclasses deliberately do NOT carry auth state — see the
-        note on :class:`ProviderAdapter` for the rationale.  Full
-        ``resolve_provider()`` consolidation is deferred to v0.12.
+    Args:
+        api_key: The API key to include in the header.
+        auth_type: One of ``"bearer"``, ``"x-api-key"``, or
+            ``"x-goog-api-key"`` — as returned by
+            :func:`~nowreck.model.adapters.resolve_provider`.
     """
-    if provider:
-        key = provider.lower().strip()
-        if key == "anthropic":
-            return {"x-api-key": api_key}
-        if key == "gemini":
-            return {"x-goog-api-key": api_key}
-        # "openai" or unrecognized values fall through to URL detection.
-
-    url_lower = base_url.lower()
-    if "api.anthropic.com" in url_lower or "api.anthropic.eu" in url_lower:
+    if auth_type == "x-api-key":
         return {"x-api-key": api_key}
-    if "generativelanguage.googleapis.com" in url_lower:
+    if auth_type == "x-goog-api-key":
         return {"x-goog-api-key": api_key}
+    # Default: Bearer token (covers "bearer" and any unknown value).
     return {"Authorization": f"Bearer {api_key}"}
 
 
@@ -472,8 +461,8 @@ class ModelProvider:
                 "variable or pass api_key to ModelConfig."
             )
 
-        adapter = detect_adapter(config.base_url, config.provider)
-        url_suffix, headers, body = adapter.build_request(
+        provider_info = resolve_provider(config.base_url, config.provider)
+        url_suffix, headers, body = provider_info.adapter.build_request(
             messages=messages,
             model=config.model,
             temperature=config.temperature,
@@ -484,7 +473,7 @@ class ModelProvider:
             data=body,
             headers={
                 **headers,
-                **_auth_header(api_key, config.base_url, config.provider),
+                **_auth_header_from_type(api_key, provider_info.auth_type),
             },
             method="POST",
         )
@@ -500,9 +489,13 @@ class ModelProvider:
             raise ModelError(f"Request failed: {exc}") from exc
 
         try:
-            return adapter.parse_response(raw)
+            return provider_info.adapter.parse_response(raw)
         except (
-            json.JSONDecodeError, ValueError, KeyError, IndexError, TypeError,
+            json.JSONDecodeError,
+            ValueError,
+            KeyError,
+            IndexError,
+            TypeError,
         ) as exc:
             # Phase 5 / 3.3: narrow the broad ``except Exception`` to the
             # exception types the adapter is contractually allowed to

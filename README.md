@@ -1,6 +1,6 @@
 # NoWreck
 
-**Deterministic AI Verifier** — v0.11.1
+**Deterministic AI Verifier** — v0.12.0
 
 NoWreck is a deterministic structural verifier for AI-generated code-change
 claims. When an AI describes a code change, NoWreck compares the claims
@@ -114,7 +114,7 @@ user environment (PyPI publishing is coming later).
 
 ```bash
 nowreck --version
-# → nowreck 0.11.1
+# → nowreck 0.12.0
 
 nowreck
 # → shows banner + usage
@@ -712,7 +712,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.11.1",
+  "version": "0.12.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -768,7 +768,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.11.1",
+  "version": "0.12.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -910,7 +910,7 @@ Make sure:
 
 ## Roadmap
 
-**v0.11.1 is the current release.** Items marked 🗓 are planned future work,
+**v0.12.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -925,7 +925,8 @@ not present in the current release.
 | Rust + Go language support | ✅ v0.9.0 |
 | Independent verification architecture — make independent verification native and convenient: claims can come from any external AI/tool while NoWreck inspects the actual resulting repository state (Pre/Post + Claims already provides independent verification in v0.10.0) | ✅ done in v0.10.0 |
 | Additional model providers (Anthropic, Gemini) via provider adapters with auto-detection from `base_url` | ✅ v0.11.0 |
-| Caching for large repositories | 🗓 planned |
+| Provider consolidation — single `resolve_provider()` replaces split `_auth_header()` + `detect_adapter()` | ✅ v0.12.0 |
+| Scan caching — file-level cache in `.nowreck/cache/` for faster repeated runs | ✅ v0.12.0 |
 | CI/CD integration | 🗓 planned |
 
 ---
@@ -944,4 +945,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.11.1 — August 2026*
+*NoWreck v0.12.0 — August 2026*

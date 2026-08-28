@@ -10,6 +10,7 @@ reporter, or any other component.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import cast
 
 # ---------------------------------------------------------------------------
@@ -28,9 +29,9 @@ class ProviderAdapter(ABC):
         **Auth is NOT handled here.**  Adapters are stateless w.r.t.
         credentials.  The ``ModelProvider`` computes the correct
         ``Authorization`` / ``x-api-key`` / ``x-goog-api-key`` header
-        via :func:`nowreck.model.provider._auth_header` and injects
-        it alongside the adapter's request body.  This split keeps
-        adapter logic purely about request/response shape.
+        via :func:`_auth_header_from_type` (in ``provider.py``) and
+        injects it alongside the adapter's request body.  This split
+        keeps adapter logic purely about request/response shape.
     """
 
     @abstractmethod
@@ -196,7 +197,7 @@ class AnthropicAdapter(ProviderAdapter):
         body = json.dumps(body_payload).encode("utf-8")
 
         headers = dict(_COMMON_HEADERS)
-        # Auth is injected by ModelProvider via _auth_header().
+        # Auth is injected by ModelProvider via _auth_header_from_type().
         # Anthropic also requires this version header.
         headers["anthropic-version"] = "2023-06-01"
 
@@ -312,7 +313,7 @@ class GeminiAdapter(ProviderAdapter):
         body = json.dumps(body_payload).encode("utf-8")
 
         headers = dict(_COMMON_HEADERS)
-        # Auth is injected by ModelProvider via _auth_header().
+        # Auth is injected by ModelProvider via _auth_header_from_type().
 
         return (url_suffix, headers, body)
 
@@ -355,6 +356,73 @@ class GeminiAdapter(ProviderAdapter):
 
 
 # ---------------------------------------------------------------------------
+# Provider resolution — single source of truth
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    """Resolved provider: adapter plus auth header type.
+
+    Returned by :func:`resolve_provider` to ensure the adapter and
+    auth header always agree — no duplicate URL-matching.
+
+    Attributes:
+        adapter: The provider adapter for request/response translation.
+        auth_type: The auth header type — one of ``"bearer"``,
+            ``"x-api-key"``, or ``"x-goog-api-key"``.
+    """
+
+    adapter: ProviderAdapter
+    auth_type: str  # "bearer", "x-api-key", "x-goog-api-key"
+
+
+def resolve_provider(
+    base_url: str,
+    provider_override: str | None = None,
+) -> ProviderInfo:
+    """Single source of truth for provider detection.
+
+    Returns both the adapter and the auth header type, ensuring
+    they always agree.  One URL match, no duplication.
+
+    Args:
+        base_url: The configured API base URL.
+        provider_override: Optional explicit provider name
+            (``"openai"``, ``"anthropic"``, ``"gemini"``).
+
+    Returns:
+        A ``ProviderInfo`` with the matched adapter and auth type.
+
+    Raises:
+        ValueError: If ``provider_override`` is not a recognized
+            provider name — a typo must fail loudly, not silently
+            send OpenAI-format requests to the wrong endpoint.
+    """
+    if provider_override:
+        key = provider_override.lower().strip()
+        if key == "anthropic":
+            return ProviderInfo(adapter=AnthropicAdapter(), auth_type="x-api-key")
+        if key == "gemini":
+            return ProviderInfo(adapter=GeminiAdapter(), auth_type="x-goog-api-key")
+        if key == "openai":
+            return ProviderInfo(adapter=OpenAIAdapter(), auth_type="bearer")
+        raise ValueError(
+            f"Unknown provider: {provider_override!r}. "
+            "Expected 'openai', 'anthropic', or 'gemini'."
+        )
+
+    url_lower = base_url.lower()
+
+    if "api.anthropic.com" in url_lower or "api.anthropic.eu" in url_lower:
+        return ProviderInfo(adapter=AnthropicAdapter(), auth_type="x-api-key")
+    if "generativelanguage.googleapis.com" in url_lower:
+        return ProviderInfo(adapter=GeminiAdapter(), auth_type="x-goog-api-key")
+
+    return ProviderInfo(adapter=OpenAIAdapter(), auth_type="bearer")
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
@@ -364,7 +432,7 @@ class _AdapterError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Factory — auto-detect adapter from base_url
+# Factory — auto-detect adapter from base_url (deprecated)
 # ---------------------------------------------------------------------------
 
 
@@ -373,6 +441,10 @@ def detect_adapter(
     provider_override: str | None = None,
 ) -> ProviderAdapter:
     """Select the correct adapter based on the base URL or explicit override.
+
+    .. deprecated::
+        Use :func:`resolve_provider` instead — it returns both the
+        adapter and the auth header type in a single call.
 
     Args:
         base_url: The configured API base URL.
@@ -387,34 +459,4 @@ def detect_adapter(
             provider name — a typo must fail loudly, not silently send
             OpenAI-format requests to the wrong endpoint.
     """
-    if provider_override:
-        key = provider_override.lower().strip()
-        if key == "anthropic":
-            return _make_anthropic()
-        if key == "gemini":
-            return _make_gemini()
-        if key == "openai":
-            return OpenAIAdapter()
-        raise ValueError(
-            f"Unknown provider: {provider_override!r}. "
-            "Expected 'openai', 'anthropic', or 'gemini'."
-        )
-
-    url_lower = base_url.lower()
-
-    if "api.anthropic.com" in url_lower or "api.anthropic.eu" in url_lower:
-        return _make_anthropic()
-    if "generativelanguage.googleapis.com" in url_lower:
-        return _make_gemini()
-
-    return OpenAIAdapter()
-
-
-def _make_anthropic() -> ProviderAdapter:
-    """Create the Anthropic adapter."""
-    return AnthropicAdapter()
-
-
-def _make_gemini() -> ProviderAdapter:
-    """Create the Gemini adapter."""
-    return GeminiAdapter()
+    return resolve_provider(base_url, provider_override).adapter

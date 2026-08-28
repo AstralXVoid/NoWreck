@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from nowreck.scanner.scan_cache import CacheEntry, ScanCache, file_content_hash
+
 if TYPE_CHECKING:
     from nowreck.scanner.symbol_index import Symbol
 
@@ -84,8 +86,9 @@ class RepositoryScanner:
             directory. Resolved to an absolute path on init.
     """
 
-    def __init__(self, repo_path: str | Path) -> None:
+    def __init__(self, repo_path: str | Path, *, use_cache: bool = True) -> None:
         self._repo_path = Path(repo_path).resolve()
+        self._use_cache = use_cache
 
     @property
     def repo_path(self) -> Path:
@@ -95,11 +98,20 @@ class RepositoryScanner:
         """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
         and ``.go`` files under the repository root.
 
+        When the scan cache is enabled (the default), previously parsed
+        files are cached on disk and reused if their mtime and size
+        haven't changed.  The cache is transparent — the returned
+        ``ScanResult`` is identical whether warm or cold.
+
         Returns:
             A :class:`ScanResult` containing all successfully parsed
             modules, JS/TS/Rust/Go symbol lists, and any files
             that failed to parse.
         """
+        from nowreck.scanner.symbol_index import Symbol as SymbolClass  # noqa: PLC0415
+
+        cache = ScanCache(self._repo_path) if self._use_cache else None
+
         modules: dict[Path, ast.Module] = {}
         js_files: dict[Path, list[Symbol]] = {}
         ts_files: dict[Path, list[Symbol]] = {}
@@ -107,45 +119,225 @@ class RepositoryScanner:
         go_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
+        # --- Python files ---
         for py_file in self._discover_files(".py"):
             relative = py_file.relative_to(self._repo_path)
-            parsed, error = self._parse_file(py_file)
-            if parsed is not None:
-                modules[relative] = parsed
-            elif error is not None:
-                failed[relative] = error
+            try:
+                stat = py_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
 
+            content_hash = file_content_hash(py_file)
+            cached = (
+                cache.get(relative, mtime, size, content_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.source is not None:
+                # Cache hit: re-parse source to ast.Module
+                try:
+                    modules[relative] = ast.parse(
+                        cached.source, filename=str(py_file)
+                    )
+                except SyntaxError as exc:
+                    failed[relative] = f"SyntaxError: {exc}"
+            else:
+                # Cache miss: parse normally
+                parsed, error = self._parse_file(py_file)
+                if parsed is not None:
+                    modules[relative] = parsed
+                    if cache is not None:
+                        try:
+                            source = py_file.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            source = ""
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="python",
+                                content_hash=content_hash,
+                                source=source,
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
+        # --- JavaScript files ---
         for js_file in self._discover_files(".js"):
             relative = js_file.relative_to(self._repo_path)
-            symbols, error = self._parse_js_file(js_file)
-            if symbols is not None:
-                js_files[relative] = symbols
-            elif error is not None:
-                failed[relative] = error
+            try:
+                stat = js_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
 
+            js_hash = file_content_hash(js_file)
+            cached = (
+                cache.get(relative, mtime, size, js_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                # Cache hit: deserialise symbols
+                js_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                # Cache miss: parse normally
+                symbols, error = self._parse_js_file(js_file)
+                if symbols is not None:
+                    js_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="javascript",
+                                content_hash=js_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
+        # --- TypeScript files ---
         for ts_file in self._discover_files(".ts", ".tsx"):
             relative = ts_file.relative_to(self._repo_path)
-            symbols, error = self._parse_ts_file(ts_file)
-            if symbols is not None:
-                ts_files[relative] = symbols
-            elif error is not None:
-                failed[relative] = error
+            try:
+                stat = ts_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
 
+            ts_hash = file_content_hash(ts_file)
+            cached = (
+                cache.get(relative, mtime, size, ts_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                ts_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                symbols, error = self._parse_ts_file(ts_file)
+                if symbols is not None:
+                    ts_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="typescript",
+                                content_hash=ts_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
+        # --- Rust files ---
         for rust_file in self._discover_files(".rs"):
             relative = rust_file.relative_to(self._repo_path)
-            symbols, error = self._parse_rust_file(rust_file)
-            if symbols is not None:
-                rust_files[relative] = symbols
-            elif error is not None:
-                failed[relative] = error
+            try:
+                stat = rust_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
 
+            rs_hash = file_content_hash(rust_file)
+            cached = (
+                cache.get(relative, mtime, size, rs_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                rust_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                symbols, error = self._parse_rust_file(rust_file)
+                if symbols is not None:
+                    rust_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="rust",
+                                content_hash=rs_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
+        # --- Go files ---
         for go_file in self._discover_files(".go"):
             relative = go_file.relative_to(self._repo_path)
-            symbols, error = self._parse_go_file(go_file)
-            if symbols is not None:
-                go_files[relative] = symbols
-            elif error is not None:
-                failed[relative] = error
+            try:
+                stat = go_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
+
+            go_hash = file_content_hash(go_file)
+            cached = (
+                cache.get(relative, mtime, size, go_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                go_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                symbols, error = self._parse_go_file(go_file)
+                if symbols is not None:
+                    go_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="go",
+                                content_hash=go_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
+        # Persist cache at the end of a successful scan.
+        if cache is not None:
+            cache.save()
 
         # Phase 5 / 3.5: Log a one-line failure-rate summary so users
         # see aggregate parse health even if individual failures were
@@ -171,7 +363,9 @@ class RepositoryScanner:
             )
         elif total > 0:
             logger.debug(
-                "Scan complete: %d/%d files parsed successfully", success, total,
+                "Scan complete: %d/%d files parsed successfully",
+                success,
+                total,
             )
 
         return ScanResult(
@@ -292,7 +486,8 @@ class RepositoryScanner:
         return self._discover_files(".ts", ".tsx")
 
     def _parse_js_file(
-        self, file_path: Path,
+        self,
+        file_path: Path,
     ) -> tuple[list[Symbol] | None, str | None]:
         """Parse a single JavaScript file using the tree-sitter scanner.
 
@@ -321,7 +516,8 @@ class RepositoryScanner:
             return None, msg
 
     def _parse_ts_file(
-        self, file_path: Path,
+        self,
+        file_path: Path,
     ) -> tuple[list[Symbol] | None, str | None]:
         """Parse a single TypeScript file using the tree-sitter scanner.
 
@@ -366,7 +562,8 @@ class RepositoryScanner:
         return self._discover_files(".rs")
 
     def _parse_rust_file(
-        self, file_path: Path,
+        self,
+        file_path: Path,
     ) -> tuple[list[Symbol] | None, str | None]:
         """Parse a single Rust file using the tree-sitter scanner.
 
@@ -402,7 +599,8 @@ class RepositoryScanner:
         return self._discover_files(".go")
 
     def _parse_go_file(
-        self, file_path: Path,
+        self,
+        file_path: Path,
     ) -> tuple[list[Symbol] | None, str | None]:
         """Parse a single Go file using the tree-sitter scanner.
 

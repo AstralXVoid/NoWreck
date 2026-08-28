@@ -51,6 +51,35 @@ class Symbol:
     line_number: int = field(compare=False)
     parent_class: str | None = None
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialise to a JSON-compatible dict.
+
+        ``file_path`` is stored as a string; ``symbol_type`` is stored
+        as its string name (e.g. ``"FUNCTION"``).
+        """
+        return {
+            "name": self.name,
+            "symbol_type": self.symbol_type.name,
+            "file_path": str(self.file_path),
+            "line_number": self.line_number,
+            "parent_class": self.parent_class,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, object]) -> Symbol:
+        """Deserialise from a JSON dict."""
+        return cls(
+            name=str(d["name"]),
+            symbol_type=SymbolType[str(d["symbol_type"])],
+            file_path=Path(str(d["file_path"])),
+            line_number=int(d["line_number"]),  # type: ignore[arg-type]
+            parent_class=(
+                str(d["parent_class"])
+                if d.get("parent_class") is not None
+                else None
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class SymbolIndex:

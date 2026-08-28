@@ -1,10 +1,11 @@
-"""Tests for the provider adapter system (v11 Phases 1-3).
+"""Tests for the provider adapter system (v11 Phases 1-3 + v12 Phase 1).
 
 Covers:
 - ProviderAdapter ABC contract
 - OpenAIAdapter request building and response parsing
 - detect_adapter factory (auto-detection and override)
-- _auth_header helper (provider-specific auth)
+- resolve_provider — single source of truth for provider + auth detection
+- _auth_header_from_type — type-to-header mapping (no URL inference)
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ from nowreck.model.adapters import (
     ProviderAdapter,
     _AdapterError,
     detect_adapter,
+    resolve_provider,
 )
 from nowreck.model.provider import (
     ModelConfig,
     ModelProvider,
-    _auth_header,
+    _auth_header_from_type,
 )
 
 # ---------------------------------------------------------------------------
@@ -290,35 +292,86 @@ class TestDetectAdapter:
 
 
 # ---------------------------------------------------------------------------
-# _auth_header — provider-specific auth
+# resolve_provider — single source of truth for provider + auth
 # ---------------------------------------------------------------------------
 
 
-class TestAuthHeader:
-    def test_openai_uses_bearer(self) -> None:
-        headers = _auth_header("sk-test", "https://api.openai.com/v1")
-        assert headers == {"Authorization": "Bearer sk-test"}
+class TestResolveProvider:
+    """resolve_provider returns both adapter and auth_type in one call."""
 
-    def test_groq_uses_bearer(self) -> None:
-        headers = _auth_header("gsk-test", "https://api.groq.com/openai/v1")
-        assert headers == {"Authorization": "Bearer gsk-test"}
+    def test_openai_url(self) -> None:
+        info = resolve_provider("https://api.openai.com/v1")
+        assert isinstance(info.adapter, OpenAIAdapter)
+        assert info.auth_type == "bearer"
 
-    def test_anthropic_uses_x_api_key(self) -> None:
-        headers = _auth_header("sk-ant-test", "https://api.anthropic.com/v1")
-        assert headers == {"x-api-key": "sk-ant-test"}
+    def test_groq_url(self) -> None:
+        info = resolve_provider("https://api.groq.com/openai/v1")
+        assert isinstance(info.adapter, OpenAIAdapter)
+        assert info.auth_type == "bearer"
 
-    def test_gemini_uses_x_goog_api_key(self) -> None:
-        headers = _auth_header(
-            "AIzaSyTest", "https://generativelanguage.googleapis.com/v1beta"
-        )
-        assert headers == {"x-goog-api-key": "AIzaSyTest"}
+    def test_anthropic_url(self) -> None:
+        info = resolve_provider("https://api.anthropic.com/v1")
+        assert isinstance(info.adapter, AnthropicAdapter)
+        assert info.auth_type == "x-api-key"
+
+    def test_gemini_url(self) -> None:
+        info = resolve_provider("https://generativelanguage.googleapis.com/v1beta")
+        assert isinstance(info.adapter, GeminiAdapter)
+        assert info.auth_type == "x-goog-api-key"
 
     def test_case_insensitive_url(self) -> None:
-        headers = _auth_header("sk-ant-test", "https://API.ANTHROPIC.COM/v1")
+        info = resolve_provider("https://API.ANTHROPIC.COM/v1")
+        assert isinstance(info.adapter, AnthropicAdapter)
+        assert info.auth_type == "x-api-key"
+
+    def test_unknown_url_defaults_to_openai(self) -> None:
+        info = resolve_provider("https://my-provider.com/v1")
+        assert isinstance(info.adapter, OpenAIAdapter)
+        assert info.auth_type == "bearer"
+
+    def test_override_anthropic(self) -> None:
+        info = resolve_provider(
+            "https://proxy.example.com/v1", provider_override="anthropic"
+        )
+        assert isinstance(info.adapter, AnthropicAdapter)
+        assert info.auth_type == "x-api-key"
+
+    def test_override_gemini(self) -> None:
+        info = resolve_provider(
+            "https://proxy.example.com/v1", provider_override="gemini"
+        )
+        assert isinstance(info.adapter, GeminiAdapter)
+        assert info.auth_type == "x-goog-api-key"
+
+    def test_override_openai(self) -> None:
+        info = resolve_provider(
+            "https://proxy.example.com/v1", provider_override="openai"
+        )
+        assert isinstance(info.adapter, OpenAIAdapter)
+        assert info.auth_type == "bearer"
+
+    def test_override_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown provider"):
+            resolve_provider("https://proxy.example.com/v1", provider_override="typo")
+
+
+class TestAuthHeaderFromType:
+    """_auth_header_from_type is a simple type→header mapping."""
+
+    def test_bearer(self) -> None:
+        headers = _auth_header_from_type("sk-test", "bearer")
+        assert headers == {"Authorization": "Bearer sk-test"}
+
+    def test_x_api_key(self) -> None:
+        headers = _auth_header_from_type("sk-ant-test", "x-api-key")
         assert headers == {"x-api-key": "sk-ant-test"}
 
-    def test_unknown_provider_uses_bearer(self) -> None:
-        headers = _auth_header("custom-key", "https://my-provider.com/v1")
+    def test_x_goog_api_key(self) -> None:
+        headers = _auth_header_from_type("AIzaSyTest", "x-goog-api-key")
+        assert headers == {"x-goog-api-key": "AIzaSyTest"}
+
+    def test_unknown_type_defaults_to_bearer(self) -> None:
+        headers = _auth_header_from_type("custom-key", "unknown")
         assert headers == {"Authorization": "Bearer custom-key"}
 
 
@@ -899,32 +952,36 @@ class TestDetectAdapterGemini:
 # ---------------------------------------------------------------------------
 
 
-class TestAuthHeaderProviderOverride:
+class TestResolveProviderOverride:
     """P1-01: an explicit provider override must win over URL inference."""
 
-    def test_override_anthropic_generic_url_uses_x_api_key(self) -> None:
-        headers = _auth_header(
-            "sk-ant-x", "https://proxy.example.com/v1", provider="anthropic"
+    def test_override_anthropic_generic_url(self) -> None:
+        info = resolve_provider(
+            "https://proxy.example.com/v1", provider_override="anthropic"
         )
-        assert headers == {"x-api-key": "sk-ant-x"}
+        assert isinstance(info.adapter, AnthropicAdapter)
+        assert info.auth_type == "x-api-key"
 
-    def test_override_gemini_generic_url_uses_goog_key(self) -> None:
-        headers = _auth_header(
-            "AIza-x", "https://proxy.example.com/v1", provider="gemini"
+    def test_override_gemini_generic_url(self) -> None:
+        info = resolve_provider(
+            "https://proxy.example.com/v1", provider_override="gemini"
         )
-        assert headers == {"x-goog-api-key": "AIza-x"}
+        assert isinstance(info.adapter, GeminiAdapter)
+        assert info.auth_type == "x-goog-api-key"
 
-    def test_no_override_anthropic_url_still_x_api_key(self) -> None:
-        headers = _auth_header("sk-ant-x", "https://api.anthropic.com")
-        assert headers == {"x-api-key": "sk-ant-x"}
+    def test_no_override_anthropic_url_still_detected(self) -> None:
+        info = resolve_provider("https://api.anthropic.com")
+        assert isinstance(info.adapter, AnthropicAdapter)
+        assert info.auth_type == "x-api-key"
 
-    def test_unknown_override_falls_back_to_url(self) -> None:
-        headers = _auth_header("sk-ant-x", "https://api.anthropic.com", provider="typo")
-        assert headers == {"x-api-key": "sk-ant-x"}
+    def test_unknown_override_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown provider"):
+            resolve_provider("https://api.anthropic.com", provider_override="typo")
 
     def test_openai_url_bearer_unchanged(self) -> None:
-        headers = _auth_header("sk-x", "https://api.openai.com/v1")
-        assert headers == {"Authorization": "Bearer sk-x"}
+        info = resolve_provider("https://api.openai.com/v1")
+        assert isinstance(info.adapter, OpenAIAdapter)
+        assert info.auth_type == "bearer"
 
 
 class TestAnthropicEuEndpoint:
@@ -935,10 +992,8 @@ class TestAnthropicEuEndpoint:
         assert isinstance(adapter, AnthropicAdapter)
 
     def test_eu_url_auth_is_x_api_key(self) -> None:
-        from nowreck.model.provider import _auth_header
-
-        headers = _auth_header("sk-ant-eu", "https://api.anthropic.eu")
-        assert headers == {"x-api-key": "sk-ant-eu"}
+        info = resolve_provider("https://api.anthropic.eu")
+        assert info.auth_type == "x-api-key"
 
 
 class TestAnthropicTruncation:
