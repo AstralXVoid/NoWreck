@@ -72,10 +72,44 @@ def handle_fix(args: argparse.Namespace) -> int:
         Scans two repository snapshots, detects structural changes, and
         optionally verifies claims against them.
     """
+    # Flag conflict detection
+    if args.json and args.format:
+        print(
+            "Error: cannot use both --json and --format",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.compare and (args.pre or args.post):
+        print(
+            "Error: cannot use --compare with --pre or --post",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Deprecation warning for --json
+    if args.json:
+        import warnings
+
+        warnings.warn(
+            "--json is deprecated, use --format json instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        print(
+            "Warning: --json is deprecated, use --format json instead",
+            file=sys.stderr,
+        )
+
+    # Resolve effective format
+    output_format = args.format
+    if args.json:
+        output_format = "json"
+
     prompt = args.prompt
     colour = not args.no_colour
     reporter = TerminalReporter(colour=colour, verbose=args.verbose)
-    _log_file = sys.stderr if args.json else sys.stdout
+    _log_file = sys.stderr if output_format else sys.stdout
 
     def _log(msg: str) -> None:
         print(msg, file=_log_file)
@@ -139,11 +173,8 @@ def handle_fix(args: argparse.Namespace) -> int:
     )
 
     # Print report
-    if args.json:
-        print(reporter.report_json(report))
-    else:
-        print()
-        print(reporter.report(report))
+    output = _format_report(report, output_format, reporter)
+    _write_output(output, args.output)
 
     total_issues = report.unverifiable + report.contradicted + report.unexplained_count
     return 0 if total_issues == 0 else 1
@@ -255,11 +286,26 @@ def _handle_prompt_mode(
         f"Evidence: {'independent' if result.has_independent_evidence else 'none'}"
     )
 
+    # Resolve effective format
+    output_format = args.format
     if args.json:
-        print(reporter.report_json_v10(result))
+        output_format = "json"
+
+    # Format and write output
+    if output_format == "json":
+        output = reporter.report_json_v10(result)
+    elif output_format == "sarif":
+        from nowreck.reporter.sarif_reporter import SarifReporter
+
+        output = SarifReporter().report(result.report)
+    elif output_format == "junit":
+        from nowreck.reporter.junit_reporter import JUnitReporter
+
+        output = JUnitReporter().report(result.report)
     else:
-        print()
-        print(reporter.report_v10(result))
+        output = reporter.report_v10(result)
+
+    _write_output(output, args.output)
 
     report = result.report
     total_issues = report.unverifiable + report.contradicted + report.unexplained_count
@@ -421,3 +467,34 @@ def _resolve_path(raw: str) -> Path:
     except OSError as exc:
         raise ValueError(f"Cannot access path: {exc}") from exc
     return path
+
+
+def _format_report(
+    report: VerificationReport,
+    output_format: str | None,
+    terminal_reporter: TerminalReporter,
+) -> str:
+    """Format the verification report according to the output format."""
+    if output_format == "json":
+        return terminal_reporter.report_json(report)
+    if output_format == "sarif":
+        from nowreck.reporter.sarif_reporter import SarifReporter
+
+        return SarifReporter().report(report)
+    if output_format == "junit":
+        from nowreck.reporter.junit_reporter import JUnitReporter
+
+        return JUnitReporter().report(report)
+    # Default: terminal
+    return terminal_reporter.report(report)
+
+
+def _write_output(output: str, output_path: str | None) -> None:
+    """Write output to file or stdout."""
+    if output_path is None:
+        print(output)
+        return
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(output, encoding="utf-8")

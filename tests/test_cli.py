@@ -449,3 +449,249 @@ class TestBuildModelConfigValidation:
 
         cfg = _build_model_config()
         assert cfg.temperature == 0.7
+
+
+# ---------------------------------------------------------------------------
+# v13 flags — --format, --output, --compare
+# ---------------------------------------------------------------------------
+
+
+class TestFormatFlag:
+    """Tests for --format flag."""
+
+    def test_format_json_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--format", "json"]
+        )
+        assert args.format == "json"
+
+    def test_format_sarif_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--format", "sarif"]
+        )
+        assert args.format == "sarif"
+
+    def test_format_junit_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--format", "junit"]
+        )
+        assert args.format == "junit"
+
+    def test_format_defaults_none(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["fix", "--pre", "/tmp/a", "--post", "/tmp/b"])
+        assert args.format is None
+
+    def test_format_invalid_rejected(self) -> None:
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--format", "xml"]
+            )
+
+
+class TestOutputFlag:
+    """Tests for --output flag."""
+
+    def test_output_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--output", "out.json"]
+        )
+        assert args.output == "out.json"
+
+    def test_output_defaults_none(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["fix", "--pre", "/tmp/a", "--post", "/tmp/b"])
+        assert args.output is None
+
+
+class TestCompareFlag:
+    """Tests for --compare flag."""
+
+    def test_compare_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["fix", "--compare", "HEAD~1"])
+        assert args.compare == "HEAD~1"
+
+    def test_compare_defaults_none(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["fix"])
+        assert args.compare is None
+
+
+class TestFlagConflicts:
+    """Tests for flag conflict detection."""
+
+    def test_json_and_format_conflict(self, capsys: pytest.CaptureFixture) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp/a", "--post", "/tmp/b", "--json", "--format", "json"]
+        )
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "cannot use both --json and --format" in err
+
+    def test_compare_and_post_conflict(self, capsys: pytest.CaptureFixture) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--compare", "HEAD~1", "--post", "/tmp/b"]
+        )
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "cannot use --compare with --pre or --post" in err
+
+    def test_compare_and_pre_conflict(self, capsys: pytest.CaptureFixture) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--compare", "HEAD~1", "--pre", "/tmp/a"]
+        )
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "cannot use --compare with --pre or --post" in err
+
+
+class TestFormatOutput:
+    """Tests for format output routing."""
+
+    def test_format_json_output(self, capsys: pytest.CaptureFixture) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+
+            (pre / "app.py").write_text("def old(): pass\n", encoding="utf-8")
+            (post / "app.py").write_text(
+                "def old(): pass\n\ndef added(): pass\n", encoding="utf-8"
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    "json",
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            data = json.loads(out)
+            assert "version" in data
+            assert "results" in data
+
+    def test_format_sarif_output(self, capsys: pytest.CaptureFixture) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+
+            (pre / "app.py").write_text("def old(): pass\n", encoding="utf-8")
+            (post / "app.py").write_text(
+                "def old(): pass\n\ndef added(): pass\n", encoding="utf-8"
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    "sarif",
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            data = json.loads(out)
+            assert data["version"] == "2.1.0"
+            assert "$schema" in data
+
+    def test_format_junit_output(self, capsys: pytest.CaptureFixture) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+
+            (pre / "app.py").write_text("def old(): pass\n", encoding="utf-8")
+            (post / "app.py").write_text(
+                "def old(): pass\n\ndef added(): pass\n", encoding="utf-8"
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    "junit",
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "testsuites" in out
+            assert "nowreck" in out
+
+    def test_output_to_file(self, capsys: pytest.CaptureFixture) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+
+            (pre / "app.py").write_text("def old(): pass\n", encoding="utf-8")
+            (post / "app.py").write_text(
+                "def old(): pass\n\ndef added(): pass\n", encoding="utf-8"
+            )
+
+            output_file = Path(tmpdir) / "output.json"
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert output_file.exists()
+            data = json.loads(output_file.read_text())
+            assert "version" in data
+            # stdout should be empty
+            assert out.strip() == ""

@@ -70,7 +70,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Output structured JSON instead of coloured text (for CI)",
+        help=(
+            "[DEPRECATED: use --format json] "
+            "Output structured JSON instead of coloured text (for CI)"
+        ),
+    )
+    fix_parser.add_argument(
+        "--format",
+        choices=["json", "sarif", "junit"],
+        default=None,
+        help=(
+            "Output format: json, sarif (GitHub Code Scanning), "
+            "or junit (CI test reports)"
+        ),
+    )
+    fix_parser.add_argument(
+        "--output",
+        metavar="PATH",
+        default=None,
+        help="Write output to file instead of stdout",
+    )
+    fix_parser.add_argument(
+        "--compare",
+        metavar="REF",
+        default=None,
+        help=(
+            "Compare git ref against HEAD (shorthand for "
+            "--pre REF --post HEAD)"
+        ),
     )
     fix_parser.add_argument(
         "--verbose",
@@ -78,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Show full deterministic evidence per claim in the terminal "
-            "report (no effect with --json)"
+            "report (no effect with --json or --format)"
         ),
     )
 
