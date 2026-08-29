@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import questionary
+try:
+    import questionary
+except ImportError as exc:
+    raise ImportError(
+        "questionary is required for interactive mode. "
+        "Install it with:  pip install questionary"
+    ) from exc
 
 from nowreck.claims.parser import ClaimParser
 from nowreck.detector.change_detector import ChangeDetector

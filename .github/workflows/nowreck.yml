@@ -1,0 +1,103 @@
+name: NoWreck Verification
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Run weekly on Monday at 06:00 UTC to catch dependency drift
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write  # Required for GitHub Code Scanning (SARIF upload)
+  checks: write           # Required for JUnit check run annotations
+
+env:
+  PYTHON_VERSION: "3.12"
+  NOWRECK_VERSION: "0.13.0"
+
+jobs:
+  verify:
+    name: NoWreck Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for --compare mode
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install NoWreck
+        run: |
+          pip install --upgrade pip
+          pip install "nowreck==${{ env.NOWRECK_VERSION }}"
+
+      - name: Verify installation
+        run: nowreck --version
+
+      # ------------------------------------------------------------------
+      # SARIF output → GitHub Code Scanning
+      # ------------------------------------------------------------------
+      - name: Run NoWreck (SARIF)
+        id: sarif
+        if: success() || failure()
+        run: |
+          nowreck fix --format sarif --output nowreck.sarif || true
+          if [ -f nowreck.sarif ]; then
+            echo "sarif_generated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sarif_generated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: steps.sarif.outputs.sarif_generated == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: nowreck.sarif
+          category: nowreck
+
+      # ------------------------------------------------------------------
+      # JUnit output → Check Run annotations
+      # ------------------------------------------------------------------
+      - name: Run NoWreck (JUnit)
+        id: junit
+        if: success() || failure()
+        run: |
+          nowreck fix --format junit --output nowreck-junit.xml || true
+          if [ -f nowreck-junit.xml ]; then
+            echo "junit_generated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "junit_generated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish JUnit report
+        if: steps.junit.outputs.junit_generated == 'true'
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: nowreck-junit.xml
+          check_name: NoWreck Verification Report
+          fail_on_failure: false
+          annotate_only: true
+
+      # ------------------------------------------------------------------
+      # Cleanup
+      # ------------------------------------------------------------------
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nowreck-reports
+          path: |
+            nowreck.sarif
+            nowreck-junit.xml
+          retention-days: 30
+          if-no-files-found: ignore

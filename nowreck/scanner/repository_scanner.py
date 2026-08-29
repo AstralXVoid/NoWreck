@@ -139,9 +139,7 @@ class RepositoryScanner:
             if cached is not None and cached.source is not None:
                 # Cache hit: re-parse source to ast.Module
                 try:
-                    modules[relative] = ast.parse(
-                        cached.source, filename=str(py_file)
-                    )
+                    modules[relative] = ast.parse(cached.source, filename=str(py_file))
                 except SyntaxError as exc:
                     failed[relative] = f"SyntaxError: {exc}"
             else:
@@ -182,15 +180,11 @@ class RepositoryScanner:
 
             js_hash = file_content_hash(js_file)
             cached = (
-                cache.get(relative, mtime, size, js_hash)
-                if cache is not None
-                else None
+                cache.get(relative, mtime, size, js_hash) if cache is not None else None
             )
             if cached is not None and cached.symbols:
                 # Cache hit: deserialise symbols
-                js_files[relative] = [
-                    SymbolClass.from_dict(s) for s in cached.symbols
-                ]
+                js_files[relative] = [SymbolClass.from_dict(s) for s in cached.symbols]
             else:
                 # Cache miss: parse normally
                 symbols, error = self._parse_js_file(js_file)
@@ -225,14 +219,10 @@ class RepositoryScanner:
 
             ts_hash = file_content_hash(ts_file)
             cached = (
-                cache.get(relative, mtime, size, ts_hash)
-                if cache is not None
-                else None
+                cache.get(relative, mtime, size, ts_hash) if cache is not None else None
             )
             if cached is not None and cached.symbols:
-                ts_files[relative] = [
-                    SymbolClass.from_dict(s) for s in cached.symbols
-                ]
+                ts_files[relative] = [SymbolClass.from_dict(s) for s in cached.symbols]
             else:
                 symbols, error = self._parse_ts_file(ts_file)
                 if symbols is not None:
@@ -266,9 +256,7 @@ class RepositoryScanner:
 
             rs_hash = file_content_hash(rust_file)
             cached = (
-                cache.get(relative, mtime, size, rs_hash)
-                if cache is not None
-                else None
+                cache.get(relative, mtime, size, rs_hash) if cache is not None else None
             )
             if cached is not None and cached.symbols:
                 rust_files[relative] = [
@@ -307,14 +295,10 @@ class RepositoryScanner:
 
             go_hash = file_content_hash(go_file)
             cached = (
-                cache.get(relative, mtime, size, go_hash)
-                if cache is not None
-                else None
+                cache.get(relative, mtime, size, go_hash) if cache is not None else None
             )
             if cached is not None and cached.symbols:
-                go_files[relative] = [
-                    SymbolClass.from_dict(s) for s in cached.symbols
-                ]
+                go_files[relative] = [SymbolClass.from_dict(s) for s in cached.symbols]
             else:
                 symbols, error = self._parse_go_file(go_file)
                 if symbols is not None:
@@ -504,7 +488,15 @@ class RepositoryScanner:
         """
         # Local import to avoid circular dependency:
         #   repository_scanner → javascript_scanner → symbol_index → repository_scanner
-        from nowreck.scanner.javascript_scanner import scan_js_file  # noqa: PLC0415
+        try:
+            from nowreck.scanner.javascript_scanner import scan_js_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for JavaScript scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-javascript"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
 
         try:
             symbols = scan_js_file(file_path, repo_root=self._repo_path)
@@ -535,7 +527,15 @@ class RepositoryScanner:
         # Local import to avoid circular dependency:
         #   repository_scanner -> typescript_scanner -> _tree_sitter_helpers
         #   -> symbol_index -> repository_scanner
-        from nowreck.scanner.typescript_scanner import scan_ts_file  # noqa: PLC0415
+        try:
+            from nowreck.scanner.typescript_scanner import scan_ts_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for TypeScript scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-typescript"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
 
         try:
             symbols = scan_ts_file(file_path, repo_root=self._repo_path)
@@ -572,7 +572,15 @@ class RepositoryScanner:
         file and ``error`` is ``None``.  If parsing fails, ``symbols``
         is ``None`` and ``error`` is a human-readable message.
         """
-        from nowreck.scanner.rust_scanner import scan_rust_file  # noqa: PLC0415
+        try:
+            from nowreck.scanner.rust_scanner import scan_rust_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for Rust scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-rust"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
 
         try:
             symbols = scan_rust_file(file_path, repo_root=self._repo_path)
@@ -609,7 +617,15 @@ class RepositoryScanner:
         file and ``error`` is ``None``.  If parsing fails, ``symbols``
         is ``None`` and ``error`` is a human-readable message.
         """
-        from nowreck.scanner.go_scanner import scan_go_file  # noqa: PLC0415
+        try:
+            from nowreck.scanner.go_scanner import scan_go_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for Go scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-go"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
 
         try:
             symbols = scan_go_file(file_path, repo_root=self._repo_path)
