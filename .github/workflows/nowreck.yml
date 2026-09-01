@@ -16,7 +16,6 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  NOWRECK_VERSION: "0.13.0"
 
 jobs:
   verify:
@@ -39,7 +38,7 @@ jobs:
       - name: Install NoWreck
         run: |
           pip install --upgrade pip
-          pip install "nowreck==${{ env.NOWRECK_VERSION }}"
+          pip install -e .
 
       - name: Verify installation
         run: nowreck --version
@@ -49,9 +48,9 @@ jobs:
       # ------------------------------------------------------------------
       - name: Run NoWreck (SARIF)
         id: sarif
-        if: success() || failure()
+        continue-on-error: true
         run: |
-          nowreck fix --format sarif --output nowreck.sarif || true
+          nowreck fix --format sarif --output nowreck.sarif
           if [ -f nowreck.sarif ]; then
             echo "sarif_generated=true" >> "$GITHUB_OUTPUT"
           else
@@ -59,7 +58,7 @@ jobs:
           fi
 
       - name: Upload SARIF to GitHub Code Scanning
-        if: steps.sarif.outputs.sarif_generated == 'true'
+        if: always() && steps.sarif.outputs.sarif_generated == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: nowreck.sarif
@@ -70,9 +69,9 @@ jobs:
       # ------------------------------------------------------------------
       - name: Run NoWreck (JUnit)
         id: junit
-        if: success() || failure()
+        continue-on-error: true
         run: |
-          nowreck fix --format junit --output nowreck-junit.xml || true
+          nowreck fix --format junit --output nowreck-junit.xml
           if [ -f nowreck-junit.xml ]; then
             echo "junit_generated=true" >> "$GITHUB_OUTPUT"
           else
@@ -80,7 +79,7 @@ jobs:
           fi
 
       - name: Publish JUnit report
-        if: steps.junit.outputs.junit_generated == 'true'
+        if: always() && steps.junit.outputs.junit_generated == 'true'
         uses: mikepenz/action-junit-report@v4
         with:
           report_paths: nowreck-junit.xml
@@ -89,7 +88,7 @@ jobs:
           annotate_only: true
 
       # ------------------------------------------------------------------
-      # Cleanup
+      # Artifact upload
       # ------------------------------------------------------------------
       - name: Upload artifacts
         if: always()
@@ -101,3 +100,15 @@ jobs:
             nowreck-junit.xml
           retention-days: 30
           if-no-files-found: ignore
+
+      # ------------------------------------------------------------------
+      # Final verification status
+      # ------------------------------------------------------------------
+      - name: Verification status
+        if: always()
+        run: |
+          if [ "${{ steps.sarif.outcome }}" = "failure" ] || [ "${{ steps.junit.outcome }}" = "failure" ]; then
+            echo "NoWreck verification failed"
+            exit 1
+          fi
+          echo "NoWreck verification passed"
