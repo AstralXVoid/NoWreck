@@ -1,7 +1,10 @@
+<div align="center">
+
 # NoWreck
 
 **Deterministic AI Verifier** — v0.13.0
 
+</div>
 NoWreck is a deterministic structural verifier for AI-generated code-change
 claims. When an AI describes a code change, NoWreck compares the claims
 against structural evidence derived by its own scanners — the verifier never
