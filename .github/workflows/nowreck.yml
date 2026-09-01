@@ -35,51 +35,48 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install NoWreck
+      - name: Install NoWreck from repository
         run: |
-          pip install --upgrade pip
-          pip install -e .
+          python -m pip install --upgrade pip
+          python -m pip install -e .
 
       - name: Verify installation
         run: nowreck --version
 
       # ------------------------------------------------------------------
-      # SARIF output → GitHub Code Scanning
+      # Run NoWreck verification with --compare HEAD~1
+      #
+      # --compare HEAD~1 is shorthand for --pre HEAD~1 --post HEAD.
+      # It extracts both git states via `git archive`, scans them, detects
+      # structural changes, and reports any issues. Exit code 0 = clean,
+      # exit code 1 = contradicted/unverifiable/unexplained changes.
       # ------------------------------------------------------------------
+
+      # SARIF output → GitHub Code Scanning
       - name: Run NoWreck (SARIF)
         id: sarif
         continue-on-error: true
-        run: |
-          nowreck fix --format sarif --output nowreck.sarif
-          if [ -f nowreck.sarif ]; then
-            echo "sarif_generated=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "sarif_generated=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: nowreck fix --compare HEAD~1 --format sarif --output nowreck.sarif
+
+      # JUnit output → Check Run annotations
+      - name: Run NoWreck (JUnit)
+        id: junit
+        continue-on-error: true
+        run: nowreck fix --compare HEAD~1 --format junit --output nowreck-junit.xml
+
+      # ------------------------------------------------------------------
+      # Report upload — run regardless of verification outcome
+      # ------------------------------------------------------------------
 
       - name: Upload SARIF to GitHub Code Scanning
-        if: always() && steps.sarif.outputs.sarif_generated == 'true'
+        if: always() && (steps.sarif.outcome == 'success' || steps.sarif.outcome == 'failure')
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: nowreck.sarif
           category: nowreck
 
-      # ------------------------------------------------------------------
-      # JUnit output → Check Run annotations
-      # ------------------------------------------------------------------
-      - name: Run NoWreck (JUnit)
-        id: junit
-        continue-on-error: true
-        run: |
-          nowreck fix --format junit --output nowreck-junit.xml
-          if [ -f nowreck-junit.xml ]; then
-            echo "junit_generated=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "junit_generated=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish JUnit report
-        if: always() && steps.junit.outputs.junit_generated == 'true'
+        if: always() && (steps.junit.outcome == 'success' || steps.junit.outcome == 'failure')
         uses: mikepenz/action-junit-report@v4
         with:
           report_paths: nowreck-junit.xml
@@ -87,9 +84,6 @@ jobs:
           fail_on_failure: false
           annotate_only: true
 
-      # ------------------------------------------------------------------
-      # Artifact upload
-      # ------------------------------------------------------------------
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,13 +96,16 @@ jobs:
           if-no-files-found: ignore
 
       # ------------------------------------------------------------------
-      # Final verification status
+      # Final verification gate
+      #
+      # Reports and artifacts are uploaded above regardless of outcome.
+      # This step fails the job if either NoWreck run found issues.
       # ------------------------------------------------------------------
-      - name: Verification status
+      - name: Verification gate
         if: always()
         run: |
           if [ "${{ steps.sarif.outcome }}" = "failure" ] || [ "${{ steps.junit.outcome }}" = "failure" ]; then
-            echo "NoWreck verification failed"
+            echo "::error::NoWreck verification failed — contradicted, unverifiable, or unexplained changes detected."
             exit 1
           fi
-          echo "NoWreck verification passed"
+          echo "NoWreck verification passed."
