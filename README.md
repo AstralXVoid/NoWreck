@@ -17,7 +17,9 @@ asks another AI for an opinion. Where the evidence comes from depends on the
 mode: in Pre/Post and Claims modes, from actual before/after repository
 snapshots; in Prompt Mode, from the model's own proposed diff.
 
-<img width="1536" height="1024" alt="ChatGPT Image Aug 24, 2026, 03_09_34 PM (1)" src="https://github.com/user-attachments/assets/521ce1aa-3842-4f8a-9834-fc37a3983035" />
+
+<img width="1693" height="929" alt="ChatGPT Image Sep 2, 2026, 10_44_07 PM" src="https://github.com/user-attachments/assets/a9aed9be-9d23-4f2d-8cbb-73e31986c226" />
+
 
 
 ```
