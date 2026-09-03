@@ -14,6 +14,7 @@ from nowreck.main import (
     handle_config,
     handle_fix,
     main,
+    resolve_claims_input,
 )
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,99 @@ class TestResolvePath:
         long_path = "/" + ("a" * 5000) + "/path"
         with pytest.raises(ValueError, match="Cannot access path"):
             _resolve_path(long_path)
+
+
+# ---------------------------------------------------------------------------
+# resolve_claims_input
+# ---------------------------------------------------------------------------
+
+
+class TestResolveClaimsInput:
+    """Unit tests for the ``--claims @file`` resolver.
+
+    The traversal guard rejects anything outside the current directory, so
+    every test that reads a real file under ``tmp_path`` chdirs into it
+    first (pytest's ``tmp_path`` lives under /tmp, outside the project
+    directory).
+    """
+
+    def test_claims_from_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)  # tmp_path is now inside CWD
+        claims_file = tmp_path / "claims.json"
+        claims_file.write_text('{"claims": []}')
+        result = resolve_claims_input(f"@{claims_file}")
+        assert '"claims"' in result
+
+    def test_claims_from_file_traversal(self) -> None:
+        with pytest.raises(ValueError, match="must be inside"):
+            resolve_claims_input("@/etc/passwd")
+
+    def test_claims_from_file_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="file not found"):
+            resolve_claims_input(f"@{tmp_path / 'nonexistent.json'}")
+
+    def test_claims_at_with_no_path(self) -> None:
+        with pytest.raises(ValueError, match="requires a file path"):
+            resolve_claims_input("@")
+
+    def test_claims_from_file_tilde_expansion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """expanduser + CWD guard both exercised: HOME and CWD both point
+        at tmp_path, so @~/claims.json expands inside CWD and is accepted."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        claims_file = tmp_path / "claims.json"
+        claims_file.write_text('{"claims": []}')
+        result = resolve_claims_input("@~/claims.json")
+        assert '"claims"' in result
+
+    def test_claims_at_with_whitespace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Leading/trailing whitespace is trimmed before the @ check."""
+        monkeypatch.chdir(tmp_path)
+        claims_file = tmp_path / "claims.json"
+        claims_file.write_text('{"claims": []}')
+        result = resolve_claims_input(f"  @{claims_file}  ")
+        assert '"claims"' in result
+
+    def test_claims_from_file_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Symlink to a file inside CWD is read through the link."""
+        monkeypatch.chdir(tmp_path)
+        real = tmp_path / "real.json"
+        real.write_text('{"claims": []}')
+        link = tmp_path / "link.json"
+        link.symlink_to(real)
+        result = resolve_claims_input(f"@{link}")
+        assert '"claims"' in result
+
+    def test_claims_from_file_symlink_outside(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink pointing OUTSIDE CWD is rejected — resolve() runs
+        before the guard, so the target path fails the CWD-relative check."""
+        monkeypatch.chdir(tmp_path)
+        outside = Path("/etc/passwd")
+        if not outside.exists():
+            pytest.skip("no /etc/passwd to symlink to")
+        link = tmp_path / "claims.json"
+        link.symlink_to(outside)
+        with pytest.raises(ValueError, match="must be inside"):
+            resolve_claims_input(f"@{link}")
+
+    def test_claims_from_file_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty file raises a clear error instead of silently parsing ""."""
+        monkeypatch.chdir(tmp_path)
+        empty = tmp_path / "empty.json"
+        empty.write_text("")
+        with pytest.raises(ValueError, match="claims file is empty"):
+            resolve_claims_input(f"@{empty}")
+
+    def test_inline_json_returned_unchanged(self) -> None:
+        """Non-@ values pass through untouched (only outer whitespace is
+        trimmed)."""
+        inline = '{"claims": []}'
+        assert resolve_claims_input(inline) == inline
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +374,65 @@ class TestHandleFix:
 
             assert rc == 0
             assert "CONFIRMED" in out
+
+    def test_fix_with_claims_from_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """End-to-end: --claims @file triggers resolve + parse + verify."""
+        # Set CWD to tmp_path so the @file path passes the CWD-relative check
+        monkeypatch.chdir(tmp_path)
+
+        pre = tmp_path / "pre"
+        post = tmp_path / "post"
+        pre.mkdir()
+        post.mkdir()
+
+        (pre / "app.py").write_text("def old(): pass\n", encoding="utf-8")
+        (post / "app.py").write_text(
+            "def old(): pass\n\ndef new_fn(): pass\n", encoding="utf-8"
+        )
+
+        claims = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "ADD_FUNCTION",
+                        "symbol_name": "new_fn",
+                        "file_path": "app.py",
+                    },
+                ],
+            }
+        )
+        claims_file = tmp_path / "claims.json"
+        claims_file.write_text(claims, encoding="utf-8")
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "fix",
+                "--pre",
+                str(pre),
+                "--post",
+                str(post),
+                "--claims",
+                f"@{claims_file}",
+            ]
+        )
+
+        rc = handle_fix(args)
+        out, _ = capsys.readouterr()
+
+        assert rc == 0  # claim confirmed
+        assert "CONFIRMED" in out
+
+    def test_fix_with_claims_from_missing_file(self) -> None:
+        """A missing @file fails cleanly with a clear error (exit 1)."""
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "--pre", "/tmp", "--post", "/tmp", "--claims", "@nope.json"]
+        )
+        rc = handle_fix(args)
+        assert rc == 1
 
     def test_fix_with_invalid_claims(self, capsys: pytest.CaptureFixture) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

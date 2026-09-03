@@ -161,4 +161,4 @@ identically.
 
 ---
 
-*NoWreck v0.13.0 — August 2026*
+*NoWreck v0.13.0 — September 2026*

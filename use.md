@@ -323,10 +323,11 @@ nowreck fix \
   --claims '{"claims": [...]}'
 ```
 
-You can also pipe claims from another tool:
+Or read claims from a file with the `@` prefix — useful for large claim
+sets and CI pipelines that generate claims files:
 
 ```bash
-cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims '{}'
+nowreck fix --pre ./before --post ./after --claims @claims.json
 ```
 
 ### Flags
@@ -338,7 +339,7 @@ cat claims.json | xargs -I{} nowreck fix --pre ./before --post ./after --claims 
 | `--verbose` | All modes | Show full deterministic evidence per claim (detail blocks instead of one-line summaries); no-op with `--json` |
 | `--pre PATH` | Pre/Post, Claims | Path to pre-change snapshot |
 | `--post PATH` | Pre/Post, Claims | Path to post-change snapshot |
-| `--claims JSON` | Claims | JSON string of claims to verify |
+| `--claims JSON` | Claims | JSON string of claims to verify, or `@file` to read from file |
 
 > **Verbose example:** `nowreck fix --pre ./before --post ./after --claims '{"claims": [...]}' --verbose` renders each claim with its full identity fields, the complete matched change (including `line_number`), and full detail for unverifiable and unexplained changes. Without `--verbose`, each claim shows the same one-line summary as before — output is byte-identical to earlier versions.
 

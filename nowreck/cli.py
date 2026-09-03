@@ -4,12 +4,38 @@ import argparse
 
 from nowreck import __version__
 
+_EPILOG = """\
+commands:
+  fix             Run the verification pipeline.
+                  Prompt mode: nowreck fix "<prompt>"
+                    Calls the configured model, generates claims, verifies.
+                  Pre/Post mode: nowreck fix --pre PATH --post PATH
+                    Scans two repo snapshots, detects changes, verifies.
+                  Compare mode: nowreck fix --compare REF
+                    Compares a git ref against HEAD.
+
+  config show     Display current local configuration.
+                  Shows: api_key (masked), model, base_url, temperature,
+                  max_retries, provider.
+
+  config set      Set a configuration value.
+                  Keys: api_key, model, base_url, temperature,
+                  max_retries, provider.
+
+providers:        OpenAI, Anthropic, Gemini (auto-detected from base_url)
+output formats:   json, sarif (GitHub Code Scanning), junit (CI reports)
+
+Run 'nowreck fix --help' or 'nowreck config --help' for subcommand options.
+"""
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for nowreck."""
     parser = argparse.ArgumentParser(
         prog="nowreck",
         description="Deterministic verifier for AI code change explanations",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -58,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--claims",
         metavar="JSON",
         default=None,
-        help="AI claims as a JSON string (advanced — skip to detect only)",
+        help="AI claims as JSON string, or @file to read from file (advanced)",
     )
     fix_parser.add_argument(
         "--no-colour",

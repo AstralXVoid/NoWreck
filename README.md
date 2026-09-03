@@ -2,7 +2,7 @@
 
 # NoWreck
 
-**Deterministic AI Verifier** — v0.13.0
+**Deterministic AI Verifier** — v0.14.0
 
 </div>
 <div align="center">
@@ -125,7 +125,7 @@ user environment (PyPI publishing is coming later).
 
 ```bash
 nowreck --version
-# → nowreck 0.13.0
+# → nowreck 0.14.0
 
 nowreck
 # → shows banner + usage
@@ -440,9 +440,14 @@ real before/after snapshots, Claims Mode — together with Pre/Post Mode — is
 a genuinely independent verification path. (Since v0.10.0, Prompt Mode is
 also independent — it captures before/after state automatically.)
 
-Claims must be passed inline via `--claims`; the CLI does not currently
-read claims from stdin. If you keep claims in a file, pass its JSON content
-directly as the `--claims` argument.
+Claims can be passed inline via `--claims`, or read from a file using the
+`@` prefix — useful for large claim sets and CI pipelines that generate
+claims files:
+
+```bash
+# Read claims from a file (@ prefix)
+nowreck fix --pre ./repo-before --post ./repo-after --claims @claims.json
+```
 
 ### Interactive Mode
 <div align="center">
@@ -723,7 +728,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.13.0",
+  "version": "0.14.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -779,7 +784,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.13.0",
+  "version": "0.14.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -984,7 +989,7 @@ jobs:
 
 ## Roadmap
 
-**v0.13.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.14.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -1002,6 +1007,7 @@ not present in the current release.
 | Provider consolidation — single `resolve_provider()` replaces split `_auth_header()` + `detect_adapter()` | ✅ v0.12.0 |
 | Scan caching — file-level cache in `.nowreck/cache/` for faster repeated runs | ✅ v0.12.0 |
 | CI/CD integration (SARIF, JUnit, --compare) | ✅ v0.13.0 |
+| `--claims @file.json` — read claims from a file instead of inline JSON only | ✅ v0.14.0 |
 
 ---
 
@@ -1019,4 +1025,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.13.0 — August 2026*
+*NoWreck v0.14.0 — September 2026*

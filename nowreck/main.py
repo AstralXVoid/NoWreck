@@ -21,7 +21,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.13.0         |
+  |            NoWreck v0.14.0         |
   |    Deterministic AI Verifier       |
   +------------------------------------+"""
 
@@ -31,14 +31,16 @@ def main(argv: list[str] | None = None) -> int:
     cmd_args = argv if argv is not None else sys.argv[1:]
 
     parser = build_parser()
-    args = parser.parse_args(argv)
 
-    # Show the banner every time the bare ``nowreck`` command is run.
+    # Bare ``nowreck`` — show banner + basic help only (no epilog).
     if not cmd_args:
+        parser.epilog = None
         print(_BANNER)
         print()
 
     # --interactive flag launches the terminal picker.
+    args = parser.parse_args(argv)
+
     if args.interactive:
         from nowreck.picker import run_picker
 
@@ -151,6 +153,9 @@ def handle_fix(args: argparse.Namespace) -> int:
     try:
         pre_path = _resolve_path(args.pre)
         post_path = _resolve_path(args.post)
+        if args.claims:
+            # @file → file contents; inline JSON passes through unchanged.
+            args.claims = resolve_claims_input(args.claims)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -466,6 +471,55 @@ def _detect_and_verify(
     return VerificationReport(unexplained_changes=changes)
 
 
+def resolve_claims_input(value: str) -> str:
+    """Resolve the ``--claims`` value to the JSON text to parse.
+
+    Inline JSON is returned unchanged (only outer whitespace is trimmed).
+    A leading ``@`` reads the rest of the value as a file path (like
+    ``curl -d @file``) and returns the file's contents.
+
+    Raises ``ValueError`` on bad input — the caller prints the error and
+    returns 1.
+    """
+    value = value.strip()
+    if not value.startswith("@"):
+        return value
+
+    raw_path = value[1:]
+    if not raw_path:
+        raise ValueError("--claims @ requires a file path")
+
+    path = Path(raw_path).expanduser().resolve()
+    cwd = Path.cwd().resolve()
+
+    # Reject path traversal above CWD.
+    try:
+        path.relative_to(cwd)
+    except ValueError:
+        raise ValueError(
+            f"--claims path must be inside the current directory: {raw_path}"
+        ) from None
+
+    if not path.exists():
+        raise ValueError(f"claims file not found: {raw_path}")
+
+    # Read errors are wrapped like ``_resolve_path()`` — callers only catch
+    # ValueError, so a raw OSError from read_text() (e.g. permission denied)
+    # would otherwise traceback.
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Cannot read claims file: {raw_path}") from exc
+
+    if not content.strip():
+        # Raise instead of returning "" so the existing ``if args.claims:``
+        # guards keep working — an empty string is falsy and would silently
+        # skip parsing, producing no warning. Raising gives a clear error.
+        raise ValueError(f"claims file is empty: {raw_path}")
+
+    return content
+
+
 def _resolve_path(raw: str) -> Path:
     """Resolve a user-provided path, raising on invalid input."""
     path = Path(raw).expanduser().resolve()
@@ -520,6 +574,14 @@ def _handle_compare_mode(
     from nowreck.git_integration import GitError, GitSnapshot
 
     ref = args.compare
+
+    if args.claims:
+        # Resolve before doing any git work so a bad @file fails fast.
+        try:
+            args.claims = resolve_claims_input(args.claims)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     try:
         with GitSnapshot(ref) as pre_snapshot:
