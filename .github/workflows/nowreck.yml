@@ -16,6 +16,13 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
+  # Commit a file named nowreck-claims.json at the repository root to arm
+  # the strict gate for that commit: NoWreck then verifies those claims
+  # against the HEAD~1..HEAD diff and the job fails on any contradicted,
+  # unverifiable, or unexplained change. Without the file, NoWreck runs in
+  # report-only mode — SARIF/JUnit are still produced (Code Scanning alerts,
+  # check annotations), but plain structural changes do not fail the build.
+  CLAIMS_FILE: nowreck-claims.json
 
 jobs:
   verify:
@@ -50,19 +57,33 @@ jobs:
       # It extracts both git states via `git archive`, scans them, detects
       # structural changes, and reports any issues. Exit code 0 = clean,
       # exit code 1 = contradicted/unverifiable/unexplained changes.
+      #
+      # When a nowreck-claims.json file is committed at HEAD, its claims
+      # are verified against the diff (@file syntax, v0.14.0). Otherwise
+      # NoWreck runs without claims: changes are reported, not gated.
       # ------------------------------------------------------------------
 
       # SARIF output → GitHub Code Scanning
       - name: Run NoWreck (SARIF)
         id: sarif
         continue-on-error: true
-        run: nowreck fix --compare HEAD~1 --format sarif --output nowreck.sarif
+        run: |
+          CLAIMS_ARGS=""
+          if [ -f "$CLAIMS_FILE" ]; then
+            CLAIMS_ARGS="--claims @$CLAIMS_FILE"
+          fi
+          nowreck fix --compare HEAD~1 $CLAIMS_ARGS --format sarif --output nowreck.sarif
 
       # JUnit output → Check Run annotations
       - name: Run NoWreck (JUnit)
         id: junit
         continue-on-error: true
-        run: nowreck fix --compare HEAD~1 --format junit --output nowreck-junit.xml
+        run: |
+          CLAIMS_ARGS=""
+          if [ -f "$CLAIMS_FILE" ]; then
+            CLAIMS_ARGS="--claims @$CLAIMS_FILE"
+          fi
+          nowreck fix --compare HEAD~1 $CLAIMS_ARGS --format junit --output nowreck-junit.xml
 
       # ------------------------------------------------------------------
       # Report upload — run regardless of verification outcome
@@ -99,13 +120,20 @@ jobs:
       # Final verification gate
       #
       # Reports and artifacts are uploaded above regardless of outcome.
-      # This step fails the job if either NoWreck run found issues.
+      # The gate is strict only for claims-verified commits: when a
+      # nowreck-claims.json file is present, the job fails if either
+      # NoWreck run found contradicted/unverifiable/unexplained issues.
+      # Commits without a claims file are report-only and never fail here.
       # ------------------------------------------------------------------
       - name: Verification gate
         if: always()
         run: |
-          if [ "${{ steps.sarif.outcome }}" = "failure" ] || [ "${{ steps.junit.outcome }}" = "failure" ]; then
-            echo "::error::NoWreck verification failed — contradicted, unverifiable, or unexplained changes detected."
-            exit 1
+          if [ -f "$CLAIMS_FILE" ]; then
+            if [ "${{ steps.sarif.outcome }}" = "failure" ] || [ "${{ steps.junit.outcome }}" = "failure" ]; then
+              echo "::error::NoWreck verification failed — contradicted, unverifiable, or unexplained changes detected."
+              exit 1
+            fi
+            echo "NoWreck verification passed ($CLAIMS_FILE claims verified)."
+          else
+            echo "No $CLAIMS_FILE committed — NoWreck ran in report-only mode (no hard gate)."
           fi
-          echo "NoWreck verification passed."
