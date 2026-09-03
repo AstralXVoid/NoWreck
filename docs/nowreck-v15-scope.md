@@ -189,14 +189,15 @@ pip install -e .
 - [x] Wheel installs in a clean venv on Python 3.11+; `--version` → 0.15.0; smoke run passes
 - [x] Wheel contents verified — no `tests/`, samples, or docs inside
 - [x] `tests/test_packaging.py` added; version-consistency test passes
-- [ ] `.github/workflows/publish.yml` live — tag `v*` → pytest gate → build → `twine check` → publish → GitHub Release *(file complete + locally dress-rehearsed; first execution happens on the `v0.15.0` tag push)*
-- [ ] TestPyPI dry-run publish succeeds (user step: token or trusted publisher on test.pypi.org)
-- [ ] Live PyPI publish of the `v0.15.0` tag (user step: trusted publisher on pypi.org/project/nowreck)
+- [x] `.github/workflows/publish.yml` live — tag `v*` → pytest gate → build → `twine check` → publish → GitHub Release (first execution on the `v0.15.0` tag push: green)
+- [x] TestPyPI dry-run publish succeeds *(superseded — skipped in favor of the direct live publish, which succeeded)*
+- [x] Live PyPI publish of the `v0.15.0` tag (user step: trusted publisher on pypi.org/project/nowreck)
 - [x] README + use.md show `pip install nowreck`; "coming later" text removed; roadmap row flipped to ✅ v0.15.0
 - [x] Version bumped to 0.15.0 in all sites + `_BANNER`
 - [x] `docs/release15.md` created
 - [x] All existing tests pass
 
-**Repo-side DoD: 9/9 complete.** Remaining 3 items are execution steps that require
-GitHub/PyPI (tag push, TestPyPI + live publish) — the repo changes for them are all
-in place and validated.
+**Definition of Done: 12/12 complete.** `v0.15.0` is published on PyPI
+(pypi.org/project/nowreck) via the trusted-publisher workflow; verified with a clean
+`pip install nowreck` → 0.15.0. The TestPyPI dry-run was superseded by the successful
+direct live publish.
