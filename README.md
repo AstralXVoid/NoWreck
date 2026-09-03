@@ -2,11 +2,11 @@
 
 # NoWreck
 
-**Deterministic AI Verifier** — v0.14.0
+**Deterministic AI Verifier** — v0.15.0
 
 </div>
 <div align="center">
-<img width="140" height="="140"" alt="tom" src="https://github.com/user-attachments/assets/49b7222a-5f92-47c5-880c-42646833e788" />
+<img width="140" height="140" alt="tom" src="https://github.com/user-attachments/assets/49b7222a-5f92-47c5-880c-42646833e788" />
 
 </div>
 
@@ -102,30 +102,21 @@ NoWreck is deterministic within its supported structural analysis model
 Requires Python 3.11+.
 
 ```bash
-# Clone the repository
+# From PyPI (recommended)
+pipx install nowreck
+# or: pip install nowreck
+
+# From source (development)
 git clone https://github.com/AstralXVoid/NoWreck.git
 cd NoWreck
-
-# Install with pipx (recommended)
-pipx install .
-
-# Or with pip
-pip install -e .
-
-# Or inside a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -e .
 ```
-
-`pipx install .` installs `nowreck` as a globally available command in your
-user environment (PyPI publishing is coming later).
 
 ### Verify installation
 
 ```bash
 nowreck --version
-# → nowreck 0.14.0
+# → nowreck 0.15.0
 
 nowreck
 # → shows banner + usage
@@ -728,7 +719,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.14.0",
+  "version": "0.15.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -784,7 +775,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.14.0",
+  "version": "0.15.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -989,7 +980,7 @@ jobs:
 
 ## Roadmap
 
-**v0.14.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.15.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -1008,6 +999,7 @@ not present in the current release.
 | Scan caching — file-level cache in `.nowreck/cache/` for faster repeated runs | ✅ v0.12.0 |
 | CI/CD integration (SARIF, JUnit, --compare) | ✅ v0.13.0 |
 | `--claims @file.json` — read claims from a file instead of inline JSON only | ✅ v0.14.0 |
+| PyPI publishing — `pip install nowreck` | ✅ v0.15.0 |
 
 ---
 
@@ -1025,4 +1017,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.14.0 — September 2026*
+*NoWreck v0.15.0 — September 2026*

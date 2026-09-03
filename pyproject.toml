@@ -1,8 +1,20 @@
 [project]
 name = "nowreck"
-version = "0.14.0"
+version = "0.15.0"
 description = "Deterministic verifier for AI code change explanations"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "FSL-1.1-MIT"
+license-files = ["LICENSE"]
+keywords = ["ai", "verification", "tree-sitter", "llm", "code-review"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "pydantic>=2.0",
     "questionary>=2.0",
@@ -14,13 +26,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["jsonschema>=4.0"]
+test = ["pytest>=7", "jsonschema>=4.0"]
 
 [project.scripts]
 nowreck = "nowreck.__main__:main"
 
+[project.urls]
+Homepage = "https://github.com/AstralXVoid/NoWreck"
+Source = "https://github.com/AstralXVoid/NoWreck"
+
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

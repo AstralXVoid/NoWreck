@@ -27,19 +27,13 @@ Requires Python 3.11+.
 ### From source (current)
 
 ```bash
-# Clone the repository
+# From PyPI (recommended)
+pipx install nowreck
+# or: pip install nowreck
+
+# From source (development)
 git clone https://github.com/AstralXVoid/NoWreck.git
 cd NoWreck
-
-# Install system-wide with pipx (recommended)
-pipx install .
-
-# Or with pip
-pip install -e .
-
-# Or inside a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -e .
 ```
 
@@ -47,7 +41,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.11.1
+# → nowreck 0.15.0
 
 nowreck
 # → shows banner + usage
@@ -474,7 +468,7 @@ changes:
 
 ```json
 {
-  "version": "0.11.1",
+  "version": "0.15.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -604,4 +598,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.11.1 — August 2026*
+*NoWreck v0.15.0 — September 2026*

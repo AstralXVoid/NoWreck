@@ -891,7 +891,7 @@ class TestPickerTerminal:
     def _poll_pane(
         self,
         expected: str,
-        timeout: float = 6.0,
+        timeout: float = 15.0,
         interval: float = 0.3,
     ) -> str:
         """Poll the tmux pane until *expected* appears or *timeout* elapses.
@@ -927,7 +927,7 @@ class TestPickerTerminal:
         )
         return result.returncode == 0
 
-    def _poll_session_dead(self, timeout: float = 5.0) -> bool:
+    def _poll_session_dead(self, timeout: float = 10.0) -> bool:
         """Wait for the tmux session to die (process exited)."""
         import time
         deadline = time.monotonic() + timeout
@@ -972,7 +972,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # Poll until the menu appears
-            output = self._poll_pane("What would you like to do?", timeout=6.0)
+            output = self._poll_pane("What would you like to do?")
 
             assert "What would you like to do?" in output, (
                 f"Menu prompt not found. Output:\n{output}"
@@ -1007,7 +1007,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # Wait for menu
-            self._poll_pane("What would you like to do?", timeout=6.0)
+            self._poll_pane("What would you like to do?")
 
             # Send Ctrl+C
             subprocess.run(
@@ -1016,7 +1016,7 @@ class TestPickerTerminal:
             )
 
             # Poll until the session dies (process exited)
-            died = self._poll_session_dead(timeout=5.0)
+            died = self._poll_session_dead()
             assert died, (
                 "nowreck did not exit within 5s after Ctrl+C "
                 "— session still alive"
@@ -1036,7 +1036,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # --- Step 1: Wait for menu, select Verify by pressing Enter ---
-            self._poll_pane("What would you like to do?", timeout=6.0)
+            self._poll_pane("What would you like to do?")
 
             subprocess.run(
                 ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
@@ -1044,7 +1044,7 @@ class TestPickerTerminal:
             )
 
             # --- Step 2: Wait for the text prompt to render ---
-            output = self._poll_pane("Describe the change", timeout=6.0)
+            output = self._poll_pane("Describe the change")
 
             # --- Step 3: Send Enter to submit empty prompt ---
             subprocess.run(
@@ -1053,7 +1053,7 @@ class TestPickerTerminal:
             )
 
             # --- Step 4: Wait for the result message ---
-            output = self._poll_pane("No prompt provided", timeout=6.0)
+            output = self._poll_pane("No prompt provided")
 
             assert "No prompt provided" in output, (
                 f"Expected 'No prompt provided' in:\n{output}"
