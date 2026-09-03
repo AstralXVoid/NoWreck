@@ -10,15 +10,16 @@
 
 </div>
 
-NoWreck is a deterministic structural verifier for AI-generated code-change
-claims. When an AI describes a code change, NoWreck compares the claims
+<div align="center">NoWreck is a deterministic structural verifier for AI-generated code-change
+claims.<br></div> When an AI describes a code change, NoWreck compares the claims
 against structural evidence derived by its own scanners — the verifier never
 asks another AI for an opinion. Where the evidence comes from depends on the
 mode: in Pre/Post and Claims modes, from actual before/after repository
 snapshots; in Prompt Mode, from the model's own proposed diff.
 
 
-<img width="1693" height="929" alt="ChatGPT Image Sep 2, 2026, 10_44_07 PM" src="https://github.com/user-attachments/assets/a9aed9be-9d23-4f2d-8cbb-73e31986c226" />
+<img width="1536" height="1024" alt="ChatGPT Image Sep 3, 2026, 09_45_07 PM" src="https://github.com/user-attachments/assets/07dcbbe2-acf8-4819-8c0d-8ea880977a95" />
+
 
 
 
