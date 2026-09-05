@@ -72,13 +72,16 @@ def demo_index_from_js_scan() -> None:
     # --- 4. Query by name ---
     print("\n  --- by_name('getEmail') ---")
     for s in idx.by_name("getEmail"):
-        print(f"    {s.name}  {s.symbol_type.name}  "
-              f"{s.file_path}  line={s.line_number}")
+        print(
+            f"    {s.name}  {s.symbol_type.name}  {s.file_path}  line={s.line_number}"
+        )
 
     print("\n  --- by_name('constructor') (3 classes have one) ---")
     for s in idx.by_name("constructor"):
-        print(f"    {s.name}  {s.symbol_type.name}  {s.file_path}  "
-              f"line={s.line_number:3d}  parent={s.parent_class}")
+        print(
+            f"    {s.name}  {s.symbol_type.name}  {s.file_path}  "
+            f"line={s.line_number:3d}  parent={s.parent_class}"
+        )
 
     # --- 5. All symbols (deduplicated + sorted) ---
     count = len(idx.all_symbols)
@@ -99,9 +102,7 @@ def build_from_js_via_python_path() -> None:
     py_idx = build_symbol_index(scan_result)
 
     # Build equivalent index via the JS path (from_symbols)
-    js_idx = build_symbol_index_from_symbols(
-        [s for s in py_idx.all_symbols]
-    )
+    js_idx = build_symbol_index_from_symbols([s for s in py_idx.all_symbols])
 
     print(f"  Python path:  {py_idx.by_name('greet')[0].name}")
     print(f"  JS path:      {js_idx.by_name('greet')[0].name}")

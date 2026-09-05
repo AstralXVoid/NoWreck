@@ -58,11 +58,15 @@ def main() -> None:
     print("  Pre state:  empty (0 files)")
 
     post_scan, post_sym = _scan(tmp_dir)
-    print(f"  Post state: {post_scan.success_count} files OK, {post_scan.failure_count} failed")
+    print(
+        f"  Post state: {post_scan.success_count} files OK, {post_scan.failure_count} failed"
+    )
     print(f"    TS:     {', '.join(str(p) for p in post_scan.ts_files)}")
-    print(f"    Symbols: {len(post_sym.functions)} functions,"
-          f" {len(post_sym.classes)} classes,"
-          f" {len(post_sym.methods)} methods")
+    print(
+        f"    Symbols: {len(post_sym.functions)} functions,"
+        f" {len(post_sym.classes)} classes,"
+        f" {len(post_sym.methods)} methods"
+    )
 
     # ------------------------------------------------------------------
     # 3. Detect changes (empty → full repo)
@@ -210,7 +214,6 @@ def _build_claims() -> list[Claim]:
             file_path="calculator.ts",
             confidence=0.85,
         ),
-
         # ── CONFIRMED: TypeScript functions ──
         # Note: ADD_FUNCTION greet and ADD_CLASS Calculator are intentionally
         # omitted because their changes were consumed by the CONTRADICTED
@@ -233,7 +236,6 @@ def _build_claims() -> list[Claim]:
             file_path="calculator.ts",
             confidence=0.95,
         ),
-
         # ── CONFIRMED: TypeScript classes ──
         # ADD_CLASS Calculator is intentionally omitted — the REMOVE_CLASS
         # Calculator CONTRADICTED claim above consumes the same change.
@@ -249,7 +251,6 @@ def _build_claims() -> list[Claim]:
             file_path="models.ts",
             confidence=0.98,
         ),
-
         # ── CONFIRMED: FILE_CREATED ──
         Claim(
             type=ClaimType.FILE_CREATED,
@@ -266,7 +267,6 @@ def _build_claims() -> list[Claim]:
             file_path="models.ts",
             confidence=1.0,
         ),
-
         # ── CONFIRMED: CALLS_FUNCTION (simple calls, not attribute calls) ──
         Claim(
             type=ClaimType.CALLS_FUNCTION,
@@ -292,7 +292,6 @@ def _build_claims() -> list[Claim]:
             called_name="formatGreeting",
             confidence=0.90,
         ),
-
         # ── UNVERIFIABLE: symbols that don't exist ──
         Claim(
             type=ClaimType.ADD_FUNCTION,

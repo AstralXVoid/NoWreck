@@ -91,6 +91,7 @@ def run_interactive(
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from terminal output."""
     import re
+
     return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
 
 

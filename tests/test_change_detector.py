@@ -694,11 +694,7 @@ class TestDetectJsCallChanges:
             tmp_path,
             {
                 "shapes.js": (
-                    "class Circle {\n"
-                    "  draw() {\n"
-                    "    return print('circle');\n"
-                    "  }\n"
-                    "}\n"
+                    "class Circle {\n  draw() {\n    return print('circle');\n  }\n}\n"
                 ),
             },
         )
@@ -715,9 +711,7 @@ class TestDetectJsCallChanges:
             tmp_path,
             {
                 "utils.js": (
-                    "const greet = (name) => {\n"
-                    "  return print('Hello ' + name);\n"
-                    "};\n"
+                    "const greet = (name) => {\n  return print('Hello ' + name);\n};\n"
                 ),
             },
         )
@@ -733,11 +727,7 @@ class TestDetectJsCallChanges:
         post_scan, post_sym = self._write_and_scan(
             tmp_path,
             {
-                "app.js": (
-                    "function run() {\n"
-                    "  return logger.info('started');\n"
-                    "}\n"
-                ),
+                "app.js": ("function run() {\n  return logger.info('started');\n}\n"),
             },
         )
         pre_scan = ScanResult()
@@ -1125,7 +1115,7 @@ class TestDetectGoChanges:
     def test_go_function_added(self, tmp_path: Path) -> None:
         post_scan, post_sym = self._write_and_scan(
             tmp_path,
-            {"main.go": "package main\n\nfunc greet() string { return \"hi\" }\n"},
+            {"main.go": 'package main\n\nfunc greet() string { return "hi" }\n'},
         )
         pre_scan = ScanResult()
         pre_sym = SymbolIndex()
@@ -1136,7 +1126,7 @@ class TestDetectGoChanges:
     def test_go_function_removed(self, tmp_path: Path) -> None:
         pre_scan, pre_sym = self._write_and_scan(
             tmp_path,
-            {"main.go": "package main\n\nfunc greet() string { return \"hi\" }\n"},
+            {"main.go": 'package main\n\nfunc greet() string { return "hi" }\n'},
         )
         post_scan = ScanResult()
         post_sym = SymbolIndex()
@@ -1193,11 +1183,13 @@ class TestDetectGoChanges:
         pre_sym = SymbolIndex()
         post_scan, post_sym = self._write_and_scan(
             tmp_path,
-            {"calls.go": (
-                "package main\n\n"
-                "func helper() int { return 42 }\n\n"
-                "func main() { helper() }\n"
-            )},
+            {
+                "calls.go": (
+                    "package main\n\n"
+                    "func helper() int { return 42 }\n\n"
+                    "func main() { helper() }\n"
+                )
+            },
         )
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
@@ -1209,12 +1201,7 @@ class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""
 
     def test_removed_call_detected(self) -> None:
-        pre_src = {
-            "app.py": (
-                "def main():\n"
-                "    validate('x')\n"
-            )
-        }
+        pre_src = {"app.py": ("def main():\n    validate('x')\n")}
         post_src = {"app.py": "def main():\n    pass\n"}
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre_src, post_src)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
@@ -1234,31 +1221,17 @@ class TestCallRemovedChanges:
     def test_moved_call_is_remove_plus_add(self) -> None:
         """A call relocated to another function is one removal + one
         addition — both directions reported."""
-        pre_src = {
-            "app.py": (
-                "def a():\n    validate('x')\n\n"
-                "def b():\n    pass\n"
-            )
-        }
-        post_src = {
-            "app.py": (
-                "def a():\n    pass\n\n"
-                "def b():\n    validate('x')\n"
-            )
-        }
+        pre_src = {"app.py": ("def a():\n    validate('x')\n\ndef b():\n    pass\n")}
+        post_src = {"app.py": ("def a():\n    pass\n\ndef b():\n    validate('x')\n")}
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre_src, post_src)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
 
         removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
         added = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         assert any(
-            c.caller_name == "a" and c.called_name == "validate"
-            for c in removed
+            c.caller_name == "a" and c.called_name == "validate" for c in removed
         )
-        assert any(
-            c.caller_name == "b" and c.called_name == "validate"
-            for c in added
-        )
+        assert any(c.caller_name == "b" and c.called_name == "validate" for c in added)
 
 
 class TestSymbolIdentityIgnoresLineShift:
@@ -1267,9 +1240,7 @@ class TestSymbolIdentityIgnoresLineShift:
     def test_blank_line_insertion_is_invisible(self) -> None:
         pre = {"app.py": "def alpha():\n    return 1\n\ndef beta():\n    return 2\n"}
         post = {
-            "app.py": (
-                "\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n"
-            )
+            "app.py": ("\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n")
         }
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
         symbol_changes = [
@@ -1297,26 +1268,18 @@ class TestSymbolIdentityIgnoresLineShift:
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
 
         removed = {
-            c.file_path
-            for c in changes
-            if c.change_type is ChangeType.REMOVE_FUNCTION
+            c.file_path for c in changes if c.change_type is ChangeType.REMOVE_FUNCTION
         }
         added = {
-            c.file_path
-            for c in changes
-            if c.change_type is ChangeType.ADD_FUNCTION
+            c.file_path for c in changes if c.change_type is ChangeType.ADD_FUNCTION
         }
         assert Path("a.py") in removed
         assert Path("b.py") in added
 
     def test_line_number_still_captured_for_display(self) -> None:
         pre = {"app.py": "def alpha():\n    return 1\n"}
-        post = {
-            "app.py": "# header comment\n\ndef alpha():\n    return 1\n"
-        }
+        post = {"app.py": "# header comment\n\ndef alpha():\n    return 1\n"}
         pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre, post)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         # No phantom pair...
-        assert not [
-            c for c in changes if c.symbol_name == "alpha"
-        ]
+        assert not [c for c in changes if c.symbol_name == "alpha"]

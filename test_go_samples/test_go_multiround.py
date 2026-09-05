@@ -5,6 +5,7 @@ Mirrors test_ts_samples/test_phase1_multiround.py but for Go files.
 Covers: repeatability, stress, path variants, real-world patterns,
 line number accuracy, cross-language regression, chaos test.
 """
+
 import os
 import random
 import sys
@@ -51,13 +52,15 @@ def all_symbol_tuples(files: list[Path]) -> set[tuple]:
     result: set[tuple] = set()
     for f in files:
         for s in scan_go_file(f):
-            result.add((
-                s.name,
-                s.symbol_type.name,
-                str(s.file_path),
-                s.line_number,
-                s.parent_class,
-            ))
+            result.add(
+                (
+                    s.name,
+                    s.symbol_type.name,
+                    str(s.file_path),
+                    s.line_number,
+                    s.parent_class,
+                )
+            )
     return result
 
 
@@ -112,15 +115,9 @@ print(SECTION)
 
 large_lines: list[str] = []
 for i in range(500):
-    large_lines.append(
-        f"func Func{i:04d}(x int) int {{ return x + {i} }}\n"
-    )
-    large_lines.append(
-        f"type Struct{i:04d} struct {{ Field int }}\n"
-    )
-    large_lines.append(
-        f"func (s *Struct{i:04d}) Method() int {{ return 0 }}\n"
-    )
+    large_lines.append(f"func Func{i:04d}(x int) int {{ return x + {i} }}\n")
+    large_lines.append(f"type Struct{i:04d} struct {{ Field int }}\n")
+    large_lines.append(f"func (s *Struct{i:04d}) Method() int {{ return 0 }}\n")
 
 large_source = "".join(large_lines)
 
@@ -327,8 +324,7 @@ if all_syms:
     sample = random.sample(all_syms, min(10, len(all_syms)))
     for sym_name, sym_type, line, parent in sample:
         msg = (
-            f"Random symbol: {sym_type.name} {sym_name} "
-            f"(line {line}, parent={parent})"
+            f"Random symbol: {sym_type.name} {sym_name} (line {line}, parent={parent})"
         )
         check(msg, sym_name and sym_type and line > 0)
 else:

@@ -33,7 +33,8 @@ def main() -> None:
                 for sym in symbols:
                     parent_part = (
                         f"  parent_class={sym.parent_class!r}"
-                        if sym.parent_class else ""
+                        if sym.parent_class
+                        else ""
                     )
                     extra = f", {parent_part}" if parent_part else ""
                     parts = (

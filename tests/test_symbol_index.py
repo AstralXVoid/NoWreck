@@ -386,13 +386,35 @@ class TestSymbolIndexBuilder:
         assert len(idx.by_name("outer")) == 1
         assert len(idx.by_name("inner")) == 0
 
-    def test_build_async_functions_are_not_indexed(self) -> None:
-        """Async functions use AsyncFunctionDef nodes, not FunctionDef.
-        Async support is out of scope for the MVP symbol index.
+    def test_build_async_functions_are_indexed(self) -> None:
+        """Async functions are indexed as FUNCTION symbols (v0.16.0, P2).
+
+        ``async def`` produces an ``AsyncFunctionDef`` node, which the
+        builder now treats on equal footing with ``FunctionDef``.
         """
         result = _scan_result({"async_utils.py": "async def fetch_data(): ...\n"})
         idx = build_symbol_index(result)
-        assert len(idx.by_name("fetch_data")) == 0
+        symbols = idx.by_name("fetch_data")
+        assert len(symbols) == 1
+        assert symbols[0].symbol_type is SymbolType.FUNCTION
+        assert symbols[0].file_path == Path("async_utils.py")
+
+    def test_build_async_methods_are_indexed(self) -> None:
+        """Async methods are indexed as METHOD symbols (v0.16.0, P2)."""
+        result = _scan_result(
+            {
+                "service.py": textwrap.dedent("""\
+                    class Service:
+                        async def fetch(self) -> None: ...
+                    """)
+            }
+        )
+        idx = build_symbol_index(result)
+        assert len(idx.by_name("Service")) == 1
+        methods = idx.by_name("fetch")
+        assert len(methods) == 1
+        assert methods[0].symbol_type is SymbolType.METHOD
+        assert methods[0].parent_class == "Service"
 
     def test_build_non_function_class_members_ignored(self) -> None:
         """Class body attributes that aren't FunctionDef are skipped."""
@@ -865,6 +887,7 @@ class TestSymbolIndexRust:
         from pathlib import Path
 
         from nowreck.scanner.rust_scanner import scan_rust_file
+
         test_file = Path("test_rust_samples/basic.rs")
         if not test_file.exists():
             pytest.skip("test_rust_samples/basic.rs not found")
@@ -893,6 +916,7 @@ class TestSymbolIndexRust:
         from pathlib import Path
 
         from nowreck.scanner.rust_scanner import scan_rust_file
+
         test_file = Path("test_rust_samples/basic.rs")
         if not test_file.exists():
             pytest.skip("test_rust_samples/basic.rs not found")
@@ -912,6 +936,7 @@ class TestSymbolIndexRust:
         from pathlib import Path
 
         from nowreck.scanner.rust_scanner import scan_rust_file
+
         test_file = Path("test_rust_samples/basic.rs")
         if not test_file.exists():
             pytest.skip("test_rust_samples/basic.rs not found")
@@ -937,6 +962,7 @@ class TestSymbolIndexGo:
         from pathlib import Path
 
         from nowreck.scanner.go_scanner import scan_go_file
+
         test_file = Path("test_go_samples/basic.go")
         if not test_file.exists():
             pytest.skip("test_go_samples/basic.go not found")
@@ -961,6 +987,7 @@ class TestSymbolIndexGo:
         from pathlib import Path
 
         from nowreck.scanner.go_scanner import scan_go_file
+
         test_file = Path("test_go_samples/basic.go")
         if not test_file.exists():
             pytest.skip("test_go_samples/basic.go not found")

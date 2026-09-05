@@ -176,9 +176,7 @@ check(
 )
 check(
     "exports .tsx captures interface+enum+type alias",
-    "ButtonProps" in tsx_syms
-    and "Variant" in tsx_syms
-    and "Size" in tsx_syms,
+    "ButtonProps" in tsx_syms and "Variant" in tsx_syms and "Size" in tsx_syms,
 )
 
 ts_gen = symbols_by_name(test_dir / "edge_types_generics.ts")

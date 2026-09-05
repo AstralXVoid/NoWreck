@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Language, Parser, Tree
 
+from nowreck.scanner._tree_sitter_helpers import structural_hash
 from nowreck.scanner.symbol_index import Symbol
 
 if TYPE_CHECKING:
@@ -116,25 +117,31 @@ def _collect_go_symbols(
         if node.type == "function_declaration":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_FUNCTION_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_FUNCTION_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                        body_hash=structural_hash(node, source_bytes),
+                    )
+                )
 
         elif node.type == "method_declaration":
             name_node = node.child_by_field_name("name")
             rcv_node = node.child_by_field_name("receiver")
             if name_node is not None and rcv_node is not None:
                 receiver_type = _extract_receiver_type(rcv_node, source_bytes)
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_METHOD_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                    parent_class=receiver_type,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_METHOD_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                        parent_class=receiver_type,
+                        body_hash=structural_hash(node, source_bytes),
+                    )
+                )
 
         elif node.type == "type_declaration":
             _collect_type_symbols(node, source_bytes, file_path, symbols)
@@ -162,27 +169,38 @@ def _collect_type_symbols(
 
             if type_node.type == "struct_type":
                 symbol_type = _CLASS_TYPE
+                # Struct *shell*: the struct node holds fields only — Go
+                # methods live in top-level ``method_declaration`` nodes,
+                # so no method-exclusion logic is needed here.
+                body_hash = structural_hash(type_node, source_bytes)
             elif type_node.type == "interface_type":
                 symbol_type = _INTERFACE_TYPE
+                body_hash = None
             else:
                 symbol_type = _TYPE_ALIAS_TYPE
+                body_hash = None
 
-            symbols.append(Symbol(
-                name=_text_of(name_node, source_bytes),
-                symbol_type=symbol_type,
-                file_path=file_path,
-                line_number=type_decl.start_point[0] + 1,
-            ))
+            symbols.append(
+                Symbol(
+                    name=_text_of(name_node, source_bytes),
+                    symbol_type=symbol_type,
+                    file_path=file_path,
+                    line_number=type_decl.start_point[0] + 1,
+                    body_hash=body_hash,
+                )
+            )
 
         elif child.type == "type_alias":
             name_node = child.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_TYPE_ALIAS_TYPE,
-                    file_path=file_path,
-                    line_number=type_decl.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_TYPE_ALIAS_TYPE,
+                        file_path=file_path,
+                        line_number=type_decl.start_point[0] + 1,
+                    )
+                )
 
 
 def _extract_receiver_type(
@@ -216,7 +234,12 @@ def _extract_go_calls(
 
     for caller_name, func_node in function_nodes:
         _find_go_calls_in_body(
-            func_node, caller_name, func_node, source_bytes, file_path, calls,
+            func_node,
+            caller_name,
+            func_node,
+            source_bytes,
+            file_path,
+            calls,
         )
 
     return calls
@@ -257,8 +280,12 @@ def _find_go_calls_in_body(
                 calls.add((file_path, caller_name, _text_of(func_node, source_bytes)))
 
         _find_go_calls_in_body(
-            child, caller_name, root_func_node,
-            source_bytes, file_path, calls,
+            child,
+            caller_name,
+            root_func_node,
+            source_bytes,
+            file_path,
+            calls,
         )
 
 
@@ -269,9 +296,8 @@ def _find_go_calls_in_body(
 
 def _text_of(node: Node, source_bytes: bytes) -> str:
     """Decode the source text spanned by *node*."""
-    return (
-        source_bytes[node.start_byte : node.end_byte]
-        .decode("utf-8", errors="replace")
+    return source_bytes[node.start_byte : node.end_byte].decode(
+        "utf-8", errors="replace"
     )
 
 

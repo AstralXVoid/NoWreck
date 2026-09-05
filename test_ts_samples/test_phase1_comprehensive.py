@@ -57,17 +57,21 @@ check("greet (method) captured", "greet" in sym_names)
 
 # Verify types
 hello_syms = [s for s in symbols if s.name == "hello"]
-check("hello is type FUNCTION",
-      all(s.symbol_type.name == "FUNCTION" for s in hello_syms))
+check(
+    "hello is type FUNCTION", all(s.symbol_type.name == "FUNCTION" for s in hello_syms)
+)
 
 myclass_syms = [s for s in symbols if s.name == "MyClass"]
-check("MyClass is type CLASS",
-      all(s.symbol_type.name == "CLASS" for s in myclass_syms))
+check("MyClass is type CLASS", all(s.symbol_type.name == "CLASS" for s in myclass_syms))
 
 greet_syms = [s for s in symbols if s.name == "greet"]
-check("greet is type METHOD with parent_class=MyClass",
-      all(s.symbol_type.name == "METHOD"
-          and s.parent_class == "MyClass" for s in greet_syms))
+check(
+    "greet is type METHOD with parent_class=MyClass",
+    all(
+        s.symbol_type.name == "METHOD" and s.parent_class == "MyClass"
+        for s in greet_syms
+    ),
+)
 
 # --- edge_export.ts ---
 path = test_dir / "edge_export.ts"
@@ -94,8 +98,10 @@ check("exportedGen (export function*) captured", "exportedGen" in sym_names)
 check("defaultGen (export default function*) captured", "defaultGen" in sym_names)
 check("normalFunc (positive control) captured", "normalFunc" in sym_names)
 check("normalArrow (positive control) captured", "normalArrow" in sym_names)
-check("notAGen (non-generator function expression) NOT captured",
-      "notAGen" not in sym_names)
+check(
+    "notAGen (non-generator function expression) NOT captured",
+    "notAGen" not in sym_names,
+)
 
 # --- edge_iife.ts ---
 path = test_dir / "edge_iife.ts"
@@ -123,24 +129,23 @@ check("workingArrow (positive control) captured", "workingArrow" in sym_names)
 
 # Type + line-number checks for the type-level symbols
 user_syms = [s for s in symbols if s.name == "User"]
-check("User is type INTERFACE",
-      all(s.symbol_type.name == "INTERFACE" for s in user_syms))
+check(
+    "User is type INTERFACE", all(s.symbol_type.name == "INTERFACE" for s in user_syms)
+)
 status_syms = [s for s in symbols if s.name == "Status"]
-check("Status is type TYPE_ALIAS",
-      all(s.symbol_type.name == "TYPE_ALIAS" for s in status_syms))
+check(
+    "Status is type TYPE_ALIAS",
+    all(s.symbol_type.name == "TYPE_ALIAS" for s in status_syms),
+)
 color_syms = [s for s in symbols if s.name == "Color"]
-check("Color is type ENUM",
-      all(s.symbol_type.name == "ENUM" for s in color_syms))
+check("Color is type ENUM", all(s.symbol_type.name == "ENUM" for s in color_syms))
 for s in symbols:
     if s.name == "User":
-        check("User line 5 (interface declaration line)",
-              s.line_number == 5)
+        check("User line 5 (interface declaration line)", s.line_number == 5)
     elif s.name == "Status":
-        check("Status line 10 (type alias line)",
-              s.line_number == 10)
+        check("Status line 10 (type alias line)", s.line_number == 10)
     elif s.name == "Color":
-        check("Color line 12 (enum declaration line)",
-              s.line_number == 12)
+        check("Color line 12 (enum declaration line)", s.line_number == 12)
 
 
 # =========================================================================
@@ -177,14 +182,11 @@ path = test_dir / "edge_basic.ts"
 symbols = scan_ts_file(path)
 for s in symbols:
     if s.name == "hello":
-        check("hello line number is 2 (function declaration line)",
-              s.line_number == 2)
+        check("hello line number is 2 (function declaration line)", s.line_number == 2)
     elif s.name == "world":
-        check("world line number is 6 (const assignment line)",
-              s.line_number == 6)
+        check("world line number is 6 (const assignment line)", s.line_number == 6)
     elif s.name == "MyClass":
-        check("MyClass line number is 10 (class declaration line)",
-              s.line_number == 10)
+        check("MyClass line number is 10 (class declaration line)", s.line_number == 10)
 
 # Verify repo_root relativisation
 with tempfile.NamedTemporaryFile(suffix=".ts", mode="w", delete=False) as f:
@@ -195,8 +197,10 @@ repo_root = fname.parent
 symbols = scan_ts_file(fname, repo_root=repo_root)
 check("repo_root makes file_path relative", len(symbols) > 0)
 if symbols:
-    check("file_path is relative when repo_root given",
-          not symbols[0].file_path.is_absolute())
+    check(
+        "file_path is relative when repo_root given",
+        not symbols[0].file_path.is_absolute(),
+    )
 
 
 # =========================================================================

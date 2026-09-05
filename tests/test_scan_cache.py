@@ -494,3 +494,70 @@ class TestRegression:
         result = scanner.scan()
         assert result.success_count == 1
         assert Path("visible.py") in result.modules
+
+
+# ---------------------------------------------------------------------------
+# v0.16.0: body_hash through the cache
+# ---------------------------------------------------------------------------
+
+
+class TestCacheBodyHashV16:
+    """body_hash survives the JS/TS/Rust/Go cache round-trip (v0.16.0)."""
+
+    def test_cache_preserves_js_body_hash(self, js_repo: Path) -> None:
+        """A warm JS scan returns identical body hashes to a cold one."""
+        scanner = RepositoryScanner(js_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        for path in result_cold.js_files:
+            cold = {
+                (s.name, s.symbol_type, s.body_hash) for s in result_cold.js_files[path]
+            }
+            warm = {
+                (s.name, s.symbol_type, s.body_hash) for s in result_warm.js_files[path]
+            }
+            assert cold == warm
+
+    def test_cached_symbols_serialise_body_hash(self, js_repo: Path) -> None:
+        """The on-disk cache stores per-symbol body_hash values."""
+        RepositoryScanner(js_repo).scan()
+        cache_file = js_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        symbol_lists = [
+            entry["symbols"] for entry in data["entries"].values() if "symbols" in entry
+        ]
+        assert symbol_lists, "expected cached JS symbol entries"
+        hashed = [
+            sym
+            for symbols in symbol_lists
+            for sym in symbols
+            if sym.get("body_hash") is not None
+        ]
+        assert hashed, "expected cached symbols to carry a body_hash"
+
+    def test_old_cache_version_is_rebuilt_with_hashes(
+        self,
+        js_repo: Path,
+    ) -> None:
+        """A v1 cache (symbols without body_hash) is ignored and rebuilt
+        with hashes after the CACHE_VERSION bump."""
+        RepositoryScanner(js_repo).scan()
+        cache_file = js_repo / CACHE_DIR / CACHE_FILE
+
+        # Rewrite the cache as a legacy v1 file with body_hash stripped.
+        data = json.loads(cache_file.read_text())
+        data["version"] = 1
+        for entry in data["entries"].values():
+            for sym in entry.get("symbols", []):
+                sym.pop("body_hash", None)
+        cache_file.write_text(json.dumps(data))
+
+        # Rescan — the stale cache must be ignored and rebuilt at v2.
+        result = RepositoryScanner(js_repo).scan()
+        assert Path("utils.js") in result.js_files
+        symbols = result.js_files[Path("utils.js")]
+        assert all(s.body_hash is not None for s in symbols)
+
+        fresh = json.loads(cache_file.read_text())
+        assert fresh["version"] == CACHE_VERSION

@@ -58,12 +58,16 @@ def main() -> None:
     print("  Pre state:  empty (0 files)")
 
     post_scan, post_sym = _scan(tmp_dir)
-    print(f"  Post state: {post_scan.success_count} files OK, {post_scan.failure_count} failed")
+    print(
+        f"  Post state: {post_scan.success_count} files OK, {post_scan.failure_count} failed"
+    )
     print(f"    Python: {', '.join(str(p) for p in post_scan.modules)}")
     print(f"    JS:     {', '.join(str(p) for p in post_scan.js_files)}")
-    print(f"    Symbols: {len(post_sym.functions)} functions,"
-          f" {len(post_sym.classes)} classes,"
-          f" {len(post_sym.methods)} methods")
+    print(
+        f"    Symbols: {len(post_sym.functions)} functions,"
+        f" {len(post_sym.classes)} classes,"
+        f" {len(post_sym.methods)} methods"
+    )
 
     # ------------------------------------------------------------------
     # 3. Detect changes (empty → full repo)
@@ -203,7 +207,6 @@ def _build_claims() -> list[Claim]:
             called_name="sendNotification",
             confidence=0.70,
         ),
-
         # ── CONFIRMED: Python symbols ──
         Claim(
             type=ClaimType.ADD_FUNCTION,
@@ -228,7 +231,6 @@ def _build_claims() -> list[Claim]:
             file_path="main.py",
             confidence=1.0,
         ),
-
         # ── CONFIRMED: JS symbols ──
         Claim(
             type=ClaimType.ADD_FUNCTION,
@@ -253,7 +255,6 @@ def _build_claims() -> list[Claim]:
             file_path="utils.js",
             confidence=1.0,
         ),
-
         # ── CONFIRMED: CALLS_FUNCTION ──
         Claim(
             type=ClaimType.CALLS_FUNCTION,
@@ -271,7 +272,6 @@ def _build_claims() -> list[Claim]:
             called_name="pad",
             confidence=0.85,
         ),
-
         # ── UNVERIFIABLE: symbols that don't exist ──
         Claim(
             type=ClaimType.ADD_FUNCTION,

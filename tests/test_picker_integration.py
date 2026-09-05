@@ -334,8 +334,8 @@ class TestPickerIntegrationPrePost:
         mock_confirm.return_value.ask.return_value = False
         mock_select.return_value.ask.side_effect = [
             "Scan two directories for changes",  # main menu
-            "No, just detect changes",            # claims choice
-            "Exit",                               # after report pause
+            "No, just detect changes",  # claims choice
+            "Exit",  # after report pause
         ]
         # The menu asks select() 3 times: main menu, claims, then main menu again
         # But _run_pre_post handles the claims select, then returns to the loop
@@ -468,8 +468,9 @@ class TestPickerIntegrationPrePost:
             mock_parse_result.claims = [MagicMock()]
             mock_parse_result.errors = []
 
-            with patch("nowreck.picker.ClaimParser.parse",
-                       return_value=mock_parse_result):
+            with patch(
+                "nowreck.picker.ClaimParser.parse", return_value=mock_parse_result
+            ):
                 mock_report = VerificationReport(
                     results=[
                         VerificationResult(
@@ -555,8 +556,7 @@ class TestPickerIntegrationPrePost:
             "/tmp/claims.json",
         ]
 
-        with patch("nowreck.picker.Path.read_text",
-                   return_value='{"claims": []}'):
+        with patch("nowreck.picker.Path.read_text", return_value='{"claims": []}'):
             mock_scanner = MagicMock()
             mock_pre_scan = MagicMock()
             mock_pre_scan.success_count = 1
@@ -581,8 +581,9 @@ class TestPickerIntegrationPrePost:
             mock_parse_result.claims = [MagicMock()]
             mock_parse_result.errors = []
 
-            with patch("nowreck.picker.ClaimParser.parse",
-                       return_value=mock_parse_result):
+            with patch(
+                "nowreck.picker.ClaimParser.parse", return_value=mock_parse_result
+            ):
                 mock_report = VerificationReport(
                     results=[
                         VerificationResult(
@@ -646,11 +647,13 @@ class TestPickerIntegrationConfig:
         rc = run_picker()
 
         assert rc == 0
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-mykey",
-            "base_url": "https://api.test.com/v1",
-            "model": "my-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-mykey",
+                "base_url": "https://api.test.com/v1",
+                "model": "my-model",
+            }
+        )
 
     @patch("nowreck.picker._pause")
     @patch("nowreck.picker.questionary.text")
@@ -688,11 +691,13 @@ class TestPickerIntegrationConfig:
         rc = run_picker()
 
         assert rc == 0
-        mock_config.save.assert_called_once_with({
-            "api_key": "sk-existing",
-            "base_url": "https://existing.com/v1",
-            "model": "existing-model",
-        })
+        mock_config.save.assert_called_once_with(
+            {
+                "api_key": "sk-existing",
+                "base_url": "https://existing.com/v1",
+                "model": "existing-model",
+            }
+        )
 
 
 class TestPickerIntegrationViewReport:
@@ -886,6 +891,7 @@ class TestPickerTerminal:
     @staticmethod
     def _has_tmux() -> bool:
         import shutil
+
         return shutil.which("tmux") is not None
 
     def _poll_pane(
@@ -908,9 +914,19 @@ class TestPickerTerminal:
         last_output = ""
         while time.monotonic() < deadline:
             result = subprocess.run(
-                ["tmux", "capture-pane", "-t", self._session_name(),
-                 "-p", "-S", "-", "-e"],
-                capture_output=True, text=True, timeout=5,
+                [
+                    "tmux",
+                    "capture-pane",
+                    "-t",
+                    self._session_name(),
+                    "-p",
+                    "-S",
+                    "-",
+                    "-e",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             last_output = result.stdout
             if expected in last_output:
@@ -921,15 +937,18 @@ class TestPickerTerminal:
     def _session_exists(self) -> bool:
         """Check whether the tmux session is still alive."""
         import subprocess
+
         result = subprocess.run(
             ["tmux", "has-session", "-t", self._session_name()],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         return result.returncode == 0
 
     def _poll_session_dead(self, timeout: float = 10.0) -> bool:
         """Wait for the tmux session to die (process exited)."""
         import time
+
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self._session_exists():
@@ -940,9 +959,11 @@ class TestPickerTerminal:
     def _cleanup(self) -> None:
         """Kill the tmux session if it still exists."""
         import subprocess
+
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name()],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
 
     def _start_session(self, command: str) -> None:
@@ -956,7 +977,8 @@ class TestPickerTerminal:
         self._cleanup()
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", self._session_name(), command],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
 
     # ------------------------------------------------------------------
@@ -989,9 +1011,7 @@ class TestPickerTerminal:
             assert "View last report" in output, (
                 f"View report option not found. Output:\n{output}"
             )
-            assert "Exit" in output, (
-                f"Exit option not found. Output:\n{output}"
-            )
+            assert "Exit" in output, f"Exit option not found. Output:\n{output}"
 
         finally:
             self._cleanup()
@@ -1012,14 +1032,14 @@ class TestPickerTerminal:
             # Send Ctrl+C
             subprocess.run(
                 ["tmux", "send-keys", "-t", self._session_name(), "C-c"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
 
             # Poll until the session dies (process exited)
             died = self._poll_session_dead()
             assert died, (
-                "nowreck did not exit within 5s after Ctrl+C "
-                "— session still alive"
+                "nowreck did not exit within 5s after Ctrl+C — session still alive"
             )
 
         finally:
@@ -1040,7 +1060,8 @@ class TestPickerTerminal:
 
             subprocess.run(
                 ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
 
             # --- Step 2: Wait for the text prompt to render ---
@@ -1049,7 +1070,8 @@ class TestPickerTerminal:
             # --- Step 3: Send Enter to submit empty prompt ---
             subprocess.run(
                 ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
 
             # --- Step 4: Wait for the result message ---

@@ -3,6 +3,7 @@
 Mirrors the structure and depth of test_ts_samples/test_phase1_comprehensive.py
 but for the Go scanner (tree-sitter-go grammar).
 """
+
 from __future__ import annotations
 
 import os
@@ -61,21 +62,29 @@ check("UserID (type alias) captured", "UserID" in sym_names)
 
 # Type checks
 greet_syms = [s for s in symbols if s.name == "greet"]
-check("greet is type FUNCTION",
-      all(s.symbol_type.name == "FUNCTION" for s in greet_syms))
+check(
+    "greet is type FUNCTION", all(s.symbol_type.name == "FUNCTION" for s in greet_syms)
+)
 user_syms = [s for s in symbols if s.name == "User"]
-check("User is type CLASS",
-      all(s.symbol_type.name == "CLASS" for s in user_syms))
+check("User is type CLASS", all(s.symbol_type.name == "CLASS" for s in user_syms))
 display_syms = [s for s in symbols if s.name == "Display"]
-check("Display is type METHOD with parent_class=User",
-      all(s.symbol_type.name == "METHOD" and s.parent_class == "User"
-          for s in display_syms))
+check(
+    "Display is type METHOD with parent_class=User",
+    all(
+        s.symbol_type.name == "METHOD" and s.parent_class == "User"
+        for s in display_syms
+    ),
+)
 shape_syms = [s for s in symbols if s.name == "Shape"]
-check("Shape is type INTERFACE",
-      all(s.symbol_type.name == "INTERFACE" for s in shape_syms))
+check(
+    "Shape is type INTERFACE",
+    all(s.symbol_type.name == "INTERFACE" for s in shape_syms),
+)
 uid_syms = [s for s in symbols if s.name == "UserID"]
-check("UserID is type TYPE_ALIAS",
-      all(s.symbol_type.name == "TYPE_ALIAS" for s in uid_syms))
+check(
+    "UserID is type TYPE_ALIAS",
+    all(s.symbol_type.name == "TYPE_ALIAS" for s in uid_syms),
+)
 
 # --- edge_export.go ---
 path = test_dir / "edge_export.go"
@@ -110,11 +119,15 @@ check("FileLogger (struct) captured", "FileLogger" in sym_names)
 
 # Interface types
 reader_syms = [s for s in symbols if s.name == "Reader"]
-check("Reader is type INTERFACE",
-      all(s.symbol_type.name == "INTERFACE" for s in reader_syms))
+check(
+    "Reader is type INTERFACE",
+    all(s.symbol_type.name == "INTERFACE" for s in reader_syms),
+)
 buffer_syms = [s for s in symbols if s.name == "Buffer"]
-check("Buffer is type CLASS (struct)",
-      all(s.symbol_type.name == "CLASS" for s in buffer_syms))
+check(
+    "Buffer is type CLASS (struct)",
+    all(s.symbol_type.name == "CLASS" for s in buffer_syms),
+)
 
 # --- edge_methods.go ---
 path = test_dir / "edge_methods.go"
@@ -135,11 +148,15 @@ check("IsPositive (method on MyInt) captured", "IsPositive" in sym_names)
 
 # Method parent classes
 value_syms = [s for s in symbols if s.name == "Value"]
-check("Value has parent_class=Counter",
-      all(s.parent_class == "Counter" for s in value_syms))
+check(
+    "Value has parent_class=Counter",
+    all(s.parent_class == "Counter" for s in value_syms),
+)
 add_syms = [s for s in symbols if s.name == "Add"]
-check("Add has parent_class=Calculator",
-      all(s.parent_class == "Calculator" for s in add_syms))
+check(
+    "Add has parent_class=Calculator",
+    all(s.parent_class == "Calculator" for s in add_syms),
+)
 
 # --- edge_structs.go ---
 path = test_dir / "edge_structs.go"
@@ -186,8 +203,10 @@ check("Pop (generic method) captured", "Pop" in sym_names)
 
 # Generic method parent classes
 push_syms = [s for s in symbols if s.name == "Push"]
-check("Push has parent_class containing Stack",
-      all("Stack" in (s.parent_class or "") for s in push_syms))
+check(
+    "Push has parent_class containing Stack",
+    all("Stack" in (s.parent_class or "") for s in push_syms),
+)
 
 
 # =========================================================================
@@ -227,8 +246,10 @@ repo_root = fname.parent
 symbols = scan_go_file(fname, repo_root=repo_root)
 check("repo_root makes file_path relative", len(symbols) > 0)
 if symbols:
-    check("file_path is relative when repo_root given",
-          not symbols[0].file_path.is_absolute())
+    check(
+        "file_path is relative when repo_root given",
+        not symbols[0].file_path.is_absolute(),
+    )
 
 
 # =========================================================================
@@ -252,8 +273,10 @@ check("Write calls append (stdlib)", ("Write", "append") in calls)
 path = test_dir / "edge_basic.go"
 raw_calls = scan_go_calls(path)
 calls = {(caller, called) for _, caller, called in raw_calls}
-check("greet does NOT call Display (no simple calls in greet)",
-      ("greet", "Display") not in calls)
+check(
+    "greet does NOT call Display (no simple calls in greet)",
+    ("greet", "Display") not in calls,
+)
 
 
 # =========================================================================
@@ -266,9 +289,11 @@ print(SECTION_SEP)
 path = test_dir / "edge_basic.go"
 syms1 = scan_go_file(path)
 syms2 = scan_go_file(path)
-check("Two scans produce identical results",
-      [(s.name, s.symbol_type, s.line_number) for s in syms1]
-      == [(s.name, s.symbol_type, s.line_number) for s in syms2])
+check(
+    "Two scans produce identical results",
+    [(s.name, s.symbol_type, s.line_number) for s in syms1]
+    == [(s.name, s.symbol_type, s.line_number) for s in syms2],
+)
 
 
 # =========================================================================

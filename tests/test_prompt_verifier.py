@@ -726,13 +726,9 @@ class TestManualApplyHunks:
         result = PatchApplier.apply(patch, repo_dir)
 
         assert result.success, result.errors
-        assert target.read_text(encoding="utf-8") == (
-            "one\nfour\nfive\nsix\nseven\n"
-        )
+        assert target.read_text(encoding="utf-8") == ("one\nfour\nfive\nsix\nseven\n")
 
-    def test_context_mismatch_fails_without_corruption(
-        self, repo_dir: Path
-    ) -> None:
+    def test_context_mismatch_fails_without_corruption(self, repo_dir: Path) -> None:
         target = self._write_base(repo_dir)
         patch = (
             "--- a/src/mod.py\n"
@@ -762,9 +758,7 @@ class TestManualApplyHunks:
 
         assert result.success, result.errors
         created = repo_dir / "src" / "created.py"
-        assert created.read_text(encoding="utf-8") == (
-            "def fresh():\n    return 1\n"
-        )
+        assert created.read_text(encoding="utf-8") == ("def fresh():\n    return 1\n")
 
     def test_file_deletion(self, repo_dir: Path) -> None:
         target = self._write_base(repo_dir)

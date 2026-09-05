@@ -489,9 +489,7 @@ class TestClaimVerifierTypeLevelConfirmed:
             ClaimType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
         )
         changes = [
-            _make_change(
-                ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
-            )
+            _make_change(ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role")
         ]
         report = ClaimVerifier.verify([claim], changes)
         assert report.results[0].verdict is Verdict.CONFIRMED
@@ -585,9 +583,7 @@ class TestClaimVerifierTypeLevelContradicted:
             ClaimType.REMOVE_ENUM, file_path="models.ts", symbol_name="Role"
         )
         changes = [
-            _make_change(
-                ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role"
-            )
+            _make_change(ChangeType.ADD_ENUM, file_path="models.ts", symbol_name="Role")
         ]
         report = ClaimVerifier.verify([claim], changes)
         assert report.results[0].verdict is Verdict.CONTRADICTED

@@ -83,8 +83,7 @@ def mixed_repo(tmp_path: Path) -> Path:
     (tmp_path / "models.py").write_text("class User: pass\n")
     (tmp_path / "app.js").write_text("function greet() {}\n")
     (tmp_path / "utils.js").write_text(
-        "const helper = () => {};\n"
-        "class Widget { render() {} }\n",
+        "const helper = () => {};\nclass Widget { render() {} }\n",
     )
     return tmp_path
 
@@ -361,7 +360,7 @@ class TestRepositoryScannerScan:
 def rust_only_repo(tmp_path: Path) -> Path:
     """A repo with Rust files only."""
     (tmp_path / "main.rs").write_text(
-        "fn greet() -> &'static str { \"hello\" }\n",
+        'fn greet() -> &\'static str { "hello" }\n',
     )
     (tmp_path / "utils.rs").write_text(
         "fn helper() -> i32 { 42 }\n",
@@ -497,7 +496,8 @@ class TestRepositoryScannerMultiLang:
         assert Path("srv.go") in result.go_files
 
     def test_scan_success_count_includes_all(
-        self, multi_lang_repo: Path,
+        self,
+        multi_lang_repo: Path,
     ) -> None:
         scanner = RepositoryScanner(multi_lang_repo)
         result = scanner.scan()

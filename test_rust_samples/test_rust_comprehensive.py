@@ -3,6 +3,7 @@
 Mirrors the structure and depth of test_ts_samples/test_phase1_comprehensive.py
 but for the Rust scanner (tree-sitter-rust grammar).
 """
+
 from __future__ import annotations
 
 import os
@@ -62,24 +63,28 @@ check("UserId (type alias) captured", "UserId" in sym_names)
 
 # Type checks
 hello_syms = [s for s in symbols if s.name == "greet"]
-check("greet is type FUNCTION",
-      all(s.symbol_type.name == "FUNCTION" for s in hello_syms))
+check(
+    "greet is type FUNCTION", all(s.symbol_type.name == "FUNCTION" for s in hello_syms)
+)
 user_syms = [s for s in symbols if s.name == "User"]
-check("User is type CLASS",
-      all(s.symbol_type.name == "CLASS" for s in user_syms))
+check("User is type CLASS", all(s.symbol_type.name == "CLASS" for s in user_syms))
 new_syms = [s for s in symbols if s.name == "new"]
-check("new is type METHOD with parent_class=User",
-      all(s.symbol_type.name == "METHOD" and s.parent_class == "User"
-          for s in new_syms))
+check(
+    "new is type METHOD with parent_class=User",
+    all(s.symbol_type.name == "METHOD" and s.parent_class == "User" for s in new_syms),
+)
 drawable_syms = [s for s in symbols if s.name == "Drawable"]
-check("Drawable is type INTERFACE",
-      all(s.symbol_type.name == "INTERFACE" for s in drawable_syms))
+check(
+    "Drawable is type INTERFACE",
+    all(s.symbol_type.name == "INTERFACE" for s in drawable_syms),
+)
 color_syms = [s for s in symbols if s.name == "Color"]
-check("Color is type ENUM",
-      all(s.symbol_type.name == "ENUM" for s in color_syms))
+check("Color is type ENUM", all(s.symbol_type.name == "ENUM" for s in color_syms))
 uid_syms = [s for s in symbols if s.name == "UserId"]
-check("UserId is type TYPE_ALIAS",
-      all(s.symbol_type.name == "TYPE_ALIAS" for s in uid_syms))
+check(
+    "UserId is type TYPE_ALIAS",
+    all(s.symbol_type.name == "TYPE_ALIAS" for s in uid_syms),
+)
 
 # Line numbers (hand-verified against edge_basic.rs source)
 for s in symbols:
@@ -117,8 +122,10 @@ check("Point (struct) captured", "Point" in sym_names)
 
 # Trait types
 summary_syms = [s for s in symbols if s.name == "Summary"]
-check("Summary is type INTERFACE",
-      all(s.symbol_type.name == "INTERFACE" for s in summary_syms))
+check(
+    "Summary is type INTERFACE",
+    all(s.symbol_type.name == "INTERFACE" for s in summary_syms),
+)
 
 # --- edge_generics.rs ---
 path = test_dir / "edge_generics.rs"
@@ -138,8 +145,7 @@ pair_new = [s for s in symbols if s.name == "new" and s.parent_class == "Pair"]
 # Generic impl<T> Pair<T> — methods may or may not capture parent_class
 # depending on how the type_identifier is nested. Verify METHOD type.
 check("Pair methods exist", len([s for s in symbols if s.parent_class is not None]) > 0)
-check("Pair::new is type METHOD",
-      all(s.symbol_type.name == "METHOD" for s in pair_new))
+check("Pair::new is type METHOD", all(s.symbol_type.name == "METHOD" for s in pair_new))
 
 # --- edge_closures.rs ---
 path = test_dir / "edge_closures.rs"
@@ -216,8 +222,10 @@ repo_root = fname.parent
 symbols = scan_rust_file(fname, repo_root=repo_root)
 check("repo_root makes file_path relative", len(symbols) > 0)
 if symbols:
-    check("file_path is relative when repo_root given",
-          not symbols[0].file_path.is_absolute())
+    check(
+        "file_path is relative when repo_root given",
+        not symbols[0].file_path.is_absolute(),
+    )
 
 
 # =========================================================================
@@ -254,9 +262,11 @@ print(SECTION_SEP)
 path = test_dir / "edge_basic.rs"
 syms1 = scan_rust_file(path)
 syms2 = scan_rust_file(path)
-check("Two scans produce identical results",
-      [(s.name, s.symbol_type, s.line_number) for s in syms1]
-      == [(s.name, s.symbol_type, s.line_number) for s in syms2])
+check(
+    "Two scans produce identical results",
+    [(s.name, s.symbol_type, s.line_number) for s in syms1]
+    == [(s.name, s.symbol_type, s.line_number) for s in syms2],
+)
 
 
 # =========================================================================

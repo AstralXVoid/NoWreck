@@ -142,16 +142,13 @@ def main() -> None:
         ch1 = _changes_between(None, path)
         ch2 = _changes_between(path, None)
         no_ch = detect_changes(scan, scan, sym, sym)
-        ok = (
-            scan.success_count > 0
-            and len(ch1) > 0
-            and len(ch2) > 0
-            and no_ch == []
-        )
+        ok = scan.success_count > 0 and len(ch1) > 0 and len(ch2) > 0 and no_ch == []
         status = "✅" if ok else "❌"
         no_change_status = "ok" if no_ch == [] else "FAIL"
-        print(f"  {status} {name:20s}  scan={scan.success_count}"
-              f"  add={len(ch1)}  del={len(ch2)}  no-change={no_change_status}")
+        print(
+            f"  {status} {name:20s}  scan={scan.success_count}"
+            f"  add={len(ch1)}  del={len(ch2)}  no-change={no_change_status}"
+        )
         if not ok:
             all_ok = False
 

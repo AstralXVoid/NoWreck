@@ -54,14 +54,14 @@ PURE_RUST_REPO = REPOS / "pure-rust" / "src"
 PURE_GO_REPO = REPOS / "pure-go" / "src"
 MIXED_REPO = REPOS / "mixed"
 
-EXPECTED_PY_FILES = 3     # greeter.py, calculator.py, models.py
-EXPECTED_JS_FILES = 3     # greeter.js, calculator.js, models.js
-EXPECTED_TS_FILES = 3     # greeter.ts, calculator.ts, models.ts
-EXPECTED_TSX_FILES = 3    # greeter.tsx, calculator.tsx, models.tsx
-EXPECTED_RUST_FILES = 3   # greeter.rs, calculator.rs, models.rs
-EXPECTED_GO_FILES = 3     # greeter.go, calculator.go, models.go
-EXPECTED_MIXED_PY = 2     # utils.py, main.py
-EXPECTED_MIXED_JS = 2     # utils.js, ui_handler.js
+EXPECTED_PY_FILES = 3  # greeter.py, calculator.py, models.py
+EXPECTED_JS_FILES = 3  # greeter.js, calculator.js, models.js
+EXPECTED_TS_FILES = 3  # greeter.ts, calculator.ts, models.ts
+EXPECTED_TSX_FILES = 3  # greeter.tsx, calculator.tsx, models.tsx
+EXPECTED_RUST_FILES = 3  # greeter.rs, calculator.rs, models.rs
+EXPECTED_GO_FILES = 3  # greeter.go, calculator.go, models.go
+EXPECTED_MIXED_PY = 2  # utils.py, main.py
+EXPECTED_MIXED_JS = 2  # utils.js, ui_handler.js
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +154,9 @@ def mixed_scan() -> tuple[ScanResult, SymbolIndex]:
 class TestPurePythonRepo:
     """3 Python files with functions, classes, methods, calls."""
 
-    def test_discovers_all_files(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_discovers_all_files(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, _ = pure_python_scan
         assert scan.success_count == EXPECTED_PY_FILES
         assert scan.failure_count == 0
@@ -165,29 +167,28 @@ class TestPurePythonRepo:
             Path("models.py"),
         }
 
-    def test_greeter_has_functions(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_greeter_has_functions(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, _ = pure_python_scan
         greeter = scan.modules[Path("greeter.py")]
-        names = {
-            n.name
-            for n in ast.walk(greeter)
-            if isinstance(n, ast.FunctionDef)
-        }
+        names = {n.name for n in ast.walk(greeter) if isinstance(n, ast.FunctionDef)}
         assert "greet" in names
         assert "format_greeting" in names
         assert "farewell" in names
 
-    def test_calculator_has_class_and_methods(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, _ = pure_python_scan
         calc = scan.modules[Path("calculator.py")]
         calc_class = next(
-            n for n in ast.walk(calc)
+            n
+            for n in ast.walk(calc)
             if isinstance(n, ast.ClassDef) and n.name == "Calculator"
         )
         method_names = {
-            n.name
-            for n in calc_class.body
-            if isinstance(n, ast.FunctionDef)
+            n.name for n in calc_class.body if isinstance(n, ast.FunctionDef)
         }
         assert "add" in method_names
         assert "subtract" in method_names
@@ -196,25 +197,29 @@ class TestPurePythonRepo:
         # compute_average is a top-level function, not a method
         assert "compute_average" not in method_names
 
-    def test_models_has_class_hierarchy(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_models_has_class_hierarchy(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, _ = pure_python_scan
         models = scan.modules[Path("models.py")]
-        class_names = {
-            n.name
-            for n in ast.walk(models)
-            if isinstance(n, ast.ClassDef)
-        }
+        class_names = {n.name for n in ast.walk(models) if isinstance(n, ast.ClassDef)}
         assert "User" in class_names
         assert "AdminUser" in class_names
 
-    def test_symbol_index_has_py_symbols(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_py_symbols(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_python_scan
         # greeter.py: greet, format_greeting, farewell (3 functions)
         # calculator.py: Calculator (class), compute_average (function), add/sub/multiply/divide (methods)
         # models.py: User (class), AdminUser (class), __init__/display/to_dict/__init__/display (methods)
-        assert len(idx.functions) >= 4  # greet, format_greeting, farewell, compute_average
+        assert (
+            len(idx.functions) >= 4
+        )  # greet, format_greeting, farewell, compute_average
         assert len(idx.classes) >= 3  # Calculator, User, AdminUser
-        assert len(idx.methods) >= 5  # add, subtract, multiply, divide, __init__, display, to_dict, display
+        assert (
+            len(idx.methods) >= 5
+        )  # add, subtract, multiply, divide, __init__, display, to_dict, display
 
     def test_call_detection(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
         scan, idx = pure_python_scan
@@ -241,7 +246,9 @@ class TestPurePythonRepo:
         assert len(created) == EXPECTED_PY_FILES
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, pure_python_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_python_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_python_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert changes == []
@@ -289,7 +296,9 @@ class TestPureJsRepo:
         assert len(idx.by_name("formatGreeting")) == 1  # var formatGreeting = function
         assert len(idx.by_name("farewell")) == 1  # const farewell = () => {}
 
-    def test_calculator_has_class_and_methods(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_js_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_js_scan
         assert len(idx.by_name("Calculator")) == 1
         calc = idx.by_name("Calculator")[0]
@@ -301,7 +310,9 @@ class TestPureJsRepo:
         assert "multiply" in methods
         assert "divide" in methods
 
-    def test_models_has_class_hierarchy(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
+    def test_models_has_class_hierarchy(
+        self, pure_js_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_js_scan
         assert len(idx.by_name("User")) == 1
         assert len(idx.by_name("AdminUser")) == 1
@@ -310,11 +321,17 @@ class TestPureJsRepo:
         assert "display" in user_methods
         assert "toDict" in user_methods
 
-    def test_symbol_index_has_js_symbols(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_js_symbols(
+        self, pure_js_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_js_scan
-        assert len(idx.functions) >= 3  # greet, formatGreeting, farewell, computeAverage
+        assert (
+            len(idx.functions) >= 3
+        )  # greet, formatGreeting, farewell, computeAverage
         assert len(idx.classes) >= 3  # Calculator, User, AdminUser
-        assert len(idx.methods) >= 6  # add, subtract, multiply, divide, display, toDict, display
+        assert (
+            len(idx.methods) >= 6
+        )  # add, subtract, multiply, divide, display, toDict, display
 
     def test_call_detection(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
         scan, idx = pure_js_scan
@@ -332,7 +349,9 @@ class TestPureJsRepo:
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
+    def test_console_log_is_excluded(
+        self, pure_js_scan: tuple[ScanResult, Any]
+    ) -> None:
         """console.log() is an attribute call — should not appear as CALL_DETECTED."""
         scan, idx = pure_js_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
@@ -348,7 +367,9 @@ class TestPureJsRepo:
         assert len(created) == EXPECTED_JS_FILES
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, pure_js_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_js_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_js_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert changes == []
@@ -391,7 +412,9 @@ class TestPureTsRepo:
         assert len(idx.by_name("formatGreeting")) == 1  # const arrow
         assert len(idx.by_name("farewell")) == 1  # const farewell = () => {}
 
-    def test_calculator_has_class_and_methods(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_ts_scan
         assert len(idx.by_name("Calculator")) == 1
         calc = idx.by_name("Calculator")[0]
@@ -403,7 +426,9 @@ class TestPureTsRepo:
         assert "multiply" in methods
         assert "divide" in methods
 
-    def test_models_has_class_hierarchy(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_models_has_class_hierarchy(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_ts_scan
         assert len(idx.by_name("User")) == 1
         assert len(idx.by_name("AdminUser")) == 1
@@ -412,13 +437,21 @@ class TestPureTsRepo:
         assert "display" in user_methods
         assert "toDict" in user_methods
 
-    def test_symbol_index_has_ts_symbols(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_ts_symbols(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_ts_scan
-        assert len(idx.functions) >= 3  # greet, formatGreeting, farewell, computeAverage
+        assert (
+            len(idx.functions) >= 3
+        )  # greet, formatGreeting, farewell, computeAverage
         assert len(idx.classes) >= 3  # Calculator, User, AdminUser
-        assert len(idx.methods) >= 6  # add, subtract, multiply, divide, display, toDict, display
+        assert (
+            len(idx.methods) >= 6
+        )  # add, subtract, multiply, divide, display, toDict, display
 
-    def test_type_level_symbols_captured(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_type_level_symbols_captured(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         """models.ts type-level contracts land as INTERFACE/ENUM/TYPE_ALIAS
         (v0.8.0 material) without touching the older counts."""
         _, idx = pure_ts_scan
@@ -452,7 +485,9 @@ class TestPureTsRepo:
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_console_log_is_excluded(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         """console.log() is an attribute call — should not appear as CALL_DETECTED."""
         scan, idx = pure_ts_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
@@ -479,7 +514,9 @@ class TestPureTsRepo:
         assert [c.symbol_name for c in added_enums] == ["Role"]
         assert [c.symbol_name for c in added_aliases] == ["UserStatus"]
 
-    def test_no_changes_when_identical(self, pure_ts_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_ts_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_ts_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert changes == []
@@ -523,7 +560,9 @@ class TestPureTsxRepo:
         assert len(idx.by_name("formatGreeting")) == 1  # const arrow
         assert len(idx.by_name("Farewell")) == 1  # const Farewell = () => {}
 
-    def test_calculator_has_class_and_methods(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_tsx_scan
         assert len(idx.by_name("Calculator")) == 1
         calc = idx.by_name("Calculator")[0]
@@ -548,13 +587,21 @@ class TestPureTsxRepo:
         render_methods = [s for s in idx.methods if s.name == "render"]
         assert any(s.parent_class == "UserList" for s in render_methods)
 
-    def test_symbol_index_has_tsx_symbols(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_tsx_symbols(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_tsx_scan
-        assert len(idx.functions) >= 6  # Greeting, formatGreeting, Farewell, computeAverage, UserCard, AdminCard
+        assert (
+            len(idx.functions) >= 6
+        )  # Greeting, formatGreeting, Farewell, computeAverage, UserCard, AdminCard
         assert len(idx.classes) >= 2  # Calculator, UserList
-        assert len(idx.methods) >= 6  # add, subtract, multiply, divide, render (Calculator), render (UserList)
+        assert (
+            len(idx.methods) >= 6
+        )  # add, subtract, multiply, divide, render (Calculator), render (UserList)
 
-    def test_type_level_symbols_captured(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_type_level_symbols_captured(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         """models.tsx type-level contracts land as INTERFACE/ENUM/TYPE_ALIAS
         (v0.8.0 material) without touching the older counts."""
         _, idx = pure_tsx_scan
@@ -585,7 +632,9 @@ class TestPureTsxRepo:
         assert ("Greeting", "formatGreeting") in call_pairs
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_console_log_is_excluded(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         """console.log() is an attribute call — should not appear as CALL_DETECTED."""
         scan, idx = pure_tsx_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
@@ -594,7 +643,9 @@ class TestPureTsxRepo:
         # These are all attribute calls and should be excluded
         assert ("Calculator", "log") not in call_pairs
 
-    def test_jsx_element_usage_is_not_a_call(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_jsx_element_usage_is_not_a_call(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         """<UserCard /> and <AdminCard /> in JSX are elements, not calls."""
         scan, idx = pure_tsx_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
@@ -611,7 +662,9 @@ class TestPureTsxRepo:
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
         assert ChangeType.ADD_CLASS in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, pure_tsx_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_tsx_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_tsx_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert changes == []
@@ -657,7 +710,9 @@ class TestPureRustRepo:
         assert len(farewell) == 1
         assert farewell[0].symbol_type is SymbolType.FUNCTION
 
-    def test_calculator_has_class_and_methods(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_rust_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_rust_scan
         calc = idx.by_name("Calculator")
         assert len(calc) == 1
@@ -685,11 +740,17 @@ class TestPureRustRepo:
         assert len(status) == 1
         assert status[0].symbol_type is SymbolType.TYPE_ALIAS
 
-    def test_symbol_index_has_rust_symbols(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_rust_symbols(
+        self, pure_rust_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_rust_scan
-        assert len(idx.functions) >= 4   # greet, format_greeting, farewell, compute_average
-        assert len(idx.classes) >= 3     # Calculator, User, AdminUser
-        assert len(idx.methods) >= 7     # Calculator methods + User methods + AdminUser methods
+        assert (
+            len(idx.functions) >= 4
+        )  # greet, format_greeting, farewell, compute_average
+        assert len(idx.classes) >= 3  # Calculator, User, AdminUser
+        assert (
+            len(idx.methods) >= 7
+        )  # Calculator methods + User methods + AdminUser methods
 
     def test_call_detection(self) -> None:
         changes = _changes_between(None, PURE_RUST_REPO)
@@ -704,12 +765,16 @@ class TestPureRustRepo:
         assert len(created) == EXPECTED_RUST_FILES
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_rust_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_rust_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert len(changes) == 0
 
-    def test_deterministic_across_runs(self, pure_rust_scan: tuple[ScanResult, Any]) -> None:
+    def test_deterministic_across_runs(
+        self, pure_rust_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan1, idx1 = pure_rust_scan
         scan2, idx2 = _scan_and_index(PURE_RUST_REPO)
         changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
@@ -747,7 +812,9 @@ class TestPureGoRepo:
         assert len(farewell) == 1
         assert farewell[0].symbol_type is SymbolType.FUNCTION
 
-    def test_calculator_has_class_and_methods(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+    def test_calculator_has_class_and_methods(
+        self, pure_go_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_go_scan
         calc = idx.by_name("Calculator")
         assert len(calc) == 1
@@ -772,11 +839,17 @@ class TestPureGoRepo:
         assert len(status) == 1
         assert status[0].symbol_type is SymbolType.TYPE_ALIAS
 
-    def test_symbol_index_has_go_symbols(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+    def test_symbol_index_has_go_symbols(
+        self, pure_go_scan: tuple[ScanResult, Any]
+    ) -> None:
         _, idx = pure_go_scan
-        assert len(idx.functions) >= 4   # Greet, FormatGreeting, Farewell, ComputeAverage
-        assert len(idx.classes) >= 2     # Calculator, User, AdminUser
-        assert len(idx.methods) >= 7     # Calculator methods + User methods + AdminUser methods
+        assert (
+            len(idx.functions) >= 4
+        )  # Greet, FormatGreeting, Farewell, ComputeAverage
+        assert len(idx.classes) >= 2  # Calculator, User, AdminUser
+        assert (
+            len(idx.methods) >= 7
+        )  # Calculator methods + User methods + AdminUser methods
 
     def test_call_detection(self) -> None:
         changes = _changes_between(None, PURE_GO_REPO)
@@ -791,12 +864,16 @@ class TestPureGoRepo:
         assert len(created) == EXPECTED_GO_FILES
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, pure_go_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = pure_go_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert len(changes) == 0
 
-    def test_deterministic_across_runs(self, pure_go_scan: tuple[ScanResult, Any]) -> None:
+    def test_deterministic_across_runs(
+        self, pure_go_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan1, idx1 = pure_go_scan
         scan2, idx2 = _scan_and_index(PURE_GO_REPO)
         changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
@@ -863,7 +940,11 @@ class TestMixedRepo:
         #           UiHandler.renderDate calls formatDate and console.log (excluded)
 
         # We should have at least several Python calls
-        py_calls = {(c.caller_name, c.called_name) for c in calls if str(c.file_path).endswith(".py")}
+        py_calls = {
+            (c.caller_name, c.called_name)
+            for c in calls
+            if str(c.file_path).endswith(".py")
+        }
         assert ("validate_all", "validate_email") in py_calls
         assert ("load_config", "print") in py_calls
         assert ("validate_all", "len") in py_calls
@@ -874,7 +955,9 @@ class TestMixedRepo:
         assert len(created) == EXPECTED_MIXED_PY + EXPECTED_MIXED_JS
         assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
 
-    def test_no_changes_when_identical(self, mixed_scan: tuple[ScanResult, Any]) -> None:
+    def test_no_changes_when_identical(
+        self, mixed_scan: tuple[ScanResult, Any]
+    ) -> None:
         scan, idx = mixed_scan
         changes = detect_changes(scan, scan, idx, idx)
         assert changes == []

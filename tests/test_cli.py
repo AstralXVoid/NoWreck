@@ -144,7 +144,9 @@ class TestResolveClaimsInput:
     directory).
     """
 
-    def test_claims_from_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claims_from_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)  # tmp_path is now inside CWD
         claims_file = tmp_path / "claims.json"
         claims_file.write_text('{"claims": []}')
@@ -155,7 +157,9 @@ class TestResolveClaimsInput:
         with pytest.raises(ValueError, match="must be inside"):
             resolve_claims_input("@/etc/passwd")
 
-    def test_claims_from_file_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claims_from_file_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         with pytest.raises(ValueError, match="file not found"):
             resolve_claims_input(f"@{tmp_path / 'nonexistent.json'}")
@@ -176,7 +180,9 @@ class TestResolveClaimsInput:
         result = resolve_claims_input("@~/claims.json")
         assert '"claims"' in result
 
-    def test_claims_at_with_whitespace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claims_at_with_whitespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Leading/trailing whitespace is trimmed before the @ check."""
         monkeypatch.chdir(tmp_path)
         claims_file = tmp_path / "claims.json"
@@ -184,7 +190,9 @@ class TestResolveClaimsInput:
         result = resolve_claims_input(f"  @{claims_file}  ")
         assert '"claims"' in result
 
-    def test_claims_from_file_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claims_from_file_symlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Symlink to a file inside CWD is read through the link."""
         monkeypatch.chdir(tmp_path)
         real = tmp_path / "real.json"
@@ -208,7 +216,9 @@ class TestResolveClaimsInput:
         with pytest.raises(ValueError, match="must be inside"):
             resolve_claims_input(f"@{link}")
 
-    def test_claims_from_file_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claims_from_file_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An empty file raises a clear error instead of silently parsing ""."""
         monkeypatch.chdir(tmp_path)
         empty = tmp_path / "empty.json"
@@ -376,7 +386,10 @@ class TestHandleFix:
             assert "CONFIRMED" in out
 
     def test_fix_with_claims_from_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         """End-to-end: --claims @file triggers resolve + parse + verify."""
         # Set CWD to tmp_path so the @file path passes the CWD-relative check
@@ -691,9 +704,7 @@ class TestFlagConflicts:
 
     def test_compare_and_post_conflict(self, capsys: pytest.CaptureFixture) -> None:
         parser = build_parser()
-        args = parser.parse_args(
-            ["fix", "--compare", "HEAD~1", "--post", "/tmp/b"]
-        )
+        args = parser.parse_args(["fix", "--compare", "HEAD~1", "--post", "/tmp/b"])
         rc = handle_fix(args)
         _, err = capsys.readouterr()
         assert rc == 1
@@ -701,9 +712,7 @@ class TestFlagConflicts:
 
     def test_compare_and_pre_conflict(self, capsys: pytest.CaptureFixture) -> None:
         parser = build_parser()
-        args = parser.parse_args(
-            ["fix", "--compare", "HEAD~1", "--pre", "/tmp/a"]
-        )
+        args = parser.parse_args(["fix", "--compare", "HEAD~1", "--pre", "/tmp/a"])
         rc = handle_fix(args)
         _, err = capsys.readouterr()
         assert rc == 1

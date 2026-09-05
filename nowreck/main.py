@@ -365,7 +365,9 @@ def _get_str_or(data: dict[str, object], key: str, default: str) -> str:
         return val
     _logger.debug(
         "Config key %r expected str, got %s; using default %r",
-        key, type(val).__name__, default,
+        key,
+        type(val).__name__,
+        default,
     )
     return default
 
@@ -384,7 +386,8 @@ def _get_float_or(data: dict[str, object], key: str, default: float) -> float:
         # ``True``/``False`` being silently treated as 1/0 here.
         _logger.debug(
             "Config key %r expected float, got bool; using default %r",
-            key, default,
+            key,
+            default,
         )
         return default
     if isinstance(val, (int, float)):
@@ -395,7 +398,9 @@ def _get_float_or(data: dict[str, object], key: str, default: float) -> float:
         except ValueError:
             _logger.debug(
                 "Config key %r=%r is not a valid float; using default %r",
-                key, val, default,
+                key,
+                val,
+                default,
             )
     return default
 
@@ -415,7 +420,8 @@ def _get_int_or(data: dict[str, object], key: str, default: int) -> int:
         # ``True``/``False`` being silently treated as 1/0 here.
         _logger.debug(
             "Config key %r expected int, got bool; using default %r",
-            key, default,
+            key,
+            default,
         )
         return default
     if isinstance(val, int):
@@ -425,7 +431,9 @@ def _get_int_or(data: dict[str, object], key: str, default: int) -> int:
             return int(val)
         _logger.debug(
             "Config key %r=%r is not an integral float; using default %r",
-            key, val, default,
+            key,
+            val,
+            default,
         )
         return default
     if isinstance(val, str):
@@ -434,7 +442,9 @@ def _get_int_or(data: dict[str, object], key: str, default: int) -> int:
         except ValueError:
             _logger.debug(
                 "Config key %r=%r is not a valid int; using default %r",
-                key, val, default,
+                key,
+                val,
+                default,
             )
     return default
 
@@ -636,9 +646,7 @@ def _handle_compare_mode(
 
                     if parse_result.claims:
                         log(f"Claims parsed: {len(parse_result.claims)}")
-                        report = ClaimVerifier.verify(
-                            parse_result.claims, changes
-                        )
+                        report = ClaimVerifier.verify(parse_result.claims, changes)
                     else:
                         report = VerificationReport(unexplained_changes=changes)
                 else:
@@ -649,9 +657,7 @@ def _handle_compare_mode(
                 _write_output(output, args.output)
 
                 total_issues = (
-                    report.unverifiable
-                    + report.contradicted
-                    + report.unexplained_count
+                    report.unverifiable + report.contradicted + report.unexplained_count
                 )
                 return 0 if total_issues == 0 else 1
 

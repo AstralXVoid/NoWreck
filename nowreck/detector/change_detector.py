@@ -172,14 +172,10 @@ class ChangeDetector:
             )
         elif symbol.symbol_type is SymbolType.INTERFACE:
             change_type = (
-                ChangeType.ADD_INTERFACE
-                if is_addition
-                else ChangeType.REMOVE_INTERFACE
+                ChangeType.ADD_INTERFACE if is_addition else ChangeType.REMOVE_INTERFACE
             )
         elif symbol.symbol_type is SymbolType.ENUM:
-            change_type = (
-                ChangeType.ADD_ENUM if is_addition else ChangeType.REMOVE_ENUM
-            )
+            change_type = ChangeType.ADD_ENUM if is_addition else ChangeType.REMOVE_ENUM
         elif symbol.symbol_type is SymbolType.TYPE_ALIAS:
             change_type = (
                 ChangeType.ADD_TYPE_ALIAS
@@ -350,7 +346,8 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read JS file for call detection: %s — %s",
-                    abs_path, exc,
+                    abs_path,
+                    exc,
                 )
 
         # --- TypeScript calls ---
@@ -367,7 +364,8 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read TS file for call detection: %s — %s",
-                    abs_path, exc,
+                    abs_path,
+                    exc,
                 )
 
         # --- Rust calls ---
@@ -384,7 +382,8 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read Rust file for call detection: %s — %s",
-                    abs_path, exc,
+                    abs_path,
+                    exc,
                 )
 
         # --- Go calls ---
@@ -401,7 +400,8 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read Go file for call detection: %s — %s",
-                    abs_path, exc,
+                    abs_path,
+                    exc,
                 )
 
         return calls

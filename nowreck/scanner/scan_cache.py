@@ -42,7 +42,7 @@ def file_content_hash(path: Path) -> str:
 
 CACHE_DIR = ".nowreck/cache"
 CACHE_FILE = "scan_cache.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # v0.16.0: symbols now carry ``body_hash``
 
 
 @dataclass

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Language, Parser, Tree
 
+from nowreck.scanner._tree_sitter_helpers import structural_hash
 from nowreck.scanner.symbol_index import Symbol
 
 if TYPE_CHECKING:
@@ -116,22 +117,28 @@ def _collect_rust_symbols(
         if node.type == "function_item":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_FUNCTION_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_FUNCTION_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                        body_hash=structural_hash(node, source_bytes),
+                    )
+                )
 
         elif node.type == "struct_item":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_CLASS_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_CLASS_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                        body_hash=structural_hash(node, source_bytes),
+                    )
+                )
 
         elif node.type == "impl_item":
             _collect_impl_methods(node, source_bytes, file_path, symbols)
@@ -139,32 +146,38 @@ def _collect_rust_symbols(
         elif node.type == "trait_item":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_INTERFACE_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_INTERFACE_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
         elif node.type == "enum_item":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_ENUM_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_ENUM_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
         elif node.type == "type_item":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_TYPE_ALIAS_TYPE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_TYPE_ALIAS_TYPE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
     return symbols
 
@@ -197,7 +210,8 @@ def _collect_impl_methods(
                     name_node = m.child_by_field_name("name")
                 if name_node is not None:
                     struct_name = _text_of(
-                        name_node, source_bytes,
+                        name_node,
+                        source_bytes,
                     )
 
     if body_node is None or struct_name is None:
@@ -207,13 +221,16 @@ def _collect_impl_methods(
         if member.type == "function_item":
             name_node = member.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=_text_of(name_node, source_bytes),
-                    symbol_type=_METHOD_TYPE,
-                    file_path=file_path,
-                    line_number=member.start_point[0] + 1,
-                    parent_class=struct_name,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=_text_of(name_node, source_bytes),
+                        symbol_type=_METHOD_TYPE,
+                        file_path=file_path,
+                        line_number=member.start_point[0] + 1,
+                        parent_class=struct_name,
+                        body_hash=structural_hash(member, source_bytes),
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +251,12 @@ def _extract_rust_calls(
 
     for caller_name, func_node in function_nodes:
         _find_rust_calls_in_body(
-            func_node, caller_name, func_node, source_bytes, file_path, calls,
+            func_node,
+            caller_name,
+            func_node,
+            source_bytes,
+            file_path,
+            calls,
         )
 
     return calls
@@ -274,8 +296,12 @@ def _find_rust_calls_in_body(
                 calls.add((file_path, caller_name, _text_of(func_node, source_bytes)))
 
         _find_rust_calls_in_body(
-            child, caller_name, root_func_node,
-            source_bytes, file_path, calls,
+            child,
+            caller_name,
+            root_func_node,
+            source_bytes,
+            file_path,
+            calls,
         )
 
 
@@ -286,9 +312,8 @@ def _find_rust_calls_in_body(
 
 def _text_of(node: Node, source_bytes: bytes) -> str:
     """Decode the source text spanned by *node*."""
-    return (
-        source_bytes[node.start_byte : node.end_byte]
-        .decode("utf-8", errors="replace")
+    return source_bytes[node.start_byte : node.end_byte].decode(
+        "utf-8", errors="replace"
     )
 
 

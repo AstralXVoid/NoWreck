@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -14,12 +15,150 @@ logger = logging.getLogger(__name__)
 # Generic tree-sitter helpers (language-agnostic)
 # ---------------------------------------------------------------------------
 
+# Leaf node types whose text is part of the structural hash only after
+# quote-style normalisation: ``"x"`` and ``'x'`` must hash identically.
+# Union across grammars; a type absent from a grammar never matches.
+STRING_NODE_TYPES: frozenset[str] = frozenset(
+    {
+        "string",
+        "string_literal",
+        "raw_string_literal",
+        "char_literal",
+        "interpreted_string_literal",
+        "rune_literal",
+        "template_string",
+    }
+)
+
+# Comment nodes never affect the structural hash (grammar-specific names).
+COMMENT_NODE_TYPES: frozenset[str] = frozenset(
+    {
+        "comment",
+        "line_comment",
+        "block_comment",
+    }
+)
+
 
 def text_of(node: Node, source_bytes: bytes) -> str:
     """Decode the source text spanned by *node*."""
     return source_bytes[node.start_byte : node.end_byte].decode(
-        "utf-8", errors="replace",
+        "utf-8",
+        errors="replace",
     )
+
+
+def structural_hash(node: Node, source_bytes: bytes) -> str:
+    """Compute a formatting-insensitive structural hash for *node*.
+
+    Serialises the CST: each node's type plus, for leaf tokens, the
+    node's trimmed text (quote-style-normalised for string literals).
+    Whitespace, comments, semicolons, and brace style never affect the
+    result; operators and other tokens do.  This mirrors the
+    structure-only semantics of the Python ``ast.dump`` hash so that all
+    five languages share one rule: reformatting is never a "change",
+    edited logic always is.
+    """
+    if node.type in COMMENT_NODE_TYPES:
+        return ""
+    return _serialize_node(node, source_bytes, skip_methods=False)
+
+
+def _string_text(node: Node, source_bytes: bytes) -> str:
+    """Trimmed, quote-stripped text of a string-literal node."""
+    text = _strip_outer_quotes(text_of(node, source_bytes))
+    return " ".join(text.split())
+
+
+def _strip_outer_quotes(text: str) -> str:
+    """Strip the outermost quote pair of a string-literal token text.
+
+    ``"x"`` and ``'x'`` both become ``x``; a Rust raw string
+    ``r"x"`` keeps its ``r`` prefix (the delimiters differ from the
+    value, so quote-style normalisation does not apply).
+    """
+    if len(text) >= 2 and text[0] == text[-1]:
+        return text[1:-1]
+    return text
+
+
+def _class_shell_hash(class_node: Node, source_bytes: bytes) -> str:
+    """Structural hash of a class *shell only*.
+
+    Serialises the ``class_declaration`` subtree (decorators, name,
+    heritage, class body) while excluding every ``method_definition``
+    subtree — getter/setter/static/async modifiers live *inside* the
+    method subtree and go with it — and, for TypeScript, decorator
+    siblings attached to a method.  A method edit therefore never fires
+    ``CHANGED_CLASS`` (disjoint-facts rule).  Class-level decorators and
+    class fields remain in the shell.
+    """
+    parts: list[str] = [class_node.type]
+    for child in class_node.children:
+        child_hash = _serialize_node(child, source_bytes, skip_methods=True)
+        if child_hash:
+            parts.append(child_hash)
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _serialize_node(
+    node: Node,
+    source_bytes: bytes,
+    *,
+    skip_methods: bool,
+) -> str:
+    """Core CST serialisation shared by ``structural_hash`` and the class
+    shell walk.
+
+    With *skip_methods* set, ``method_definition`` subtrees and the
+    decorator siblings attached to them are omitted (class shell mode);
+    otherwise the full structure is hashed.
+    """
+    if node.type in COMMENT_NODE_TYPES:
+        return ""
+    if skip_methods and node.type == "method_definition":
+        return ""
+    parts: list[str] = [node.type]
+    if node.type in STRING_NODE_TYPES and node.type != "template_string":
+        # JS/TS ``string`` nodes carry quote/escape-sequence children;
+        # Rust/Go string literals are single leaf tokens.  Either way,
+        # hash the quote-stripped text so ``"x"`` and ``'x'`` are equal.
+        # Template strings are excluded: interpolated ones must recurse
+        # so ``${expr}`` edits affect the hash.
+        parts.append(_string_text(node, source_bytes))
+    elif node.child_count == 0:
+        parts.append(" ".join(text_of(node, source_bytes).split()))
+    else:
+        children = node.children
+        for i, child in enumerate(children):
+            if (
+                skip_methods
+                and child.type == "decorator"
+                and _is_method_decorator(
+                    children,
+                    i,
+                )
+            ):
+                continue
+            child_hash = _serialize_node(child, source_bytes, skip_methods=skip_methods)
+            if child_hash:
+                parts.append(child_hash)
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _is_method_decorator(children: list[Node], index: int) -> bool:
+    """Whether the decorator at *index* decorates a sibling method.
+
+    The TypeScript grammar attaches method decorators as siblings
+    *before* the ``method_definition`` in the class body.  A run of
+    decorators directly followed by a ``method_definition`` is excluded
+    from the class shell so method-decorator edits never fire
+    ``CHANGED_CLASS`` (Accepted Edges #1).
+    """
+    j = index + 1
+    while j < len(children) and children[j].type == "decorator":
+        j += 1
+    return j < len(children) and children[j].type == "method_definition"
 
 
 def unwrap_parens(node: Node) -> Node | None:
@@ -112,65 +251,82 @@ def collect_top_level_symbols(
         if node.type in ("function_declaration", "generator_function_declaration"):
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=text_of(name_node, source_bytes),
-                    symbol_type=SymbolType.FUNCTION,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=text_of(name_node, source_bytes),
+                        symbol_type=SymbolType.FUNCTION,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                        body_hash=structural_hash(node, source_bytes),
+                    )
+                )
 
         elif node.type == "class_declaration":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
                 class_name = text_of(name_node, source_bytes)
                 class_line = node.start_point[0] + 1
-                symbols.append(Symbol(
-                    name=class_name,
-                    symbol_type=SymbolType.CLASS,
-                    file_path=file_path,
-                    line_number=class_line,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=class_name,
+                        symbol_type=SymbolType.CLASS,
+                        file_path=file_path,
+                        line_number=class_line,
+                        body_hash=_class_shell_hash(node, source_bytes),
+                    )
+                )
                 collect_class_methods(
-                    node, source_bytes, file_path, class_name, symbols,
+                    node,
+                    source_bytes,
+                    file_path,
+                    class_name,
+                    symbols,
                 )
 
         elif node.type == "interface_declaration":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=text_of(name_node, source_bytes),
-                    symbol_type=SymbolType.INTERFACE,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=text_of(name_node, source_bytes),
+                        symbol_type=SymbolType.INTERFACE,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
         elif node.type == "enum_declaration":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=text_of(name_node, source_bytes),
-                    symbol_type=SymbolType.ENUM,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=text_of(name_node, source_bytes),
+                        symbol_type=SymbolType.ENUM,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
         elif node.type == "type_alias_declaration":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=text_of(name_node, source_bytes),
-                    symbol_type=SymbolType.TYPE_ALIAS,
-                    file_path=file_path,
-                    line_number=node.start_point[0] + 1,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=text_of(name_node, source_bytes),
+                        symbol_type=SymbolType.TYPE_ALIAS,
+                        file_path=file_path,
+                        line_number=node.start_point[0] + 1,
+                    )
+                )
 
         elif node.type == "expression_statement":
             # Standalone IIFE: ``(function() { ... })()``
             if node.named_child_count > 0:
                 expr = node.named_child(0)
                 if expr is not None and is_iife(expr):
-                    logger.debug("Skipping top-level IIFE at line %d",
-                                 node.start_point[0] + 1)
+                    logger.debug(
+                        "Skipping top-level IIFE at line %d", node.start_point[0] + 1
+                    )
                     continue
 
         elif node.type in ("lexical_declaration", "variable_declaration"):
@@ -178,7 +334,10 @@ def collect_top_level_symbols(
             for declarator in node.children:
                 if declarator.type == "variable_declarator":
                     maybe_arrow_function_declarator(
-                        declarator, source_bytes, file_path, symbols,
+                        declarator,
+                        source_bytes,
+                        file_path,
+                        symbols,
                     )
 
     return symbols
@@ -200,13 +359,16 @@ def collect_class_methods(
         if member.type == "method_definition":
             name_node = member.child_by_field_name("name")
             if name_node is not None:
-                symbols.append(Symbol(
-                    name=text_of(name_node, source_bytes),
-                    symbol_type=SymbolType.METHOD,
-                    file_path=file_path,
-                    line_number=member.start_point[0] + 1,
-                    parent_class=class_name,
-                ))
+                symbols.append(
+                    Symbol(
+                        name=text_of(name_node, source_bytes),
+                        symbol_type=SymbolType.METHOD,
+                        file_path=file_path,
+                        line_number=member.start_point[0] + 1,
+                        parent_class=class_name,
+                        body_hash=structural_hash(member, source_bytes),
+                    )
+                )
 
 
 def maybe_arrow_function_declarator(
@@ -227,9 +389,11 @@ def maybe_arrow_function_declarator(
         return
 
     if is_iife(value_node):
-        logger.debug("Skipping IIFE assignment to %s at line %d",
-                     text_of(name_node, source_bytes),
-                     value_node.start_point[0] + 1)
+        logger.debug(
+            "Skipping IIFE assignment to %s at line %d",
+            text_of(name_node, source_bytes),
+            value_node.start_point[0] + 1,
+        )
         return
 
     inner = unwrap_parens(value_node)
@@ -238,12 +402,15 @@ def maybe_arrow_function_declarator(
         "arrow_function",
         "generator_function",
     ):
-        symbols.append(Symbol(
-            name=text_of(name_node, source_bytes),
-            symbol_type=SymbolType.FUNCTION,
-            file_path=file_path,
-            line_number=inner.start_point[0] + 1,
-        ))
+        symbols.append(
+            Symbol(
+                name=text_of(name_node, source_bytes),
+                symbol_type=SymbolType.FUNCTION,
+                file_path=file_path,
+                line_number=inner.start_point[0] + 1,
+                body_hash=structural_hash(inner, source_bytes),
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +452,12 @@ def collect_tree_sitter_callers(
             ):
                 name_node = node.child_by_field_name("name")
                 if name_node is not None:
-                    result.append((
-                        text_of(name_node, source_bytes), inner,
-                    ))
+                    result.append(
+                        (
+                            text_of(name_node, source_bytes),
+                            inner,
+                        )
+                    )
 
     # Recurse into children to find nested functions
     for child in node.named_children:

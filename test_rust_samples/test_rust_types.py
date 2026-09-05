@@ -6,6 +6,7 @@ dedicated samples.  Every line number was hand-verified against the source.
 
 Mirrors test_ts_samples/test_phase1_types.py structure.
 """
+
 import sys
 from pathlib import Path
 
@@ -259,19 +260,25 @@ print(SECTION_SEP)
 # edge_basic.rs
 syms = symbols_by_name(test_dir / "edge_basic.rs")
 new_methods = syms.get("new", [])
-check("User::new parent_class is User",
-      any(m.parent_class == "User" for m in new_methods),
-      f"actual={[m.parent_class for m in new_methods]}")
+check(
+    "User::new parent_class is User",
+    any(m.parent_class == "User" for m in new_methods),
+    f"actual={[m.parent_class for m in new_methods]}",
+)
 
 display_methods = syms.get("display", [])
-check("User::display parent_class is User",
-      any(m.parent_class == "User" for m in display_methods),
-      f"actual={[m.parent_class for m in display_methods]}")
+check(
+    "User::display parent_class is User",
+    any(m.parent_class == "User" for m in display_methods),
+    f"actual={[m.parent_class for m in display_methods]}",
+)
 
 update_methods = syms.get("update_age", [])
-check("User::update_age parent_class is User",
-      any(m.parent_class == "User" for m in update_methods),
-      f"actual={[m.parent_class for m in update_methods]}")
+check(
+    "User::update_age parent_class is User",
+    any(m.parent_class == "User" for m in update_methods),
+    f"actual={[m.parent_class for m in update_methods]}",
+)
 
 
 # =========================================================================

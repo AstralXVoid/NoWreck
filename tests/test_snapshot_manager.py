@@ -11,6 +11,7 @@ from nowreck.scanner.snapshot_manager import Snapshot, SnapshotManager
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_repo(path: Path, files: dict[str, str]) -> None:
     """Write files to a directory."""
     for rel, content in files.items():
@@ -38,9 +39,12 @@ class TestCapture:
         assert snap.symbol_index is not None
 
     def test_capture_finds_functions(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "app.py": "def hello(): pass\ndef world(): pass\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "app.py": "def hello(): pass\ndef world(): pass\n",
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 
@@ -56,9 +60,12 @@ class TestCapture:
         assert len(snap.symbol_index.all_symbols) == 0
 
     def test_capture_finds_js(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "index.js": "function greet() { return 'hi'; }\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "index.js": "function greet() { return 'hi'; }\n",
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 
@@ -67,9 +74,12 @@ class TestCapture:
         assert "greet" in names
 
     def test_capture_finds_ts(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "app.ts": "function greet(name: string): string { return name; }\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "app.ts": "function greet(name: string): string { return name; }\n",
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 
@@ -78,9 +88,12 @@ class TestCapture:
         assert "greet" in names
 
     def test_capture_finds_rust(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "main.rs": "fn greet() -> &'static str { \"hi\" }\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "main.rs": 'fn greet() -> &\'static str { "hi" }\n',
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 
@@ -89,14 +102,17 @@ class TestCapture:
         assert "greet" in names
 
     def test_capture_finds_go(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "main.go": "package main\n\nfunc greet() string { return \"hi\" }\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "main.go": 'package main\n\nfunc greet() string { return "hi" }\n',
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 
         funcs = snap.symbol_index.functions
-        names = {s.name for s in funcs }
+        names = {s.name for s in funcs}
         assert "greet" in names
 
     def test_capture_deterministic(self, tmp_path: Path) -> None:
@@ -142,9 +158,12 @@ class TestSaveBeforeAndCapture:
         mgr.cleanup(before)
 
     def test_detects_removed_function(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, {
-            "app.py": "def hello(): pass\ndef world(): pass\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "app.py": "def hello(): pass\ndef world(): pass\n",
+            },
+        )
         mgr = SnapshotManager(tmp_path)
 
         before = mgr.save_before()
@@ -296,17 +315,24 @@ class TestEdgeCases:
         _write_repo(tmp_path, {"app.py": "def hello(): pass\n"})
         # Initialize git repo
         import subprocess
+
         subprocess.run(
             ["git", "init"],
-            cwd=tmp_path, capture_output=True, timeout=5,
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=5,
         )
         subprocess.run(
             ["git", "add", "."],
-            cwd=tmp_path, capture_output=True, timeout=5,
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=5,
         )
         subprocess.run(
             ["git", "commit", "-m", "init", "--allow-empty"],
-            cwd=tmp_path, capture_output=True, timeout=5,
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=5,
         )
 
         mgr = SnapshotManager(tmp_path)
@@ -317,13 +343,16 @@ class TestEdgeCases:
 
     def test_mixed_languages(self, tmp_path: Path) -> None:
         """capture finds symbols across all languages."""
-        _write_repo(tmp_path, {
-            "app.py": "def hello_py(): pass\n",
-            "index.js": "function hello_js() {}\n",
-            "app.ts": "function hello_ts(): string { return ''; }\n",
-            "main.rs": "fn hello_rs() -> i32 { 0 }\n",
-            "main.go": "package main\n\nfunc hello_go() string { return \"\" }\n",
-        })
+        _write_repo(
+            tmp_path,
+            {
+                "app.py": "def hello_py(): pass\n",
+                "index.js": "function hello_js() {}\n",
+                "app.ts": "function hello_ts(): string { return ''; }\n",
+                "main.rs": "fn hello_rs() -> i32 { 0 }\n",
+                "main.go": 'package main\n\nfunc hello_go() string { return "" }\n',
+            },
+        )
         mgr = SnapshotManager(tmp_path)
         snap = mgr.capture()
 

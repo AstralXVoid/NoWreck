@@ -50,7 +50,7 @@ def _make_mixed_repo() -> Path:
         "  }\n"
         "\n"
         "  render() {\n"
-        '    return `<div>${this.name}</div>`;\n'
+        "    return `<div>${this.name}</div>`;\n"
         "  }\n"
         "\n"
         "  destroy() {\n"

@@ -120,10 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--compare",
         metavar="REF",
         default=None,
-        help=(
-            "Compare git ref against HEAD (shorthand for "
-            "--pre REF --post HEAD)"
-        ),
+        help=("Compare git ref against HEAD (shorthand for --pre REF --post HEAD)"),
     )
     fix_parser.add_argument(
         "--verbose",

@@ -6,6 +6,7 @@ the dedicated samples.  Every line number was hand-verified against the source.
 
 Mirrors test_ts_samples/test_phase1_types.py structure.
 """
+
 import sys
 from pathlib import Path
 
@@ -228,8 +229,10 @@ check_symbol(syms, "Processor", "INTERFACE", 55)
 check_symbol(syms, "MessageChan", "TYPE_ALIAS", 60)
 
 # Anonymous goroutine NOT captured
-check("anonymous goroutine NOT captured as symbol",
-      not any(s.name == "func" for s in scan_go_file(test_dir / "edge_goroutines.go")))
+check(
+    "anonymous goroutine NOT captured as symbol",
+    not any(s.name == "func" for s in scan_go_file(test_dir / "edge_goroutines.go")),
+)
 
 
 # =========================================================================
@@ -302,29 +305,39 @@ print(SECTION_SEP)
 # edge_basic.go
 syms = symbols_by_name(test_dir / "edge_basic.go")
 display_methods = syms.get("Display", [])
-check("User::Display parent_class is User",
-      any(m.parent_class == "User" for m in display_methods),
-      f"actual={[m.parent_class for m in display_methods]}")
+check(
+    "User::Display parent_class is User",
+    any(m.parent_class == "User" for m in display_methods),
+    f"actual={[m.parent_class for m in display_methods]}",
+)
 
 update_methods = syms.get("UpdateAge", [])
-check("User::UpdateAge parent_class is User",
-      any(m.parent_class == "User" for m in update_methods),
-      f"actual={[m.parent_class for m in update_methods]}")
+check(
+    "User::UpdateAge parent_class is User",
+    any(m.parent_class == "User" for m in update_methods),
+    f"actual={[m.parent_class for m in update_methods]}",
+)
 
 # edge_interfaces.go: multiple structs with same method name
 syms = symbols_by_name(test_dir / "edge_interfaces.go")
 log_methods = syms.get("Log", [])
-check("Logger methods: ConsoleLogger::Log and FileLogger::Log both captured",
-      len(log_methods) == 2,
-      f"count={len(log_methods)}")
+check(
+    "Logger methods: ConsoleLogger::Log and FileLogger::Log both captured",
+    len(log_methods) == 2,
+    f"count={len(log_methods)}",
+)
 if log_methods:
     parents = {m.parent_class for m in log_methods}
-    check("Log parent_classes include ConsoleLogger",
-          "ConsoleLogger" in parents,
-          f"actual={parents}")
-    check("Log parent_classes include FileLogger",
-          "FileLogger" in parents,
-          f"actual={parents}")
+    check(
+        "Log parent_classes include ConsoleLogger",
+        "ConsoleLogger" in parents,
+        f"actual={parents}",
+    )
+    check(
+        "Log parent_classes include FileLogger",
+        "FileLogger" in parents,
+        f"actual={parents}",
+    )
 
 
 # =========================================================================

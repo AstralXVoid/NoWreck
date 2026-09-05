@@ -55,13 +55,15 @@ for run in range(3):
     for f in files:
         syms = scan_ts_file(f)
         for s in syms:
-            all_symbols.add((
-                s.name,
-                s.symbol_type.name,
-                str(s.file_path),
-                s.line_number,
-                s.parent_class,
-            ))
+            all_symbols.add(
+                (
+                    s.name,
+                    s.symbol_type.name,
+                    str(s.file_path),
+                    s.line_number,
+                    s.parent_class,
+                )
+            )
     results.append(frozenset(all_symbols))
 
 msg_r1r2 = f"Run 1 == Run 2: {results[0] == results[1]}"
@@ -85,13 +87,9 @@ for i in range(500):
     large_lines.append(
         f"function func{i:04d}(x: number): number {{ return x + {i}; }}\n"
     )
-    large_lines.append(
-        f"const arr{i:04d} = (x: number): number => x * {i};\n"
-    )
+    large_lines.append(f"const arr{i:04d} = (x: number): number => x * {i};\n")
     if i % 10 == 0:
-        large_lines.append(
-            f"class LargeClass{i:04d} {{\n  method(): void {{}}\n}}\n"
-        )
+        large_lines.append(f"class LargeClass{i:04d} {{\n  method(): void {{}}\n}}\n")
 
 large_source = "".join(large_lines)
 
@@ -273,8 +271,7 @@ if all_syms:
     sample = random.sample(all_syms, min(10, len(all_syms)))
     for sym_name, sym_type, line, parent in sample:
         msg = (
-            f"Random symbol: {sym_type.name} {sym_name} "
-            f"(line {line}, parent={parent})"
+            f"Random symbol: {sym_type.name} {sym_name} (line {line}, parent={parent})"
         )
         check(msg, sym_name and sym_type and line > 0)
 else:

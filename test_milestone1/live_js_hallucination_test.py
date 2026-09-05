@@ -43,9 +43,7 @@ from nowreck.scanner.repository_scanner import RepositoryScanner
 from nowreck.scanner.symbol_index import build_symbol_index
 from nowreck.verifier.verifier import ClaimVerifier, Verdict
 
-PURE_JS_REPO = (
-    PROJECT_ROOT / "test_milestone1" / "repos" / "pure-js" / "src"
-)
+PURE_JS_REPO = PROJECT_ROOT / "test_milestone1" / "repos" / "pure-js" / "src"
 
 HEADER = "=" * 72
 SUB = "-" * 72
@@ -99,9 +97,7 @@ def main() -> int:
         return 0
 
     model = os.environ.get("NOWRECK_MODEL", "gpt-4o")
-    base_url = os.environ.get(
-        "NOWRECK_BASE_URL", "https://api.openai.com/v1"
-    )
+    base_url = os.environ.get("NOWRECK_BASE_URL", "https://api.openai.com/v1")
 
     config = ModelConfig(
         api_key=api_key,
@@ -134,9 +130,7 @@ def main() -> int:
     pre_sym = build_symbol_index(pre_scan)
     post_sym = build_symbol_index(post_scan)
 
-    real_changes = ChangeDetector.detect(
-        pre_scan, post_scan, pre_sym, post_sym
-    )
+    real_changes = ChangeDetector.detect(pre_scan, post_scan, pre_sym, post_sym)
     print(f"  Real changes detected: {len(real_changes)}")
 
     for c in real_changes[:8]:
@@ -190,9 +184,7 @@ def main() -> int:
             desc_parts.append(c.symbol_name)
         desc_parts.append(f"-> {c.file_path}")
         if c.caller_name and c.called_name:
-            desc_parts.append(
-                f"({c.caller_name} -> {c.called_name})"
-            )
+            desc_parts.append(f"({c.caller_name} -> {c.called_name})")
         desc_parts.append(f"conf={c.confidence:.0%}")
         print(f"    * {'  '.join(desc_parts)}")
 
@@ -221,9 +213,7 @@ def main() -> int:
             parts.append(r.claim.symbol_name)
         parts.append(f"-> {r.claim.file_path}")
         if r.claim.caller_name and r.claim.called_name:
-            parts.append(
-                f"({r.claim.caller_name} -> {r.claim.called_name})"
-            )
+            parts.append(f"({r.claim.caller_name} -> {r.claim.called_name})")
         print(f"    {'  '.join(parts)}")
 
     # Full terminal report
@@ -244,8 +234,7 @@ def main() -> int:
     print(f"  Unexplained:      {report.unexplained_count}")
 
     has_hallucination_catch = any(
-        r.verdict is Verdict.CONTRADICTED
-        and r.claim.type is ClaimType.CALLS_FUNCTION
+        r.verdict is Verdict.CONTRADICTED and r.claim.type is ClaimType.CALLS_FUNCTION
         for r in report.results
     )
     has_real_confirmed = report.confirmed > 0
@@ -260,10 +249,8 @@ def main() -> int:
     print(f"\n{HEADER}")
     print("  PHASE 4d — FINAL VERDICT")
     print(HEADER)
-    print(f"\n  Real symbols confirmed:  "
-          f"{_check if has_real_confirmed else _cross}")
-    print(f"  Hallucination caught:    "
-          f"{_check if has_hallucination_catch else _warn}")
+    print(f"\n  Real symbols confirmed:  {_check if has_real_confirmed else _cross}")
+    print(f"  Hallucination caught:    {_check if has_hallucination_catch else _warn}")
     print()
     print("  Pipeline stages: scan -> detect -> model -> verify -> report")
     print("  Languages: JavaScript (pure-js milestone repo)")

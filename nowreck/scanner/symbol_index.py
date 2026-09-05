@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
 from pathlib import Path
@@ -43,6 +45,12 @@ class Symbol:
             remove+add pair.
         parent_class: For methods, the enclosing class name.  ``None``
             for top-level functions and classes.
+        body_hash: Structural hash of the symbol's definition content
+            (v0.16.0).  **Identity-exempt** — excluded from
+            ``__eq__``/``__hash__`` exactly like ``line_number`` so that
+            a pure body edit is not reported as a remove+add pair.
+            ``None`` when the symbol has no hash (pre-v16 cache data or
+            a symbol kind whose content is not hashed).
     """
 
     name: str
@@ -50,34 +58,43 @@ class Symbol:
     file_path: Path
     line_number: int = field(compare=False)
     parent_class: str | None = None
+    body_hash: str | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a JSON-compatible dict.
 
         ``file_path`` is stored as a string; ``symbol_type`` is stored
-        as its string name (e.g. ``"FUNCTION"``).
+        as its string name (e.g. ``"FUNCTION"``).  ``body_hash`` is
+        included only when present so legacy payloads remain readable.
         """
-        return {
+        result: dict[str, object] = {
             "name": self.name,
             "symbol_type": self.symbol_type.name,
             "file_path": str(self.file_path),
             "line_number": self.line_number,
             "parent_class": self.parent_class,
         }
+        if self.body_hash is not None:
+            result["body_hash"] = self.body_hash
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> Symbol:
-        """Deserialise from a JSON dict."""
+        """Deserialise from a JSON dict.
+
+        ``body_hash`` is read tolerantly (``None`` when absent) so old
+        payloads deserialise cleanly; the cache version bump guarantees
+        such payloads are never used for comparison.
+        """
         return cls(
             name=str(d["name"]),
             symbol_type=SymbolType[str(d["symbol_type"])],
             file_path=Path(str(d["file_path"])),
             line_number=int(d["line_number"]),  # type: ignore[arg-type]
             parent_class=(
-                str(d["parent_class"])
-                if d.get("parent_class") is not None
-                else None
+                str(d["parent_class"]) if d.get("parent_class") is not None else None
             ),
+            body_hash=(str(d["body_hash"]) if d.get("body_hash") is not None else None),
         )
 
 
@@ -161,8 +178,9 @@ class SymbolIndexBuilder:
     functions, top-level classes, and methods (one level of nesting only).
 
     The builder performs **no semantic analysis** — it treats the AST as
-    structural information only.  Nested functions, decorators, async
-    functions, and imports are ignored.
+    structural information only.  Nested functions, decorators, and imports
+    are ignored.  Async functions and methods are indexed on equal footing
+    with their synchronous counterparts (v0.16.0).
     """
 
     @staticmethod
@@ -255,12 +273,13 @@ class SymbolIndexBuilder:
     ) -> None:
         """Walk one module's top-level statements and index symbols."""
         for node in module.body:
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 symbol = Symbol(
                     name=node.name,
                     symbol_type=SymbolType.FUNCTION,
                     file_path=file_path,
                     line_number=node.lineno,
+                    body_hash=SymbolIndexBuilder._python_body_hash(node),
                 )
                 index.setdefault(node.name, []).append(symbol)
 
@@ -270,6 +289,7 @@ class SymbolIndexBuilder:
                     symbol_type=SymbolType.CLASS,
                     file_path=file_path,
                     line_number=node.lineno,
+                    body_hash=SymbolIndexBuilder._python_class_shell_hash(node),
                 )
                 index.setdefault(node.name, []).append(symbol)
                 # Index methods inside this class (one level only)
@@ -283,15 +303,66 @@ class SymbolIndexBuilder:
     ) -> None:
         """Index methods directly inside a class body."""
         for node in class_node.body:
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 symbol = Symbol(
                     name=node.name,
                     symbol_type=SymbolType.METHOD,
                     file_path=file_path,
                     line_number=node.lineno,
                     parent_class=class_node.name,
+                    body_hash=SymbolIndexBuilder._python_body_hash(node),
                 )
                 index.setdefault(node.name, []).append(symbol)
+
+    @staticmethod
+    def _python_body_hash(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> str:
+        """Structural hash of a function or method definition node.
+
+        Uses ``ast.dump`` with ``include_attributes=False`` so line
+        numbers and source offsets never affect the hash — a pure line
+        shift produces an identical hash.  Comments and whitespace are
+        not part of the AST and therefore never affect it either.
+        """
+        return hashlib.sha256(
+            ast.dump(node, include_attributes=False).encode("utf-8"),
+        ).hexdigest()
+
+    @staticmethod
+    def _python_class_shell_hash(class_node: ast.ClassDef) -> str:
+        """Structural hash of a class *shell only*.
+
+        Covers decorators, base classes, keyword arguments, generic type
+        parameters (Python 3.12+), and every class-body statement except
+        method subtrees.  Method bodies live inside their own
+        ``FunctionDef``/``AsyncFunctionDef`` nodes and are excluded so a
+        method edit never fires ``CHANGED_CLASS`` (disjoint-facts rule).
+        """
+        parts: list[str] = [
+            SymbolIndexBuilder._dump_list(class_node.decorator_list),
+            SymbolIndexBuilder._dump_list(class_node.bases),
+            SymbolIndexBuilder._dump_list(class_node.keywords),
+        ]
+        type_params = getattr(class_node, "type_params", None)
+        if type_params:
+            parts.append(SymbolIndexBuilder._dump_list(type_params))
+        for stmt in class_node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            parts.append(ast.dump(stmt, include_attributes=False))
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _dump_list(nodes: Sequence[ast.AST]) -> str:
+        """Serialize a list of AST nodes deterministically.
+
+        ``ast.dump`` only accepts a single node, so lists (decorators,
+        bases, keywords, type params) are serialized element by element.
+        ``Sequence`` keeps the parameter covariant: the concrete lists
+        (``list[expr]``, ``list[keyword]``, ...) are all assignable.
+        """
+        return "|".join(ast.dump(n, include_attributes=False) for n in nodes)
 
 
 # Convenience aliases for brevity in tests and callers
