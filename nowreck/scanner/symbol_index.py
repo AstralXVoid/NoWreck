@@ -335,10 +335,25 @@ class SymbolIndexBuilder:
 
         Covers decorators, base classes, keyword arguments, generic type
         parameters (Python 3.12+), and every class-body statement except
-        method subtrees.  Method bodies live inside their own
+        method subtrees, ``pass`` placeholders, and the method bodies of
+        nested classes.  Method bodies live inside their own
         ``FunctionDef``/``AsyncFunctionDef`` nodes and are excluded so a
-        method edit never fires ``CHANGED_CLASS`` (disjoint-facts rule).
+        method edit never fires ``CHANGED_CLASS`` (disjoint-facts rule);
+        nested classes are hashed as shells recursively, so the rule
+        holds at any nesting depth.  ``pass`` is the syntactic "empty
+        class" placeholder and carries no information, so removing the
+        last method of a class (``def m`` -> ``pass``) stays a method
+        change only.
         """
+        return hashlib.sha256(
+            "|".join(SymbolIndexBuilder._python_class_shell_parts(class_node)).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+    @staticmethod
+    def _python_class_shell_parts(class_node: ast.ClassDef) -> list[str]:
+        """Collect the shell-hash parts of a class node."""
         parts: list[str] = [
             SymbolIndexBuilder._dump_list(class_node.decorator_list),
             SymbolIndexBuilder._dump_list(class_node.bases),
@@ -348,10 +363,19 @@ class SymbolIndexBuilder:
         if type_params:
             parts.append(SymbolIndexBuilder._dump_list(type_params))
         for stmt in class_node.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Pass)):
+                continue
+            if isinstance(stmt, ast.ClassDef):
+                # Nested classes are shell content of the outer class and
+                # are themselves hashed as shells (methods and ``pass``
+                # excluded at every depth).  The name is included:
+                # renaming a nested class is a structural change to the
+                # outer class.
+                parts.append(stmt.name)
+                parts.append(SymbolIndexBuilder._python_class_shell_hash(stmt))
                 continue
             parts.append(ast.dump(stmt, include_attributes=False))
-        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        return parts
 
     @staticmethod
     def _dump_list(nodes: Sequence[ast.AST]) -> str:

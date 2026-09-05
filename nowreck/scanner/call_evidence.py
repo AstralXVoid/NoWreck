@@ -1,10 +1,11 @@
 """Call-evidence type shared by all five language scanners.
 
-v0.16.0 replaces the bare ``(Path, str, str)`` tuples returned by the
-Python, JS/TS, Rust, and Go call extractors with a single frozen
-dataclass.  Carrying the caller's enclosing class lets the verifier
-distinguish ``Widget.render`` from ``Window.render`` and gives method
-calls (``self.foo()``, ``obj.bar()``) a first-class identity.
+v0.16.0 introduces a single frozen dataclass to replace the bare
+``(Path, str, str)`` tuples returned by the Python, JS/TS, Rust, and Go
+call extractors (wired in during Phase 2).  Carrying the caller's
+enclosing class lets the verifier distinguish ``Widget.render`` from
+``Window.render`` and gives method calls (``self.foo()``, ``obj.bar()``)
+a first-class identity.
 """
 
 from __future__ import annotations

@@ -39,6 +39,20 @@ COMMENT_NODE_TYPES: frozenset[str] = frozenset(
     }
 )
 
+# Semicolon leaves are optional under automatic-semicolon-insertion in
+# JS/TS/Go: ``return 1;`` and ``return 1`` are the same program, so the
+# leaf must not affect the hash.  Rust's ``;`` is semantic (``{ 1 }``
+# returns the value, ``{ 1; }`` returns ``()``) and is deliberately
+# never excluded.
+ASI_LEAF_EXCLUSIONS: frozenset[str] = frozenset({";"})
+
+# Tokens that may follow a trailing comma in a comma-separated list
+# (``[1, 2,]``, ``f(a,)``, ``{x: 1,}``, Rust ``Vec<i32,>``).  A comma is
+# hash-invisible only when everything after it is a closer or another
+# comma — mid-list commas stay, so elisions (``[1,,2]``) still hash
+# differently from ``[1,2]``.
+CLOSING_TOKEN_TYPES: frozenset[str] = frozenset({"]", "}", ")", ">"})
+
 
 def text_of(node: Node, source_bytes: bytes) -> str:
     """Decode the source text spanned by *node*."""
@@ -48,26 +62,150 @@ def text_of(node: Node, source_bytes: bytes) -> str:
     )
 
 
-def structural_hash(node: Node, source_bytes: bytes) -> str:
+def structural_hash(
+    node: Node,
+    source_bytes: bytes,
+    *,
+    excluded_leaf_types: frozenset[str] = frozenset(),
+) -> str:
     """Compute a formatting-insensitive structural hash for *node*.
 
     Serialises the CST: each node's type plus, for leaf tokens, the
     node's trimmed text (quote-style-normalised for string literals).
-    Whitespace, comments, semicolons, and brace style never affect the
-    result; operators and other tokens do.  This mirrors the
-    structure-only semantics of the Python ``ast.dump`` hash so that all
-    five languages share one rule: reformatting is never a "change",
-    edited logic always is.
+    Whitespace, comments, semicolons, trailing commas, and brace style
+    never affect the result; operators and other tokens do.  This
+    mirrors the structure-only semantics of the Python ``ast.dump`` hash
+    so that all five languages share one rule: reformatting is never a
+    "change", edited logic always is.
+
+    Args:
+        node: The CST node to hash.
+        source_bytes: Source bytes the tree was parsed from.
+        excluded_leaf_types: Leaf token types to omit entirely (e.g.
+            ``ASI_LEAF_EXCLUSIONS`` for JS/TS/Go, whose semicolons are
+            optional).  Rust passes nothing — its ``;`` is semantic.
     """
     if node.type in COMMENT_NODE_TYPES:
         return ""
-    return _serialize_node(node, source_bytes, skip_methods=False)
+    return _serialize_node(
+        node,
+        source_bytes,
+        skip_methods=False,
+        excluded_leaf_types=excluded_leaf_types,
+    )
 
 
 def _string_text(node: Node, source_bytes: bytes) -> str:
-    """Trimmed, quote-stripped text of a string-literal node."""
+    """Trimmed, quote-stripped text of a string-literal node.
+
+    JS/TS ``string`` nodes (single or double quotes) are fully unescaped
+    so ``"it's"`` and ``'it\'s'`` collide; Rust/Go literals keep their
+    escape text (their quote styles are separate node types and raw vs
+    interpreted is semantically significant).  Whitespace inside a
+    literal is content and is preserved exactly.
+    """
     text = _strip_outer_quotes(text_of(node, source_bytes))
-    return " ".join(text.split())
+    if node.type == "string":
+        return _js_unescape(text)
+    return text
+
+
+def _js_unescape(text: str) -> str:
+    r"""Decode JavaScript escape sequences inside a quoted string token.
+
+    Handles ``\n``-style escapes, hex/unicode escapes (``\xHH``,
+    ``\uHHHH``, ``\u{...}``), legacy octal escapes, escaped quotes and
+    backslashes, and line continuations.  Unknown or invalid escapes are
+    kept verbatim; surrogate-range ``\u`` escapes are kept as text so
+    the hash never carries lone surrogates.
+    """
+    simple: dict[str, str] = {
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "b": "\b",
+        "f": "\f",
+        "v": "\v",
+    }
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c != "\\" or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        nxt = text[i + 1]
+        if nxt in ("'", '"', "\\"):
+            out.append(nxt)
+            i += 2
+            continue
+        if nxt in simple:
+            out.append(simple[nxt])
+            i += 2
+            continue
+        if nxt == "x":
+            hex_str = text[i + 2 : i + 4]
+            if len(hex_str) == 2 and all(
+                ch in "0123456789abcdefABCDEF" for ch in hex_str
+            ):
+                out.append(chr(int(hex_str, 16)))
+                i += 4
+                continue
+            out.append(c)  # invalid \x escape: keep verbatim
+            i += 1
+            continue
+        if nxt == "u":
+            if i + 2 < n and text[i + 2] == "{":
+                close = text.find("}", i + 3)
+                if close != -1:
+                    hex_str = text[i + 3 : close]
+                    if hex_str and all(
+                        ch in "0123456789abcdefABCDEF" for ch in hex_str
+                    ):
+                        cp = int(hex_str, 16)
+                        if cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF:
+                            out.append(chr(cp))
+                            i = close + 1
+                            continue
+            else:
+                hex_str = text[i + 2 : i + 6]
+                if len(hex_str) == 4 and all(
+                    ch in "0123456789abcdefABCDEF" for ch in hex_str
+                ):
+                    cp = int(hex_str, 16)
+                    if not 0xD800 <= cp <= 0xDFFF:
+                        out.append(chr(cp))
+                        i += 6
+                        continue
+            # Invalid or surrogate \u escape: keep the whole escape text.
+            out.append(c)
+            i += 1
+            continue
+        if nxt in "01234567":  # legacy octal: up to 3 digits
+            j = i + 1
+            digits = ""
+            while j < n and len(digits) < 3 and text[j] in "01234567":
+                digits += text[j]
+                j += 1
+            out.append(chr(int(digits, 8)))
+            i = j
+            continue
+        if nxt in "89":  # identity escape (\8, \9)
+            out.append(nxt)
+            i += 2
+            continue
+        if nxt in "\n\r":  # line continuation
+            i += 2
+            if nxt == "\r" and i < n and text[i] == "\n":
+                i += 1
+            continue
+        # Unknown escape: keep the backslash; the next char is re-read
+        # as a normal character.
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _strip_outer_quotes(text: str) -> str:
@@ -82,7 +220,12 @@ def _strip_outer_quotes(text: str) -> str:
     return text
 
 
-def _class_shell_hash(class_node: Node, source_bytes: bytes) -> str:
+def _class_shell_hash(
+    class_node: Node,
+    source_bytes: bytes,
+    *,
+    excluded_leaf_types: frozenset[str] = frozenset(),
+) -> str:
     """Structural hash of a class *shell only*.
 
     Serialises the ``class_declaration`` subtree (decorators, name,
@@ -90,12 +233,18 @@ def _class_shell_hash(class_node: Node, source_bytes: bytes) -> str:
     subtree — getter/setter/static/async modifiers live *inside* the
     method subtree and go with it — and, for TypeScript, decorator
     siblings attached to a method.  A method edit therefore never fires
-    ``CHANGED_CLASS`` (disjoint-facts rule).  Class-level decorators and
-    class fields remain in the shell.
+    ``CHANGED_CLASS`` (disjoint-facts rule), at any nesting depth (e.g.
+    methods of a class expression stored in a static field).  Class-level
+    decorators and class fields remain in the shell.
     """
     parts: list[str] = [class_node.type]
     for child in class_node.children:
-        child_hash = _serialize_node(child, source_bytes, skip_methods=True)
+        child_hash = _serialize_node(
+            child,
+            source_bytes,
+            skip_methods=True,
+            excluded_leaf_types=excluded_leaf_types,
+        )
         if child_hash:
             parts.append(child_hash)
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -106,15 +255,20 @@ def _serialize_node(
     source_bytes: bytes,
     *,
     skip_methods: bool,
+    excluded_leaf_types: frozenset[str] = frozenset(),
 ) -> str:
     """Core CST serialisation shared by ``structural_hash`` and the class
     shell walk.
 
     With *skip_methods* set, ``method_definition`` subtrees and the
     decorator siblings attached to them are omitted (class shell mode);
-    otherwise the full structure is hashed.
+    otherwise the full structure is hashed.  Leaves in
+    *excluded_leaf_types* are omitted entirely, and trailing commas are
+    hash-invisible (see ``_is_trailing_comma``).
     """
     if node.type in COMMENT_NODE_TYPES:
+        return ""
+    if node.type in excluded_leaf_types:
         return ""
     if skip_methods and node.type == "method_definition":
         return ""
@@ -122,7 +276,8 @@ def _serialize_node(
     if node.type in STRING_NODE_TYPES and node.type != "template_string":
         # JS/TS ``string`` nodes carry quote/escape-sequence children;
         # Rust/Go string literals are single leaf tokens.  Either way,
-        # hash the quote-stripped text so ``"x"`` and ``'x'`` are equal.
+        # hash the quote-stripped text so ``"x"`` and ``'x'`` are equal
+        # (JS/TS also unescape, so embedded-quote styles collide too).
         # Template strings are excluded: interpolated ones must recurse
         # so ``${expr}`` edits affect the hash.
         parts.append(_string_text(node, source_bytes))
@@ -140,10 +295,32 @@ def _serialize_node(
                 )
             ):
                 continue
-            child_hash = _serialize_node(child, source_bytes, skip_methods=skip_methods)
+            if child.type == "," and _is_trailing_comma(children, i):
+                continue
+            child_hash = _serialize_node(
+                child,
+                source_bytes,
+                skip_methods=skip_methods,
+                excluded_leaf_types=excluded_leaf_types,
+            )
             if child_hash:
                 parts.append(child_hash)
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _is_trailing_comma(children: list[Node], index: int) -> bool:
+    """Whether the comma at *index* is a trailing separator.
+
+    A comma is trailing when every following sibling (ignoring comments
+    and other commas) is a closing token — ``[1, 2,]``, ``f(a,)``,
+    ``{x: 1,}``, Rust ``Vec<i32,>``.  Mid-list commas are kept, so
+    elisions (``[1,,2]``) and separators still affect the hash.
+    """
+    for sibling in children[index + 1 :]:
+        if sibling.type in COMMENT_NODE_TYPES or sibling.type == ",":
+            continue
+        return sibling.type in CLOSING_TOKEN_TYPES
+    return False
 
 
 def _is_method_decorator(children: list[Node], index: int) -> bool:
@@ -257,7 +434,11 @@ def collect_top_level_symbols(
                         symbol_type=SymbolType.FUNCTION,
                         file_path=file_path,
                         line_number=node.start_point[0] + 1,
-                        body_hash=structural_hash(node, source_bytes),
+                        body_hash=structural_hash(
+                            node,
+                            source_bytes,
+                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                        ),
                     )
                 )
 
@@ -272,7 +453,11 @@ def collect_top_level_symbols(
                         symbol_type=SymbolType.CLASS,
                         file_path=file_path,
                         line_number=class_line,
-                        body_hash=_class_shell_hash(node, source_bytes),
+                        body_hash=_class_shell_hash(
+                            node,
+                            source_bytes,
+                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                        ),
                     )
                 )
                 collect_class_methods(
@@ -366,7 +551,11 @@ def collect_class_methods(
                         file_path=file_path,
                         line_number=member.start_point[0] + 1,
                         parent_class=class_name,
-                        body_hash=structural_hash(member, source_bytes),
+                        body_hash=structural_hash(
+                            member,
+                            source_bytes,
+                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                        ),
                     )
                 )
 
@@ -408,7 +597,11 @@ def maybe_arrow_function_declarator(
                 symbol_type=SymbolType.FUNCTION,
                 file_path=file_path,
                 line_number=inner.start_point[0] + 1,
-                body_hash=structural_hash(inner, source_bytes),
+                body_hash=structural_hash(
+                    inner,
+                    source_bytes,
+                    excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                ),
             )
         )
 

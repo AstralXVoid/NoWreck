@@ -300,6 +300,43 @@ class TestPythonClassShellHash:
             "class C:\n    async def m(self):\n        return 2\n",
         )
 
+    def test_pass_placeholder_does_not_change_class_hash(self) -> None:
+        """Removing the last method leaves a ``pass`` placeholder, which is
+        shell-invisible: the edit stays a method change only (B3)."""
+        assert self._class_hash(
+            "class C:\n    def m(self):\n        return 1\n",
+        ) == self._class_hash("class C:\n    pass\n")
+
+    def test_pass_placeholder_is_not_real_content(self) -> None:
+        """``pass`` is invisible, but real class-level content still is not."""
+        assert self._class_hash("class C:\n    pass\n") != self._class_hash(
+            "class C:\n    x = 1\n",
+        )
+
+    def test_nested_class_method_edit_does_not_change_outer_shell(self) -> None:
+        """The disjoint-facts rule holds at any nesting depth (B4)."""
+        assert self._class_hash(
+            "class C:\n    class B:\n        def m(self):\n            return 1\n",
+        ) == self._class_hash(
+            "class C:\n    class B:\n        def m(self):\n            return 2\n",
+        )
+
+    def test_nested_class_field_edit_changes_outer_shell(self) -> None:
+        """Nested class content is outer-shell content (B4)."""
+        assert self._class_hash(
+            "class C:\n    class B:\n        x = 1\n",
+        ) != self._class_hash(
+            "class C:\n    class B:\n        x = 2\n",
+        )
+
+    def test_nested_class_rename_changes_outer_shell(self) -> None:
+        """Renaming a nested class is a structural change to the outer class."""
+        assert self._class_hash(
+            "class C:\n    class B:\n        x = 1\n",
+        ) != self._class_hash(
+            "class C:\n    class D:\n        x = 1\n",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Python: async indexing carries a usable body hash (P2)
@@ -449,6 +486,97 @@ class TestJsBodyHash:
         }
         assert plain["C"].body_hash != with_field["C"].body_hash
 
+    def test_semicolon_style_does_not_change_hash(self, tmp_path: Path) -> None:
+        """ASi makes ``;`` optional — omitting it is not an edit (B1)."""
+        semi = _only(
+            self._scan("function f() { return 1; }\n", tmp_path),
+        )
+        asis = _only(
+            self._scan("function f() { return 1 }\n", tmp_path),
+        )
+        assert semi.body_hash == asis.body_hash
+
+    def test_class_body_trailing_semicolon_does_not_change_class_hash(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An optional ``;`` after a method stays out of the class shell (B1)."""
+        plain = {
+            s.name: s
+            for s in self._scan(
+                "class C { m() { return 1; } }\n",
+                tmp_path,
+            )
+        }
+        trailing = {
+            s.name: s
+            for s in self._scan(
+                "class C { m() { return 1; }; }\n",
+                tmp_path,
+            )
+        }
+        assert plain["C"].body_hash == trailing["C"].body_hash
+
+    def test_trailing_comma_does_not_change_hash(self, tmp_path: Path) -> None:
+        """A trailing comma is formatting, not content (B2)."""
+        no_trailing = _only(
+            self._scan("function f() { return [1, 2, 3]; }\n", tmp_path),
+        )
+        trailing = _only(
+            self._scan("function f() { return [1, 2, 3,]; }\n", tmp_path),
+        )
+        assert no_trailing.body_hash == trailing.body_hash
+
+    def test_array_elision_comma_still_changes_hash(self, tmp_path: Path) -> None:
+        """Mid-list commas are content: ``[1,,2]`` is a sparse array (B2)."""
+        dense = _only(
+            self._scan("function f() { return [1,2]; }\n", tmp_path),
+        )
+        sparse = _only(
+            self._scan("function f() { return [1,,2]; }\n", tmp_path),
+        )
+        assert dense.body_hash != sparse.body_hash
+
+    def test_embedded_quote_style_does_not_change_hash(self, tmp_path: Path) -> None:
+        """``"it's"`` and ``'it\'s'`` are the same string value (B5)."""
+        double = _only(
+            self._scan('function f() { return "it\'s"; }\n', tmp_path),
+        )
+        single = _only(
+            self._scan("function f() { return 'it\\'s'; }\n", tmp_path),
+        )
+        assert double.body_hash == single.body_hash
+
+    def test_escaped_quote_style_does_not_change_hash(self, tmp_path: Path) -> None:
+        """``"a\"b"`` and ``'a"b'`` are the same string value (B5)."""
+        escaped = _only(
+            self._scan('function f() { return "a\\"b"; }\n', tmp_path),
+        )
+        literal = _only(
+            self._scan("function f() { return 'a\"b'; }\n", tmp_path),
+        )
+        assert escaped.body_hash == literal.body_hash
+
+    def test_escape_semantics_are_preserved(self, tmp_path: Path) -> None:
+        """``\n`` (newline) and ``\\n`` (backslash-n) are different values."""
+        newline = _only(
+            self._scan('function f() { return "a\\nb"; }\n', tmp_path),
+        )
+        literal = _only(
+            self._scan('function f() { return "a\\\\nb"; }\n', tmp_path),
+        )
+        assert newline.body_hash != literal.body_hash
+
+    def test_hex_escape_equals_plain_char(self, tmp_path: Path) -> None:
+        """``\x41`` decodes to ``A`` — same string value (B5)."""
+        escaped = _only(
+            self._scan('function f() { return "\\x41"; }\n', tmp_path),
+        )
+        plain = _only(
+            self._scan('function f() { return "A"; }\n', tmp_path),
+        )
+        assert escaped.body_hash == plain.body_hash
+
 
 class TestTsBodyHash:
     """TypeScript body hashes incl. the decorator edge (Accepted Edges #1)."""
@@ -529,6 +657,32 @@ class TestTsBodyHash:
         assert symbols_a["Foo"].body_hash == symbols_b["Foo"].body_hash
         assert symbols_a["method"].body_hash != symbols_b["method"].body_hash
 
+    def test_semicolon_style_does_not_change_hash(self, tmp_path: Path) -> None:
+        """TS semicolons are ASI-optional — not an edit (B1)."""
+        semi = _only(
+            self._scan("function greet(): number { return 1; }\n", tmp_path),
+        )
+        asis = _only(
+            self._scan("function greet(): number { return 1 }\n", tmp_path),
+        )
+        assert semi.body_hash == asis.body_hash
+
+    def test_trailing_comma_does_not_change_hash(self, tmp_path: Path) -> None:
+        """A trailing comma in a call is formatting, not content (B2)."""
+        no_trailing = _only(
+            self._scan(
+                "function greet(): number { return combine(1, 2); }\n",
+                tmp_path,
+            ),
+        )
+        trailing = _only(
+            self._scan(
+                "function greet(): number { return combine(1, 2,); }\n",
+                tmp_path,
+            ),
+        )
+        assert no_trailing.body_hash == trailing.body_hash
+
 
 class TestRustBodyHash:
     """Rust body hashes via structural_hash."""
@@ -598,6 +752,27 @@ class TestRustBodyHash:
             )
         }
         assert before["S"].body_hash != after["S"].body_hash
+
+    def test_semicolon_is_semantic_in_rust(self, tmp_path: Path) -> None:
+        """``{ 1 }`` returns the value, ``{ 1; }`` returns ``()`` — the
+        semicolon must keep affecting the hash in Rust (B1 guard)."""
+        expr = _only(
+            self._scan("fn f() -> i32 { 1 }\n", tmp_path),
+        )
+        stmt = _only(
+            self._scan("fn f() { 1; }\n", tmp_path),
+        )
+        assert expr.body_hash != stmt.body_hash
+
+    def test_trailing_comma_does_not_change_hash(self, tmp_path: Path) -> None:
+        """Rust allows a trailing comma in call args — formatting only (B2)."""
+        no_trailing = _only(
+            self._scan("fn f() { g(1, 2); }\n", tmp_path),
+        )
+        trailing = _only(
+            self._scan("fn f() { g(1, 2,); }\n", tmp_path),
+        )
+        assert no_trailing.body_hash == trailing.body_hash
 
 
 class TestGoBodyHash:
@@ -679,3 +854,29 @@ class TestGoBodyHash:
             )
         }
         assert symbols["Shape"].body_hash is None
+
+    def test_semicolon_style_does_not_change_hash(self, tmp_path: Path) -> None:
+        """Go's ASI makes ``;`` optional — not an edit (B1)."""
+        no_semi = _only(
+            self._scan("package p\nfunc f() int { return 1 }\n", tmp_path),
+        )
+        semi = _only(
+            self._scan("package p\nfunc f() int { return 1; }\n", tmp_path),
+        )
+        assert no_semi.body_hash == semi.body_hash
+
+    def test_trailing_comma_does_not_change_hash(self, tmp_path: Path) -> None:
+        """A trailing comma in a composite literal is formatting (B2)."""
+        no_trailing = _only(
+            self._scan(
+                "package p\nfunc f() { _ = []int{1, 2} }\n",
+                tmp_path,
+            ),
+        )
+        trailing = _only(
+            self._scan(
+                "package p\nfunc f() { _ = []int{1, 2,} }\n",
+                tmp_path,
+            ),
+        )
+        assert no_trailing.body_hash == trailing.body_hash

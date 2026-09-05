@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Language, Parser, Tree
 
-from nowreck.scanner._tree_sitter_helpers import structural_hash
+from nowreck.scanner._tree_sitter_helpers import ASI_LEAF_EXCLUSIONS, structural_hash
 from nowreck.scanner.symbol_index import Symbol
 
 if TYPE_CHECKING:
@@ -123,7 +123,11 @@ def _collect_go_symbols(
                         symbol_type=_FUNCTION_TYPE,
                         file_path=file_path,
                         line_number=node.start_point[0] + 1,
-                        body_hash=structural_hash(node, source_bytes),
+                        body_hash=structural_hash(
+                            node,
+                            source_bytes,
+                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                        ),
                     )
                 )
 
@@ -139,7 +143,11 @@ def _collect_go_symbols(
                         file_path=file_path,
                         line_number=node.start_point[0] + 1,
                         parent_class=receiver_type,
-                        body_hash=structural_hash(node, source_bytes),
+                        body_hash=structural_hash(
+                            node,
+                            source_bytes,
+                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                        ),
                     )
                 )
 
@@ -172,7 +180,11 @@ def _collect_type_symbols(
                 # Struct *shell*: the struct node holds fields only — Go
                 # methods live in top-level ``method_declaration`` nodes,
                 # so no method-exclusion logic is needed here.
-                body_hash = structural_hash(type_node, source_bytes)
+                body_hash = structural_hash(
+                    type_node,
+                    source_bytes,
+                    excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+                )
             elif type_node.type == "interface_type":
                 symbol_type = _INTERFACE_TYPE
                 body_hash = None
