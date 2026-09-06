@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ClaimType(IntEnum):
-    """The thirteen structural claim types supported.
+    """The fifteen structural claim types supported.
 
     Each corresponds one-to-one with the claim taxonomy in the frozen
     specification.  v0.8.0 added the six type-level kinds
     (ADD/REMOVE × INTERFACE/ENUM/TYPE_ALIAS) for the TS/TSX family.
+    v0.16.0 added the two CHANGED kinds (body-edit claims) alongside
+    the detector's ``CHANGED_FUNCTION``/``CHANGED_CLASS`` change types.
     """
 
     ADD_FUNCTION = auto()
@@ -25,6 +27,8 @@ class ClaimType(IntEnum):
     REMOVE_ENUM = auto()
     ADD_TYPE_ALIAS = auto()
     REMOVE_TYPE_ALIAS = auto()
+    CHANGED_FUNCTION = auto()
+    CHANGED_CLASS = auto()
     FILE_CREATED = auto()
     FILE_DELETED = auto()
     CALLS_FUNCTION = auto()
@@ -43,6 +47,8 @@ CLAIM_TYPE_NAMES: dict[str, ClaimType] = {
     "REMOVE_ENUM": ClaimType.REMOVE_ENUM,
     "ADD_TYPE_ALIAS": ClaimType.ADD_TYPE_ALIAS,
     "REMOVE_TYPE_ALIAS": ClaimType.REMOVE_TYPE_ALIAS,
+    "CHANGED_FUNCTION": ClaimType.CHANGED_FUNCTION,
+    "CHANGED_CLASS": ClaimType.CHANGED_CLASS,
     "FILE_CREATED": ClaimType.FILE_CREATED,
     "FILE_DELETED": ClaimType.FILE_DELETED,
     "CALLS_FUNCTION": ClaimType.CALLS_FUNCTION,

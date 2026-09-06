@@ -148,6 +148,8 @@ _CLAIM_TYPE_TO_CHANGE: dict[ClaimType, ChangeType] = {
     ClaimType.REMOVE_ENUM: ChangeType.REMOVE_ENUM,
     ClaimType.ADD_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
     ClaimType.REMOVE_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
+    ClaimType.CHANGED_FUNCTION: ChangeType.CHANGED_FUNCTION,
+    ClaimType.CHANGED_CLASS: ChangeType.CHANGED_CLASS,
     ClaimType.FILE_CREATED: ChangeType.FILE_CREATED,
     ClaimType.FILE_DELETED: ChangeType.FILE_DELETED,
 }

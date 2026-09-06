@@ -31,6 +31,9 @@ class TestClaimType:
         assert ClaimType.REMOVE_ENUM
         assert ClaimType.ADD_TYPE_ALIAS
         assert ClaimType.REMOVE_TYPE_ALIAS
+        # Body-edit kinds added in v0.16.0
+        assert ClaimType.CHANGED_FUNCTION
+        assert ClaimType.CHANGED_CLASS
         assert ClaimType.FILE_CREATED
         assert ClaimType.FILE_DELETED
         assert ClaimType.CALLS_FUNCTION
@@ -142,6 +145,33 @@ class TestClaimParserValid:
         assert result.claims[0].type is ClaimType.ADD_FUNCTION
         assert result.claims[0].symbol_name == "greet"
         assert result.claims[0].file_path == "app.py"
+
+    def test_changed_function_and_class_parse(self) -> None:
+        """Both CHANGED claim types parse with their symbol names."""
+        payload = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "CHANGED_FUNCTION",
+                        "symbol_name": "greet",
+                        "file_path": "app.py",
+                    },
+                    {
+                        "type": "CHANGED_CLASS",
+                        "symbol_name": "Calculator",
+                        "file_path": "calc.py",
+                    },
+                ],
+            }
+        )
+        result = ClaimParser.parse(payload)
+        assert result.success is True
+        assert [c.type for c in result.claims] == [
+            ClaimType.CHANGED_FUNCTION,
+            ClaimType.CHANGED_CLASS,
+        ]
+        assert result.claims[0].symbol_name == "greet"
+        assert result.claims[1].symbol_name == "Calculator"
 
     def test_multiple_claims(self) -> None:
         payload = json.dumps(

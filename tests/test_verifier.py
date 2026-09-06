@@ -822,3 +822,303 @@ class TestCallsFunctionContradictedByRemoval:
         ]
         report = ClaimVerifier.verify([self._claim()], changes)
         assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+
+class TestClaimVerifierChangedConfirmed:
+    """CHANGED_FUNCTION / CHANGED_CLASS claims vs same-type evidence."""
+
+    def test_changed_function_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="app.py",
+                symbol_name="greet",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+        assert report.unexplained_count == 0
+
+    def test_changed_class_confirmed(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_CLASS,
+            file_path="calc.py",
+            symbol_name="Calculator",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_CLASS,
+                file_path="calc.py",
+                symbol_name="Calculator",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_changed_method_confirmed_with_parent_class(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="widget.py",
+            symbol_name="render",
+            parent_class="Widget",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="widget.py",
+                symbol_name="render",
+                parent_class="Widget",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+
+class TestClaimVerifierChangedContradicted:
+    """CHANGED claims are contradicted when the symbol was added or
+    removed instead of edited (opposite set = (REMOVE_*, ADD_*))."""
+
+    def test_changed_function_contradicted_by_remove(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_FUNCTION,
+                file_path="app.py",
+                symbol_name="greet",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_changed_function_contradicted_by_add(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_FUNCTION,
+                file_path="app.py",
+                symbol_name="greet",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_changed_class_contradicted_by_remove(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_CLASS,
+            file_path="calc.py",
+            symbol_name="Calculator",
+        )
+        changes = [
+            _make_change(
+                ChangeType.REMOVE_CLASS,
+                file_path="calc.py",
+                symbol_name="Calculator",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_changed_class_contradicted_by_add(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_CLASS,
+            file_path="calc.py",
+            symbol_name="Calculator",
+        )
+        changes = [
+            _make_change(
+                ChangeType.ADD_CLASS,
+                file_path="calc.py",
+                symbol_name="Calculator",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONTRADICTED
+
+    def test_add_function_not_contradicted_by_changed(self) -> None:
+        """The tuple widening must not leak: CHANGED evidence is not the
+        opposite of an ADD claim (backward-compatibility guard)."""
+        claim = _make_claim(
+            ClaimType.ADD_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="app.py",
+                symbol_name="greet",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+
+class TestClaimVerifierChangedUnverifiable:
+    """CHANGED claims with no matching evidence (body identical)."""
+
+    def test_changed_function_no_changes(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        report = ClaimVerifier.verify([claim], [])
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+    def test_changed_function_wrong_symbol(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="app.py",
+                symbol_name="other",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+    def test_changed_function_wrong_file(self) -> None:
+        claim = _make_claim(
+            ClaimType.CHANGED_FUNCTION,
+            file_path="app.py",
+            symbol_name="greet",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="other.py",
+                symbol_name="greet",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+
+class TestClaimVerifierStrictCallClassMatching:
+    """CALLS_FUNCTION parent_class compares symmetrically (strict)."""
+
+    def test_method_call_claim_requires_class_evidence(self) -> None:
+        """A method-call claim (parent_class set) does not match plain-call
+        evidence (caller_parent_class=None) → UNVERIFIABLE."""
+        claim = _make_claim(
+            ClaimType.CALLS_FUNCTION,
+            file_path="calc.py",
+            symbol_name="validate",
+            parent_class="Calculator",
+            caller_name="process",
+            called_name="validate",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CALL_DETECTED,
+                file_path="calc.py",
+                caller_name="process",
+                called_name="validate",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+    def test_method_call_claim_confirmed_with_class_evidence(self) -> None:
+        claim = _make_claim(
+            ClaimType.CALLS_FUNCTION,
+            file_path="calc.py",
+            symbol_name="validate",
+            parent_class="Calculator",
+            caller_name="process",
+            called_name="validate",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CALL_DETECTED,
+                file_path="calc.py",
+                parent_class="Calculator",
+                caller_name="process",
+                called_name="validate",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.CONFIRMED
+
+    def test_plain_call_claim_does_not_match_class_evidence(self) -> None:
+        """A plain-call claim (parent_class=None) does not match
+        method-call evidence → UNVERIFIABLE."""
+        claim = _make_claim(
+            ClaimType.CALLS_FUNCTION,
+            file_path="calc.py",
+            symbol_name="validate",
+            caller_name="process",
+            called_name="validate",
+        )
+        changes = [
+            _make_change(
+                ChangeType.CALL_DETECTED,
+                file_path="calc.py",
+                parent_class="Calculator",
+                caller_name="process",
+                called_name="validate",
+            )
+        ]
+        report = ClaimVerifier.verify([claim], changes)
+        assert report.results[0].verdict is Verdict.UNVERIFIABLE
+
+
+class TestClaimVerifierChangedAndCallNoCrossTalk:
+    """A CHANGED claim and a CALLS_FUNCTION claim for the same edit each
+    match their own evidence; nothing is left unexplained."""
+
+    def test_changed_and_call_claims_match_own_evidence(self) -> None:
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="calc.py",
+                symbol_name="process",
+                parent_class="Calculator",
+            ),
+            _make_change(
+                ChangeType.CALL_DETECTED,
+                file_path="calc.py",
+                parent_class="Calculator",
+                caller_name="process",
+                called_name="validate",
+            ),
+        ]
+        claims = [
+            _make_claim(
+                ClaimType.CHANGED_FUNCTION,
+                file_path="calc.py",
+                symbol_name="process",
+                parent_class="Calculator",
+            ),
+            _make_claim(
+                ClaimType.CALLS_FUNCTION,
+                file_path="calc.py",
+                symbol_name="validate",
+                parent_class="Calculator",
+                caller_name="process",
+                called_name="validate",
+            ),
+        ]
+        report = ClaimVerifier.verify(claims, changes)
+        assert [r.verdict for r in report.results] == [
+            Verdict.CONFIRMED,
+            Verdict.CONFIRMED,
+        ]
+        assert report.unexplained_count == 0

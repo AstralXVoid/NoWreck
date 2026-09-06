@@ -29,14 +29,19 @@ _SAME_CHANGE: dict[ClaimType, ChangeType] = {
     ClaimType.REMOVE_ENUM: ChangeType.REMOVE_ENUM,
     ClaimType.ADD_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
     ClaimType.REMOVE_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
+    ClaimType.CHANGED_FUNCTION: ChangeType.CHANGED_FUNCTION,
+    ClaimType.CHANGED_CLASS: ChangeType.CHANGED_CLASS,
     ClaimType.FILE_CREATED: ChangeType.FILE_CREATED,
     ClaimType.FILE_DELETED: ChangeType.FILE_DELETED,
     ClaimType.CALLS_FUNCTION: ChangeType.CALL_DETECTED,
 }
 
-# Mapping from a ClaimType to its *opposite* ChangeType for
-# contradicted matching.
-_OPPOSITE_CHANGE: dict[ClaimType, ChangeType] = {
+# Mapping from a ClaimType to its *opposite* ChangeType(s) for
+# contradicted matching.  A ``CHANGED_*`` claim is contradicted when the
+# symbol was added *or* removed instead of edited, so its value is a
+# tuple of both alternatives; every other entry keeps the single-value
+# form (backward compatible).
+_OPPOSITE_CHANGE: dict[ClaimType, ChangeType | tuple[ChangeType, ...]] = {
     ClaimType.ADD_FUNCTION: ChangeType.REMOVE_FUNCTION,
     ClaimType.REMOVE_FUNCTION: ChangeType.ADD_FUNCTION,
     ClaimType.ADD_CLASS: ChangeType.REMOVE_CLASS,
@@ -47,6 +52,14 @@ _OPPOSITE_CHANGE: dict[ClaimType, ChangeType] = {
     ClaimType.REMOVE_ENUM: ChangeType.ADD_ENUM,
     ClaimType.ADD_TYPE_ALIAS: ChangeType.REMOVE_TYPE_ALIAS,
     ClaimType.REMOVE_TYPE_ALIAS: ChangeType.ADD_TYPE_ALIAS,
+    ClaimType.CHANGED_FUNCTION: (
+        ChangeType.REMOVE_FUNCTION,
+        ChangeType.ADD_FUNCTION,
+    ),
+    ClaimType.CHANGED_CLASS: (
+        ChangeType.REMOVE_CLASS,
+        ChangeType.ADD_CLASS,
+    ),
     ClaimType.FILE_CREATED: ChangeType.FILE_DELETED,
     ClaimType.FILE_DELETED: ChangeType.FILE_CREATED,
     # A claim that a call exists is contradicted by evidence that the
@@ -138,6 +151,23 @@ class ClaimVerifier:
     * **UNVERIFIABLE** — No relevant ``DetectedChange`` exists at all.
     * **Unexplained changes** — ``DetectedChange`` objects that no claim
       matched against.
+
+    ``CHANGED_*`` claims (v0.16.0):
+
+    * **CONFIRMED** — same-type ``CHANGED_*`` change with matching
+      file/symbol/parent_class.
+    * **CONTRADICTED** — the symbol was added *or* removed instead of
+      changed (the opposite set is ``(REMOVE_*, ADD_*)``).
+    * **UNVERIFIABLE** — no matching change; the symbol exists with an
+      identical body (identity existence is exhausted by CONFIRMED /
+      CONTRADICTED).
+
+    ``CALLS_FUNCTION`` matching is strict about the caller's class:
+    ``parent_class`` compares symmetrically, so a method-call claim
+    (``parent_class="Calculator"``) only matches evidence whose caller
+    lives in ``Calculator``, and a plain-call claim (``parent_class
+    None``) only matches plain-call evidence.  Cross-class claims with
+    a mismatched or missing class are UNVERIFIABLE.
     """
 
     @staticmethod
@@ -245,10 +275,13 @@ class ClaimVerifier:
         # 3. Try opposite-type (contradicted) match.
         opposite_type = _OPPOSITE_CHANGE.get(claim.type)
         if opposite_type is not None:
+            opposite_types = (
+                opposite_type if isinstance(opposite_type, tuple) else (opposite_type,)
+            )
             for i, change in enumerate(changes):
                 if i in matched_indices:
                     continue
-                if change.change_type is opposite_type and ClaimVerifier._fields_match(
+                if change.change_type in opposite_types and ClaimVerifier._fields_match(
                     claim, change, claim_path
                 ):
                     matched_indices.add(i)
