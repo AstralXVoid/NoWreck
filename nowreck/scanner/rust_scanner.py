@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Language, Parser, Tree
 
-from nowreck.scanner._tree_sitter_helpers import structural_hash
+from nowreck.scanner._tree_sitter_helpers import is_dunder_name, structural_hash
+from nowreck.scanner.call_evidence import CallEvidence
 from nowreck.scanner.symbol_index import Symbol
 
 if TYPE_CHECKING:
@@ -76,8 +77,8 @@ def scan_rust_file(
 def scan_rust_calls(
     file_path: str | Path,
     repo_root: str | Path | None = None,
-) -> set[tuple[Path, str, str]]:
-    """Parse a single ``.rs`` file and return all call tuples it contains."""
+) -> set[CallEvidence]:
+    """Parse a single ``.rs`` file and return all call evidence it contains."""
     path = Path(file_path).resolve()
     source_bytes = path.read_bytes()
 
@@ -182,37 +183,45 @@ def _collect_rust_symbols(
     return symbols
 
 
+def _impl_struct_name(
+    impl_node: Node,
+    source_bytes: bytes,
+) -> str | None:
+    """Type name an ``impl`` block targets.
+
+    Handles both simple ``impl Foo { ... }`` and generic
+    ``impl<T> Foo<T> { ... }`` forms.  Returns ``None`` when the block
+    has no target type (e.g. a bare ``impl`` for a primitive).
+    """
+    body_node = impl_node.child_by_field_name("body")
+    if body_node is None:
+        return None
+
+    for m in impl_node.children:
+        if m == body_node:
+            break
+        # Simple case: ``impl Foo { ... }``
+        if m.type == "type_identifier":
+            return _text_of(m, source_bytes)
+        # Generic case: ``impl<T> Foo<T> { ... }``
+        if m.type == "generic_type":
+            name_node = m.child_by_field_name("type")
+            if name_node is None:
+                name_node = m.child_by_field_name("name")
+            if name_node is not None:
+                return _text_of(name_node, source_bytes)
+    return None
+
+
 def _collect_impl_methods(
     impl_node: Node,
     source_bytes: bytes,
     file_path: Path,
     symbols: list[Symbol],
 ) -> None:
-    """Extract methods from an ``impl`` block.
-
-    Handles both simple ``impl Foo { ... }`` and generic
-    ``impl<T> Foo<T> { ... }`` forms.
-    """
+    """Extract methods from an ``impl`` block."""
     body_node = impl_node.child_by_field_name("body")
-    struct_name: str | None = None
-
-    if body_node is not None:
-        for m in impl_node.children:
-            if m == body_node:
-                break
-            # Simple case: ``impl Foo { ... }``
-            if m.type == "type_identifier":
-                struct_name = _text_of(m, source_bytes)
-            # Generic case: ``impl<T> Foo<T> { ... }``
-            elif m.type == "generic_type":
-                name_node = m.child_by_field_name("type")
-                if name_node is None:
-                    name_node = m.child_by_field_name("name")
-                if name_node is not None:
-                    struct_name = _text_of(
-                        name_node,
-                        source_bytes,
-                    )
+    struct_name = _impl_struct_name(impl_node, source_bytes)
 
     if body_node is None or struct_name is None:
         return
@@ -242,14 +251,14 @@ def _extract_rust_calls(
     root_node: Node,
     source_bytes: bytes,
     file_path: Path,
-) -> set[tuple[Path, str, str]]:
-    """Extract all call tuples from a parsed Rust CST."""
-    calls: set[tuple[Path, str, str]] = set()
-    function_nodes: list[tuple[str, Node]] = []
+) -> set[CallEvidence]:
+    """Extract all :class:`CallEvidence` objects from a parsed Rust CST."""
+    calls: set[CallEvidence] = set()
+    function_nodes: list[tuple[str, Node, str | None]] = []
 
     _collect_rust_callers(root_node, source_bytes, function_nodes)
 
-    for caller_name, func_node in function_nodes:
+    for caller_name, func_node, caller_parent_class in function_nodes:
         _find_rust_calls_in_body(
             func_node,
             caller_name,
@@ -257,6 +266,7 @@ def _extract_rust_calls(
             source_bytes,
             file_path,
             calls,
+            caller_parent_class=caller_parent_class,
         )
 
     return calls
@@ -265,16 +275,62 @@ def _extract_rust_calls(
 def _collect_rust_callers(
     node: Node,
     source_bytes: bytes,
-    result: list[tuple[str, Node]],
+    result: list[tuple[str, Node, str | None]],
+    parent_class: str | None = None,
 ) -> None:
-    """Recursively collect every ``function_item`` node."""
+    """Recursively collect every ``function_item`` node.
+
+    Functions inside an ``impl`` block carry the target type as their
+    ``parent_class`` (methods); every other function carries ``None``.
+    """
+    if node.type == "impl_item":
+        impl_type = _impl_struct_name(node, source_bytes)
+        for child in node.named_children:
+            _collect_rust_callers(
+                child,
+                source_bytes,
+                result,
+                parent_class=impl_type,
+            )
+        return
+
     if node.type == "function_item":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            result.append((_text_of(name_node, source_bytes), node))
+            result.append((_text_of(name_node, source_bytes), node, parent_class))
 
     for child in node.named_children:
-        _collect_rust_callers(child, source_bytes, result)
+        _collect_rust_callers(
+            child,
+            source_bytes,
+            result,
+            parent_class=parent_class,
+        )
+
+
+def _rust_called_name(func_node: Node, source_bytes: bytes) -> str | None:
+    """Called name of a Rust call target.
+
+    Accepts simple ``identifier`` targets (``foo()``) and
+    ``field_expression`` targets (``s.foo()``, ``s.a.b()``), resolving
+    to the final field name.  Returns ``None`` when the receiver is
+    itself a call (``f().bar()``), the field is dunder-style, or the
+    target is any other shape (``pkg::func()`` stays uncaptured).
+    """
+    if func_node.type == "identifier":
+        return _text_of(func_node, source_bytes)
+    if func_node.type == "field_expression":
+        value_node = func_node.child_by_field_name("value")
+        if value_node is not None and value_node.type == "call_expression":
+            return None
+        field_node = func_node.child_by_field_name("field")
+        if field_node is None:
+            return None
+        name = _text_of(field_node, source_bytes)
+        if is_dunder_name(name):
+            return None
+        return name
+    return None
 
 
 def _find_rust_calls_in_body(
@@ -283,17 +339,28 @@ def _find_rust_calls_in_body(
     root_func_node: Node,
     source_bytes: bytes,
     file_path: Path,
-    calls: set[tuple[Path, str, str]],
+    calls: set[CallEvidence],
+    caller_parent_class: str | None = None,
 ) -> None:
-    """Walk *node* finding ``call_expression`` with simple ``identifier`` targets."""
+    """Walk *node* finding ``call_expression`` with ``identifier`` or
+    ``field_expression`` targets."""
     for child in node.named_children:
         if child is not root_func_node and child.type == "function_item":
             continue
 
         if child.type == "call_expression":
             func_node = child.child_by_field_name("function")
-            if func_node is not None and func_node.type == "identifier":
-                calls.add((file_path, caller_name, _text_of(func_node, source_bytes)))
+            if func_node is not None:
+                called_name = _rust_called_name(func_node, source_bytes)
+                if called_name is not None:
+                    calls.add(
+                        CallEvidence(
+                            file_path=file_path,
+                            caller_name=caller_name,
+                            called_name=called_name,
+                            caller_parent_class=caller_parent_class,
+                        )
+                    )
 
         _find_rust_calls_in_body(
             child,
@@ -302,6 +369,7 @@ def _find_rust_calls_in_body(
             source_bytes,
             file_path,
             calls,
+            caller_parent_class=caller_parent_class,
         )
 
 

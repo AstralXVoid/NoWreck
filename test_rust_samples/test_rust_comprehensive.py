@@ -237,18 +237,18 @@ print(SECTION_SEP)
 
 path = test_dir / "edge_basic.rs"
 raw_calls = scan_rust_calls(path)
-calls = {(caller, called) for _, caller, called in raw_calls}
+calls = {(ev.caller_name, ev.called_name) for ev in raw_calls}
 check("greet does not make simple calls", not any(c == "greet" for c, _ in calls))
 
 path = test_dir / "edge_nested.rs"
 raw_calls = scan_rust_calls(path)
-calls = {(caller, called) for _, caller, called in raw_calls}
+calls = {(ev.caller_name, ev.called_name) for ev in raw_calls}
 check("outer calls inner (nested fn)", ("outer", "inner") in calls)
 check("outer calls helper", ("outer", "helper") in calls)
 
 path = test_dir / "edge_closures.rs"
 raw_calls = scan_rust_calls(path)
-calls = {(caller, called) for _, caller, called in raw_calls}
+calls = {(ev.caller_name, ev.called_name) for ev in raw_calls}
 check("process_data makes calls (iter/sum)", len(calls) > 0)
 
 

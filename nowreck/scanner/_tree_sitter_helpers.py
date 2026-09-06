@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tree_sitter import Node
 
+from nowreck.scanner.call_evidence import CallEvidence
 from nowreck.scanner.symbol_index import Symbol, SymbolType
 
 logger = logging.getLogger(__name__)
@@ -338,6 +339,39 @@ def _is_method_decorator(children: list[Node], index: int) -> bool:
     return j < len(children) and children[j].type == "method_definition"
 
 
+def is_dunder_name(name: str) -> bool:
+    """Whether *name* is a dunder-style name (``^__.*__$``).
+
+    Shared by all five languages: attribute/member/field/selector calls
+    whose final name is dunder-style (``obj.__x__()``) are never captured
+    as calls.
+    """
+    return len(name) >= 4 and name.startswith("__") and name.endswith("__")
+
+
+def _member_chain_called_name(
+    func_node: Node,
+    source_bytes: bytes,
+) -> str | None:
+    """Final property name of a JS/TS ``member_expression`` call target.
+
+    ``obj.bar()`` and ``a.b.c()`` both resolve to the last property name
+    (``bar`` / ``c``).  Returns ``None`` when the receiver is itself a
+    call (``f().bar()`` — dynamic receiver, no static name) or when the
+    property is dunder-style (``obj.__x__()``).
+    """
+    object_node = func_node.child_by_field_name("object")
+    if object_node is not None and object_node.type == "call_expression":
+        return None
+    property_node = func_node.child_by_field_name("property")
+    if property_node is None:
+        return None
+    name = text_of(property_node, source_bytes)
+    if is_dunder_name(name):
+        return None
+    return name
+
+
 def unwrap_parens(node: Node) -> Node | None:
     """Unwrap a chain of parenthesized expressions to reach the inner node.
 
@@ -614,25 +648,42 @@ def maybe_arrow_function_declarator(
 def collect_tree_sitter_callers(
     node: Node,
     source_bytes: bytes,
-    result: list[tuple[str, Node]],
+    result: list[tuple[str, Node, str | None]],
+    parent_class: str | None = None,
 ) -> None:
     """Recursively collect every ``function_declaration``,
     ``method_definition``, and named ``arrow_function`` / ``function_expression``
     assignee in the tree.
 
-    Each entry is ``(caller_name, function_node)`` where *function_node* is
-    the CST node whose body should be searched for ``call_expression``
-    children.
+    Each entry is ``(caller_name, function_node, caller_parent_class)``
+    where *function_node* is the CST node whose body should be searched
+    for ``call_expression`` children and *caller_parent_class* is the
+    name of the enclosing ``class_declaration`` (``None`` for top-level
+    functions).  Methods of a class expression stored in a field (e.g.
+    ``static B = class { m() {} }``) carry ``None`` — the expression has
+    no name to attribute them to.
     """
+    if node.type in ("class_declaration", "class_expression"):
+        name_node = node.child_by_field_name("name")
+        class_name = text_of(name_node, source_bytes) if name_node is not None else None
+        for child in node.named_children:
+            collect_tree_sitter_callers(
+                child,
+                source_bytes,
+                result,
+                parent_class=class_name,
+            )
+        return
+
     if node.type in ("function_declaration", "generator_function_declaration"):
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            result.append((text_of(name_node, source_bytes), node))
+            result.append((text_of(name_node, source_bytes), node, parent_class))
 
     elif node.type == "method_definition":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            result.append((text_of(name_node, source_bytes), node))
+            result.append((text_of(name_node, source_bytes), node, parent_class))
 
     elif node.type == "variable_declarator":
         value_node = node.child_by_field_name("value")
@@ -649,12 +700,18 @@ def collect_tree_sitter_callers(
                         (
                             text_of(name_node, source_bytes),
                             inner,
+                            parent_class,
                         )
                     )
 
     # Recurse into children to find nested functions
     for child in node.named_children:
-        collect_tree_sitter_callers(child, source_bytes, result)
+        collect_tree_sitter_callers(
+            child,
+            source_bytes,
+            result,
+            parent_class=parent_class,
+        )
 
 
 def find_tree_sitter_calls_in_body(
@@ -663,11 +720,17 @@ def find_tree_sitter_calls_in_body(
     root_func_node: Node,
     source_bytes: bytes,
     file_path: Path,
-    calls: set[tuple[Path, str, str]],
+    calls: set[CallEvidence],
+    caller_parent_class: str | None = None,
 ) -> None:
     """Walk *node* finding ``call_expression`` children whose function
-    target is a simple ``identifier`` (e.g. ``foo()`` — not
-    ``obj.method()``).
+    target is a simple ``identifier`` (``foo()``) or a
+    ``member_expression`` chain (``obj.bar()``, ``a.b.c()``,
+    ``this.foo()``).
+
+    ``called_name`` is the identifier text or the final property name of
+    the member chain.  Dunder-style properties and call receivers
+    (``f().bar()``) are excluded.
 
     Skips nested function-like nodes that are not *root_func_node* so
     their calls are not misattributed to the outer function.
@@ -698,9 +761,25 @@ def find_tree_sitter_calls_in_body(
 
         if child.type == "call_expression":
             func_node = child.child_by_field_name("function")
-            if func_node is not None and func_node.type == "identifier":
-                called_name = text_of(func_node, source_bytes)
-                calls.add((file_path, caller_name, called_name))
+            if func_node is not None:
+                if func_node.type == "identifier":
+                    called_name = text_of(func_node, source_bytes)
+                elif func_node.type == "member_expression":
+                    called_name = _member_chain_called_name(
+                        func_node,
+                        source_bytes,
+                    )
+                else:
+                    called_name = None
+                if called_name is not None:
+                    calls.add(
+                        CallEvidence(
+                            file_path=file_path,
+                            caller_name=caller_name,
+                            called_name=called_name,
+                            caller_parent_class=caller_parent_class,
+                        )
+                    )
 
         find_tree_sitter_calls_in_body(
             child,
@@ -709,6 +788,7 @@ def find_tree_sitter_calls_in_body(
             source_bytes,
             file_path,
             calls,
+            caller_parent_class=caller_parent_class,
         )
 
 
@@ -716,20 +796,21 @@ def extract_tree_sitter_calls_from_tree(
     root_node: Node,
     source_bytes: bytes,
     file_path: Path,
-) -> set[tuple[Path, str, str]]:
-    """Extract all ``(file_path, caller_name, called_name)`` tuples from
-    a parsed tree-sitter CST.
+) -> set[CallEvidence]:
+    """Extract all :class:`CallEvidence` objects from a parsed tree-sitter CST.
 
-    1. Finds every function-like node (the *callers*).
+    1. Finds every function-like node (the *callers*), carrying the
+       enclosing class name.
     2. For each caller, walks its body looking for ``call_expression``
-       nodes whose target is a simple ``identifier``.
+       nodes whose target is a simple ``identifier`` or a
+       ``member_expression`` chain.
     """
-    calls: set[tuple[Path, str, str]] = set()
-    function_nodes: list[tuple[str, Node]] = []
+    calls: set[CallEvidence] = set()
+    function_nodes: list[tuple[str, Node, str | None]] = []
 
     collect_tree_sitter_callers(root_node, source_bytes, function_nodes)
 
-    for caller_name, func_node in function_nodes:
+    for caller_name, func_node, caller_parent_class in function_nodes:
         find_tree_sitter_calls_in_body(
             func_node,
             caller_name,
@@ -737,6 +818,7 @@ def extract_tree_sitter_calls_from_tree(
             source_bytes=source_bytes,
             file_path=file_path,
             calls=calls,
+            caller_parent_class=caller_parent_class,
         )
 
     return calls

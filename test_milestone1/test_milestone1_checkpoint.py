@@ -338,28 +338,28 @@ class TestPureJsRepo:
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
 
-        # greet calls formatGreeting and console.log (but console.log is attribute call — excluded!)
+        # greet calls formatGreeting and console.log (member call — captured)
         # formatGreeting makes no calls
-        # farewell calls console.log (excluded — attribute call)
-        # multiply calls console.log (excluded)
+        # farewell calls console.log (member call — captured)
+        # multiply calls console.log (member call — captured)
         # computeAverage calls sum and len
-        # display calls console.log (excluded)
+        # display calls console.log (member call — captured)
         assert len(calls) >= 1  # at minimum, computeAverage calls sum, len
 
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(
+    def test_console_log_is_captured(
         self, pure_js_scan: tuple[ScanResult, Any]
     ) -> None:
-        """console.log() is an attribute call — should not appear as CALL_DETECTED."""
+        """console.log() is a member call — captured as CALL_DETECTED since v16."""
         scan, idx = pure_js_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
-        # These are all attribute calls and should be excluded
-        assert ("greet", "log") not in call_pairs
-        assert ("farewell", "log") not in call_pairs
+        # console.log has a Name receiver — captured with called_name "log"
+        assert ("greet", "log") in call_pairs
+        assert ("farewell", "log") in call_pairs
 
     def test_file_changes_detected(self) -> None:
         changes = _changes_between(None, PURE_JS_REPO)
@@ -474,28 +474,28 @@ class TestPureTsRepo:
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
 
-        # greet calls formatGreeting and console.log (but console.log is attribute call — excluded!)
+        # greet calls formatGreeting and console.log (member call — captured)
         # formatGreeting makes no calls
-        # farewell calls console.log (excluded)
-        # multiply calls console.log (excluded)
+        # farewell calls console.log (member call — captured)
+        # multiply calls console.log (member call — captured)
         # computeAverage calls sum and len
-        # display calls console.log (excluded)
+        # display calls console.log (member call — captured)
         assert len(calls) >= 1  # at minimum, computeAverage calls sum, len
 
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(
+    def test_console_log_is_captured(
         self, pure_ts_scan: tuple[ScanResult, Any]
     ) -> None:
-        """console.log() is an attribute call — should not appear as CALL_DETECTED."""
+        """console.log() is a member call — captured as CALL_DETECTED since v16."""
         scan, idx = pure_ts_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
-        # These are all attribute calls and should be excluded
-        assert ("greet", "log") not in call_pairs
-        assert ("farewell", "log") not in call_pairs
+        # console.log has a Name receiver — captured with called_name "log"
+        assert ("greet", "log") in call_pairs
+        assert ("farewell", "log") in call_pairs
 
     def test_file_changes_detected(self) -> None:
         changes = _changes_between(None, PURE_TS_REPO)
@@ -625,23 +625,23 @@ class TestPureTsxRepo:
 
         # Greeting calls formatGreeting
         # computeAverage calls sum and len
-        # multiply calls console.log (excluded — attribute)
+        # multiply calls console.log (member call — captured)
         assert len(calls) >= 3
 
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
         assert ("Greeting", "formatGreeting") in call_pairs
         assert ("computeAverage", "len") in call_pairs
 
-    def test_console_log_is_excluded(
+    def test_console_log_is_captured(
         self, pure_tsx_scan: tuple[ScanResult, Any]
     ) -> None:
-        """console.log() is an attribute call — should not appear as CALL_DETECTED."""
+        """console.log() is a member call — captured as CALL_DETECTED since v16."""
         scan, idx = pure_tsx_scan
         changes = detect_changes(ScanResult(), scan, SymbolIndex(), idx)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         call_pairs = {(c.caller_name, c.called_name) for c in calls}
-        # These are all attribute calls and should be excluded
-        assert ("Calculator", "log") not in call_pairs
+        # console.log has a Name receiver — captured with called_name "log"
+        assert ("multiply", "log") in call_pairs
 
     def test_jsx_element_usage_is_not_a_call(
         self, pure_tsx_scan: tuple[ScanResult, Any]
@@ -935,9 +935,9 @@ class TestMixedRepo:
         # Python calls: validate_all calls validate_email and print and len
         #               load_config calls print; run_app calls load_config, get_emails, validate_all
         #               Logger.log calls print
-        # JS calls: validateEmail calls console.log (excluded — attribute)
-        #           UiHandler.renderUser calls validateEmail and Logger.log (excluded)
-        #           UiHandler.renderDate calls formatDate and console.log (excluded)
+        # JS calls: validateEmail calls console.log (member call — captured)
+        #           UiHandler.renderUser calls validateEmail and Logger.log (member call — captured)
+        #           UiHandler.renderDate calls formatDate and console.log (member call — captured)
 
         # We should have at least several Python calls
         py_calls = {

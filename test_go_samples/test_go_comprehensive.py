@@ -262,7 +262,7 @@ print(SECTION_SEP)
 # Simple identifier calls
 path = test_dir / "edge_interfaces.go"
 raw_calls = scan_go_calls(path)
-calls = {(caller, called) for _, caller, called in raw_calls}
+calls = {(ev.caller_name, ev.called_name) for ev in raw_calls}
 check("Read calls copy (stdlib)", ("Read", "copy") in calls)
 # len() is called inside Read in basic.go but not edge_interfaces.go
 # Verify Read calls copy (which IS detected)
@@ -272,7 +272,7 @@ check("Write calls append (stdlib)", ("Write", "append") in calls)
 # Method calls on receivers are excluded (by design)
 path = test_dir / "edge_basic.go"
 raw_calls = scan_go_calls(path)
-calls = {(caller, called) for _, caller, called in raw_calls}
+calls = {(ev.caller_name, ev.called_name) for ev in raw_calls}
 check(
     "greet does NOT call Display (no simple calls in greet)",
     ("greet", "Display") not in calls,

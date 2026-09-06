@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from nowreck.detector.change_detector import (
 )
 from nowreck.scanner.repository_scanner import ScanResult
 from nowreck.scanner.symbol_index import (
+    Symbol,
     SymbolIndex,
+    SymbolType,
     build_symbol_index,
 )
 
@@ -359,8 +362,8 @@ class TestDetectCallChanges:
         draw_calls = {c.called_name for c in calls if c.caller_name == "draw"}
         assert "print" in draw_calls
 
-    def test_attribute_calls_are_excluded(self) -> None:
-        """Method-style calls like obj.method() are out of MVP scope."""
+    def test_attribute_calls_are_captured(self) -> None:
+        """Method-style calls like obj.method() are captured since v16."""
         post_src = {
             "app.py": textwrap.dedent("""\
                 def run():
@@ -370,9 +373,11 @@ class TestDetectCallChanges:
         pre_scan, post_scan, pre_sym, post_sym = _pre_post({}, post_src)
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
-        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
-        # "info" is an attribute call (logger.info()), not a simple name
-        assert "info" not in run_calls
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        # "info" is an attribute call (logger.info()) — captured, receiver is a Name
+        assert any(c.called_name == "info" for c in run_calls)
+        # Top-level caller carries no parent class
+        assert all(c.parent_class is None for c in run_calls)
 
     def test_nested_function_calls_not_attributed_to_outer(self) -> None:
         post_src = {
@@ -722,8 +727,8 @@ class TestDetectJsCallChanges:
         greet_calls = [c for c in calls if c.caller_name == "greet"]
         assert any(c.called_name == "print" for c in greet_calls)
 
-    def test_js_attribute_calls_are_excluded(self, tmp_path: Path) -> None:
-        """Method-style calls like logger.info() are out of MVP scope."""
+    def test_js_attribute_calls_are_captured(self, tmp_path: Path) -> None:
+        """Method-style calls like logger.info() are captured since v16."""
         post_scan, post_sym = self._write_and_scan(
             tmp_path,
             {
@@ -735,7 +740,7 @@ class TestDetectJsCallChanges:
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
         run_calls = {c.called_name for c in calls if c.caller_name == "run"}
-        assert "info" not in run_calls
+        assert "info" in run_calls
 
     def test_js_calls_not_reported_when_present_in_both(self, tmp_path: Path) -> None:
         """No CALL_DETECTED when pre and post both have the same call."""
@@ -1283,3 +1288,703 @@ class TestSymbolIdentityIgnoresLineShift:
         changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
         # No phantom pair...
         assert not [c for c in changes if c.symbol_name == "alpha"]
+
+
+# =========================================================================
+# Phase 2 (v16): CHANGED_FUNCTION / CHANGED_CLASS body-hash pass
+# =========================================================================
+
+
+class TestChangedFunctionPython:
+    """Body-hash change pass — Python sources."""
+
+    @staticmethod
+    def _changes(
+        pre_src: dict[str, str],
+        post_src: dict[str, str],
+    ) -> list[DetectedChange]:
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post(pre_src, post_src)
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    def test_body_edit_emits_changed_function(self) -> None:
+        pre = {"app.py": 'def greet():\n    return "hi"\n'}
+        post = {"app.py": 'def greet():\n    return "hello world"\n'}
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["greet"]
+        assert changed[0].parent_class is None
+        # A pure body edit is identity-exempt — no ADD/REMOVE pair
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_comment_only_edit_no_changed(self) -> None:
+        pre = {"app.py": "def greet():\n    return 1  # old comment\n"}
+        post = {"app.py": "def greet():\n    return 1  # new comment\n"}
+        changes = self._changes(pre, post)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_whitespace_only_edit_no_changed(self) -> None:
+        pre = {"app.py": "def greet():\n    return 1\n"}
+        post = {"app.py": "def greet():\n\n    return 1\n"}
+        changes = self._changes(pre, post)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_docstring_edit_emits_changed_function(self) -> None:
+        """Docstrings are body content — CHANGED is intentional."""
+        pre = {"app.py": 'def greet():\n    """old doc"""\n    return 1\n'}
+        post = {"app.py": 'def greet():\n    """new doc"""\n    return 1\n'}
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["greet"]
+
+    def test_line_shift_within_body_no_changed(self) -> None:
+        pre = {"app.py": "def greet():\n    a = 1\n    return a\n"}
+        post = {"app.py": "def greet():\n    a = 1\n\n    return a\n"}
+        changes = self._changes(pre, post)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_method_body_edit_changed_function_with_parent_class(self) -> None:
+        pre = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return "circle"
+                """,
+            )
+        }
+        post = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return "square"
+                """,
+            )
+        }
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["draw"]
+        assert changed[0].parent_class == "Circle"
+        # Method bodies are excluded from the class shell — no CHANGED_CLASS
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_method_add_no_changed_class(self) -> None:
+        pre = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return 1
+                """,
+            )
+        }
+        post = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return 1
+
+                    def resize(self):
+                        return 2
+                """,
+            )
+        }
+        changes = self._changes(pre, post)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["resize"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_method_remove_no_changed_class(self) -> None:
+        pre = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return 1
+
+                    def resize(self):
+                        return 2
+                """,
+            )
+        }
+        post = {
+            "app.py": textwrap.dedent(
+                """\
+                class Circle:
+                    def draw(self):
+                        return 1
+                """,
+            )
+        }
+        changes = self._changes(pre, post)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [c.symbol_name for c in removed] == ["resize"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_class_decorator_edit_changed_class_only(self) -> None:
+        pre = {"app.py": "@old_deco\nclass C:\n    x = 1\n"}
+        post = {"app.py": "@new_deco\nclass C:\n    x = 1\n"}
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["C"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_class_field_edit_changed_class_only(self) -> None:
+        pre = {"app.py": "class C:\n    x = 1\n"}
+        post = {"app.py": "class C:\n    x = 2\n"}
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["C"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_identity_change_is_remove_add_not_changed(self) -> None:
+        """A kind swap (function → class) is REMOVE + ADD, never CHANGED."""
+        pre = {"app.py": "def greet():\n    return 1\n"}
+        post = {"app.py": "class greet:\n    x = 1\n"}
+        changes = self._changes(pre, post)
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        added = _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert [c.symbol_name for c in removed] == ["greet"]
+        assert [c.symbol_name for c in added] == ["greet"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_both_hashes_none_defensive_no_changed(self) -> None:
+        """None hashes (legacy data) never fabricate a change."""
+        pre_sym = SymbolIndex(
+            symbols={
+                "greet": [
+                    Symbol(
+                        name="greet",
+                        symbol_type=SymbolType.FUNCTION,
+                        file_path=Path("app.py"),
+                        line_number=1,
+                        body_hash=None,
+                    )
+                ]
+            }
+        )
+        post_sym = SymbolIndex(
+            symbols={
+                "greet": [
+                    Symbol(
+                        name="greet",
+                        symbol_type=SymbolType.FUNCTION,
+                        file_path=Path("app.py"),
+                        line_number=1,
+                        body_hash=None,
+                    )
+                ]
+            }
+        )
+        changes = detect_changes(
+            ScanResult(),
+            ScanResult(),
+            pre_sym,
+            post_sym,
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_one_side_none_defensive_no_changed(self) -> None:
+        """A None on either side aborts the comparison (never fabricate)."""
+        pre_sym = SymbolIndex(
+            symbols={
+                "greet": [
+                    Symbol(
+                        name="greet",
+                        symbol_type=SymbolType.FUNCTION,
+                        file_path=Path("app.py"),
+                        line_number=1,
+                        body_hash=None,
+                    )
+                ]
+            }
+        )
+        post_sym = SymbolIndex(
+            symbols={
+                "greet": [
+                    Symbol(
+                        name="greet",
+                        symbol_type=SymbolType.FUNCTION,
+                        file_path=Path("app.py"),
+                        line_number=1,
+                        body_hash="abc123",
+                    )
+                ]
+            }
+        )
+        changes = detect_changes(
+            ScanResult(),
+            ScanResult(),
+            pre_sym,
+            post_sym,
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    # -- P2: async functions participate ----------------------------------
+
+    def test_async_def_added_between_snapshots(self) -> None:
+        pre: dict[str, str] = {}
+        post = {"app.py": "async def fetch():\n    return 1\n"}
+        changes = self._changes(pre, post)
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["fetch"]
+
+    def test_async_method_body_edit_changed_function_with_parent_class(self) -> None:
+        pre = {
+            "app.py": textwrap.dedent(
+                """\
+                class Api:
+                    async def get(self):
+                        return 1
+                """,
+            )
+        }
+        post = {
+            "app.py": textwrap.dedent(
+                """\
+                class Api:
+                    async def get(self):
+                        return 2
+                """,
+            )
+        }
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["get"]
+        assert changed[0].parent_class == "Api"
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_sync_to_async_conversion_is_changed_function(self) -> None:
+        """Symbol identity ignores node type — NOT REMOVE + ADD."""
+        pre = {"app.py": "def fetch():\n    return 1\n"}
+        post = {"app.py": "async def fetch():\n    return 1\n"}
+        changes = self._changes(pre, post)
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["fetch"]
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+
+class TestChangedCallCapture:
+    """Extended call capture — member/attribute chains (Python)."""
+
+    @staticmethod
+    def _call_changes(post_src: dict[str, str]) -> list[DetectedChange]:
+        pre_scan, post_scan, pre_sym, post_sym = _pre_post({}, post_src)
+        changes = detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+        return _changes_of_type(changes, ChangeType.CALL_DETECTED)
+
+    def test_self_method_call_captured_with_parent_class(self) -> None:
+        post_src = {
+            "app.py": textwrap.dedent(
+                """\
+                class Widget:
+                    def render(self):
+                        self.draw()
+                        return 1
+                """,
+            )
+        }
+        calls = self._call_changes(post_src)
+        render_calls = [c for c in calls if c.caller_name == "render"]
+        assert any(c.called_name == "draw" for c in render_calls)
+        assert all(c.parent_class == "Widget" for c in render_calls)
+
+    def test_member_chain_calls_captured_final_name(self) -> None:
+        post_src = {
+            "app.py": textwrap.dedent(
+                """\
+                def run():
+                    obj.bar()
+                    a.b.c()
+                    return 1
+                """,
+            )
+        }
+        calls = self._call_changes(post_src)
+        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
+        assert run_calls == {"bar", "c"}
+        # Top-level caller carries no parent class
+        assert all(c.parent_class is None for c in calls if c.caller_name == "run")
+
+    def test_dunder_attribute_calls_excluded(self) -> None:
+        """Dunder member calls are never captured; the inner ``super()``
+        simple call stays (pre-existing simple-name rule)."""
+        post_src = {
+            "app.py": textwrap.dedent(
+                """\
+                def run():
+                    obj.__x__()
+                    super().__init__()
+                    return 1
+                """,
+            )
+        }
+        calls = self._call_changes(post_src)
+        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
+        assert "__x__" not in run_calls
+        assert "__init__" not in run_calls
+
+    def test_call_receiver_calls_excluded(self) -> None:
+        """A member call whose receiver is a call is excluded; the inner
+        ``f()`` / ``super()`` simple call stays (pre-existing rule)."""
+        post_src = {
+            "app.py": textwrap.dedent(
+                """\
+                def run():
+                    f().bar()
+                    super().foo()
+                    return 1
+                """,
+            )
+        }
+        calls = self._call_changes(post_src)
+        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
+        assert "bar" not in run_calls
+        assert "foo" not in run_calls
+        # Simple receiver calls themselves are captured (pre-existing)
+        assert {"f", "super"} <= run_calls
+
+
+class TestChangedCrossLanguage:
+    """Body-hash CHANGED pass + member-call capture — JS/TS/Rust/Go."""
+
+    def _write_and_scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scanner = RepositoryScanner(tmp_path)
+        scan_result = scanner.scan()
+        return scan_result, build_symbol_index(scan_result)
+
+    def _changes_between(
+        self,
+        tmp_path: Path,
+        rel_path: str,
+        pre_src: str,
+        post_src: str,
+    ) -> list[DetectedChange]:
+        pre_scan, pre_sym = self._write_and_scan(tmp_path, {rel_path: pre_src})
+        post_scan, post_sym = self._write_and_scan(tmp_path, {rel_path: post_src})
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    def test_js_body_edit_emits_changed_function(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.js",
+            "function greet() { return 'hi'; }\n",
+            "function greet() { return 'hello'; }\n",
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["greet"]
+
+    def test_js_reformat_only_edit_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.js",
+            "function greet() { return 'hi'; }\n",
+            "function greet() {\n  return 'hi';\n}\n",
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_js_quote_style_swap_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.js",
+            "function greet() { return 'hi'; }\n",
+            'function greet() { return "hi"; }\n',
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_js_member_chains_captured(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "app.js": (
+                    "function run() {\n"
+                    "  obj.bar();\n"
+                    "  a.b.c();\n"
+                    "  this.x();\n"
+                    "  return 1;\n"
+                    "}\n"
+                )
+            },
+        )
+        changes = detect_changes(
+            ScanResult(),
+            post_scan,
+            SymbolIndex(),
+            post_sym,
+        )
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = {c.called_name for c in calls if c.caller_name == "run"}
+        assert run_calls == {"bar", "c", "x"}
+
+    def test_js_method_caller_parent_class(self, tmp_path: Path) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "app.js": (
+                    "class Greeter {\n"
+                    "  greet() {\n"
+                    "    this.format('hi');\n"
+                    "    return 1;\n"
+                    "  }\n"
+                    "}\n"
+                )
+            },
+        )
+        changes = detect_changes(
+            ScanResult(),
+            post_scan,
+            SymbolIndex(),
+            post_sym,
+        )
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greet_calls = [c for c in calls if c.caller_name == "greet"]
+        assert any(c.called_name == "format" for c in greet_calls)
+        assert all(c.parent_class == "Greeter" for c in greet_calls)
+
+    def test_ts_method_body_edit_changed_function_with_parent_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            ("class C {\n  method() {\n    return 2;\n  }\n}\n"),
+            ("class C {\n  method() {\n    return 3;\n  }\n}\n"),
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["method"]
+        assert changed[0].parent_class == "C"
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_ts_class_field_edit_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            "class C {\n  field = 1;\n  method() {\n    return 2;\n  }\n}\n",
+            "class C {\n  field = 2;\n  method() {\n    return 2;\n  }\n}\n",
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["C"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_ts_interface_edit_never_changed(self, tmp_path: Path) -> None:
+        """INTERFACE has no CHANGED claim type — its hash is never compared."""
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            "interface User {\n    name: string;\n}\n",
+            "interface User {\n    name: string;\n    age: number;\n}\n",
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_rust_fn_body_edit_emits_changed_function(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "main.rs",
+            'fn greet() -> &\'static str { "hi" }\n',
+            'fn greet() -> &\'static str { "hello" }\n',
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["greet"]
+
+    def test_rust_struct_field_edit_emits_changed_class(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "models.rs",
+            "struct User { name: String }\n",
+            "struct User { name: String, age: u8 }\n",
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["User"]
+
+    def test_rust_impl_method_calls_captured_with_parent_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "calc.rs": (
+                    "struct Calc;\n"
+                    "impl Calc {\n"
+                    "    fn run(&self) -> i32 {\n"
+                    "        self.add(1, 2);\n"
+                    "        0\n"
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        changes = detect_changes(
+            ScanResult(),
+            post_scan,
+            SymbolIndex(),
+            post_sym,
+        )
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        assert any(c.called_name == "add" for c in run_calls)
+        assert all(c.parent_class == "Calc" for c in run_calls)
+
+    def test_go_fn_body_edit_emits_changed_function(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "main.go",
+            'package main\n\nfunc greet() string { return "hi" }\n',
+            'package main\n\nfunc greet() string { return "hello" }\n',
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["greet"]
+
+    def test_go_struct_field_edit_emits_changed_class(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "models.go",
+            "package main\n\ntype User struct {\n    Name string\n}\n",
+            "package main\n\ntype User struct {\n    Name string\n    Age int\n}\n",
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["User"]
+
+    def test_go_selector_calls_captured_with_parent_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        post_scan, post_sym = self._write_and_scan(
+            tmp_path,
+            {
+                "calc.go": (
+                    "package main\n\n"
+                    "type Calc struct{}\n\n"
+                    "func (c *Calc) run() int {\n"
+                    "    c.add(1, 2)\n"
+                    '    fmt.Println("x")\n'
+                    "    return 0\n"
+                    "}\n"
+                )
+            },
+        )
+        changes = detect_changes(
+            ScanResult(),
+            post_scan,
+            SymbolIndex(),
+            post_sym,
+        )
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        assert {c.called_name for c in run_calls} == {"add", "Println"}
+        assert all(c.parent_class == "Calc" for c in run_calls)
+
+
+class TestCallExtractionPathResolution:
+    """Path resolution for non-Python call re-parsing (v16 hardening).
+
+    ``_extract_calls`` re-reads JS/TS/Rust/Go files from disk.  With a
+    ``repo_root`` on the scan result the relative file paths resolve
+    unambiguously; without one, the only safe inputs are absolute
+    paths.  Relative paths with no root must be skipped with a warning
+    — never guessed against the CWD, which could silently read a
+    different file.
+    """
+
+    def test_absolute_paths_without_repo_root_still_extract_calls(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Scanners run without a root store absolute paths; a hand-built
+        scan with absolute keys must still produce call evidence."""
+        from nowreck.scanner.javascript_scanner import scan_js_file
+
+        abs_path = tmp_path / "app.js"
+        abs_path.write_text(
+            "function greet() { return print('hi'); }\n",
+            encoding="utf-8",
+        )
+        symbols = scan_js_file(abs_path)  # repo_root=None → absolute paths
+        post_scan = ScanResult(js_files={abs_path: symbols}, repo_root=None)
+        post_sym = build_symbol_index(post_scan)
+
+        changes = detect_changes(ScanResult(), post_scan, SymbolIndex(), post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greet_calls = {c.called_name for c in calls if c.caller_name == "greet"}
+        assert "print" in greet_calls
+
+    def test_relative_paths_without_repo_root_skipped_with_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Relative paths with no repo_root are never guessed against the
+        CWD — even when the file would resolve there — they are skipped
+        with a warning instead of producing (possibly wrong) calls."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "app.js").write_text(
+            "function greet() { return print('hi'); }\n",
+            encoding="utf-8",
+        )
+        post_scan = ScanResult(js_files={Path("app.js"): []}, repo_root=None)
+        post_sym = SymbolIndex()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="nowreck.detector.change_detector",
+        ):
+            changes = detect_changes(ScanResult(), post_scan, SymbolIndex(), post_sym)
+
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert calls == []
+        assert any(
+            "no repo_root" in record.message and "app.js" in record.message
+            for record in caplog.records
+        )
+
+    def test_relative_paths_resolve_against_repo_root_when_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With a repo_root, relative paths resolve against it even when
+        the CWD is elsewhere (the standard pipeline case)."""
+        from nowreck.scanner.javascript_scanner import scan_js_file
+
+        monkeypatch.chdir(tmp_path.parent)  # CWD deliberately ≠ repo root
+        abs_path = tmp_path / "app.js"
+        abs_path.write_text(
+            "function greet() { return print('hi'); }\n",
+            encoding="utf-8",
+        )
+        symbols = scan_js_file(abs_path, repo_root=tmp_path)
+        post_scan = ScanResult(
+            js_files={Path("app.js"): symbols},
+            repo_root=tmp_path,
+        )
+        post_sym = build_symbol_index(post_scan)
+
+        changes = detect_changes(ScanResult(), post_scan, SymbolIndex(), post_sym)
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        greet_calls = {c.called_name for c in calls if c.caller_name == "greet"}
+        assert "print" in greet_calls

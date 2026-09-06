@@ -51,7 +51,7 @@ def symbols_by_name(path: Path) -> dict[str, list]:
 
 def call_tuples(path: Path) -> set[tuple[str, str]]:
     """Return (caller, called) pairs without file paths."""
-    return {(caller, called) for (_, caller, called) in scan_ts_calls(path)}
+    return {(ev.caller_name, ev.called_name) for ev in scan_ts_calls(path)}
 
 
 # =========================================================================

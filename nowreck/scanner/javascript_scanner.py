@@ -9,6 +9,7 @@ from nowreck.scanner._tree_sitter_helpers import (
     collect_top_level_symbols,
     extract_tree_sitter_calls_from_tree,
 )
+from nowreck.scanner.call_evidence import CallEvidence
 from nowreck.scanner.symbol_index import Symbol
 
 logger = logging.getLogger(__name__)
@@ -98,23 +99,25 @@ def scan_js_file(
 def scan_js_calls(
     file_path: str | Path,
     repo_root: str | Path | None = None,
-) -> set[tuple[Path, str, str]]:
-    """Parse a single ``.js`` file and return all call tuples it contains.
+) -> set[CallEvidence]:
+    """Parse a single ``.js`` file and return all call evidence it contains.
 
-    Each tuple is ``(file_path, caller_name, called_name)`` where
-    *caller_name* is the enclosing function/method/arrow-assignee name
-    and *called_name* is the name of the function being called.
+    Each :class:`CallEvidence` carries the file, the enclosing
+    function/method/arrow-assignee name (``caller_name``), the called
+    name (``called_name``), and the caller's enclosing class
+    (``caller_parent_class``, ``None`` for top-level functions).
 
-    Only simple identifier calls are captured (e.g. ``foo()`` — not
-    ``obj.method()``).
+    Captures simple identifier calls (``foo()``) and member chains
+    (``obj.bar()``, ``a.b.c()``, ``this.foo()``); dunder-style
+    properties and call receivers (``f().bar()``) are excluded.
 
     Args:
         file_path: Path to a JavaScript file.
         repo_root: Optional repository root for relativising paths.
 
     Returns:
-        A set of ``(file_path, caller_name, called_name)`` tuples.
-        Returns an empty set when the file has no calls or no callers.
+        A set of :class:`CallEvidence` objects.  Returns an empty set
+        when the file has no calls or no callers.
 
     Raises:
         FileNotFoundError: When *file_path* does not exist.

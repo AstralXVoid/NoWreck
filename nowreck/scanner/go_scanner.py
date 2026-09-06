@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Language, Parser, Tree
 
-from nowreck.scanner._tree_sitter_helpers import ASI_LEAF_EXCLUSIONS, structural_hash
+from nowreck.scanner._tree_sitter_helpers import (
+    ASI_LEAF_EXCLUSIONS,
+    is_dunder_name,
+    structural_hash,
+)
+from nowreck.scanner.call_evidence import CallEvidence
 from nowreck.scanner.symbol_index import Symbol
 
 if TYPE_CHECKING:
@@ -76,8 +81,8 @@ def scan_go_file(
 def scan_go_calls(
     file_path: str | Path,
     repo_root: str | Path | None = None,
-) -> set[tuple[Path, str, str]]:
-    """Parse a single ``.go`` file and return all call tuples it contains."""
+) -> set[CallEvidence]:
+    """Parse a single ``.go`` file and return all call evidence it contains."""
     path = Path(file_path).resolve()
     source_bytes = path.read_bytes()
 
@@ -237,14 +242,14 @@ def _extract_go_calls(
     root_node: Node,
     source_bytes: bytes,
     file_path: Path,
-) -> set[tuple[Path, str, str]]:
-    """Extract all call tuples from a parsed Go CST."""
-    calls: set[tuple[Path, str, str]] = set()
-    function_nodes: list[tuple[str, Node]] = []
+) -> set[CallEvidence]:
+    """Extract all :class:`CallEvidence` objects from a parsed Go CST."""
+    calls: set[CallEvidence] = set()
+    function_nodes: list[tuple[str, Node, str | None]] = []
 
     _collect_go_callers(root_node, source_bytes, function_nodes)
 
-    for caller_name, func_node in function_nodes:
+    for caller_name, func_node, caller_parent_class in function_nodes:
         _find_go_calls_in_body(
             func_node,
             caller_name,
@@ -252,6 +257,7 @@ def _extract_go_calls(
             source_bytes,
             file_path,
             calls,
+            caller_parent_class=caller_parent_class,
         )
 
     return calls
@@ -260,16 +266,55 @@ def _extract_go_calls(
 def _collect_go_callers(
     node: Node,
     source_bytes: bytes,
-    result: list[tuple[str, Node]],
+    result: list[tuple[str, Node, str | None]],
 ) -> None:
-    """Recursively collect every function/method declaration node."""
-    if node.type in ("function_declaration", "method_declaration"):
+    """Recursively collect every function/method declaration node.
+
+    Method declarations carry their receiver type as ``parent_class``;
+    plain functions carry ``None``.
+    """
+    if node.type == "function_declaration":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            result.append((_text_of(name_node, source_bytes), node))
+            result.append((_text_of(name_node, source_bytes), node, None))
+    elif node.type == "method_declaration":
+        name_node = node.child_by_field_name("name")
+        receiver_node = node.child_by_field_name("receiver")
+        if name_node is not None:
+            parent_class = (
+                _extract_receiver_type(receiver_node, source_bytes)
+                if receiver_node is not None
+                else None
+            )
+            result.append((_text_of(name_node, source_bytes), node, parent_class))
 
     for child in node.named_children:
         _collect_go_callers(child, source_bytes, result)
+
+
+def _go_called_name(func_node: Node, source_bytes: bytes) -> str | None:
+    """Called name of a Go call target.
+
+    Accepts simple ``identifier`` targets (``foo()``) and
+    ``selector_expression`` targets (``s.foo()``, ``pkg.Func()``,
+    ``s.a.b()``), resolving to the final field name.  Returns ``None``
+    when the receiver is itself a call (``f().bar()``), the field is
+    dunder-style, or the target is any other shape.
+    """
+    if func_node.type == "identifier":
+        return _text_of(func_node, source_bytes)
+    if func_node.type == "selector_expression":
+        operand_node = func_node.child_by_field_name("operand")
+        if operand_node is not None and operand_node.type == "call_expression":
+            return None
+        field_node = func_node.child_by_field_name("field")
+        if field_node is None:
+            return None
+        name = _text_of(field_node, source_bytes)
+        if is_dunder_name(name):
+            return None
+        return name
+    return None
 
 
 def _find_go_calls_in_body(
@@ -278,9 +323,11 @@ def _find_go_calls_in_body(
     root_func_node: Node,
     source_bytes: bytes,
     file_path: Path,
-    calls: set[tuple[Path, str, str]],
+    calls: set[CallEvidence],
+    caller_parent_class: str | None = None,
 ) -> None:
-    """Walk *node* finding ``call_expression`` with simple ``identifier`` targets."""
+    """Walk *node* finding ``call_expression`` with ``identifier`` or
+    ``selector_expression`` targets."""
     for child in node.named_children:
         if child is not root_func_node:
             if child.type in ("function_declaration", "method_declaration"):
@@ -288,8 +335,17 @@ def _find_go_calls_in_body(
 
         if child.type == "call_expression":
             func_node = child.child_by_field_name("function")
-            if func_node is not None and func_node.type == "identifier":
-                calls.add((file_path, caller_name, _text_of(func_node, source_bytes)))
+            if func_node is not None:
+                called_name = _go_called_name(func_node, source_bytes)
+                if called_name is not None:
+                    calls.add(
+                        CallEvidence(
+                            file_path=file_path,
+                            caller_name=caller_name,
+                            called_name=called_name,
+                            caller_parent_class=caller_parent_class,
+                        )
+                    )
 
         _find_go_calls_in_body(
             child,
@@ -298,6 +354,7 @@ def _find_go_calls_in_body(
             source_bytes,
             file_path,
             calls,
+            caller_parent_class=caller_parent_class,
         )
 
 

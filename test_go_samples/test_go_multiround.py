@@ -92,8 +92,8 @@ call_results: list[frozenset[tuple]] = []
 for run in range(3):
     all_calls: set[tuple] = set()
     for f in GO_FILES:
-        for fp, caller, called in scan_go_calls(f):
-            all_calls.add((str(fp), caller, called))
+        for ev in scan_go_calls(f):
+            all_calls.add((str(ev.file_path), ev.caller_name, ev.called_name))
     call_results.append(frozenset(all_calls))
 
 check(
