@@ -183,6 +183,46 @@ class TestPromptBuilder:
         assert '"claims"' in SYSTEM_PROMPT
         assert "ADD_FUNCTION" in SYSTEM_PROMPT
 
+    @pytest.mark.parametrize(
+        "prompt_name", ["SYSTEM_PROMPT", "PROMPT_SYSTEM_PROMPT_V10"]
+    )
+    def test_prompt_json_examples_are_valid_json(self, prompt_name: str) -> None:
+        """The 'Required JSON format' block in each prompt must parse as
+        valid JSON — a model echoing it verbatim must produce parseable
+        output (regression: the v10 patch example contained raw newlines
+        inside a JSON string, making the example invalid)."""
+        import re
+
+        from nowreck.model import prompts
+
+        prompt = getattr(prompts, prompt_name)
+        match = re.search(
+            r"Required JSON format:\n(.*?)\n\nField notes:",
+            prompt,
+            re.DOTALL,
+        )
+        assert match, prompt_name
+        example = json.loads(match.group(1))  # raises if malformed
+        assert "claims" in example
+        for claim in example["claims"]:
+            assert claim["type"] in {
+                "ADD_FUNCTION",
+                "REMOVE_FUNCTION",
+                "ADD_CLASS",
+                "REMOVE_CLASS",
+                "ADD_INTERFACE",
+                "REMOVE_INTERFACE",
+                "ADD_ENUM",
+                "REMOVE_ENUM",
+                "ADD_TYPE_ALIAS",
+                "REMOVE_TYPE_ALIAS",
+                "CHANGED_FUNCTION",
+                "CHANGED_CLASS",
+                "FILE_CREATED",
+                "FILE_DELETED",
+                "CALLS_FUNCTION",
+            }
+
     def test_prompt_renders_interface_change(self) -> None:
         """A type-level change renders with its human label, not a raw
         enum name."""

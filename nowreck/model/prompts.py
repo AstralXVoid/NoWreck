@@ -143,7 +143,7 @@ Required JSON format:
       "explanation": "Why the body of this existing function was changed."
     }
   ],
-  "patch": "--- a/file.py\n+++ b/file.py\n@@ ... @@\n ...diff..."
+  "patch": "--- a/file.py\\n+++ b/file.py\\n@@ ... @@\\n ...diff..."
 }
 
 Field notes:
