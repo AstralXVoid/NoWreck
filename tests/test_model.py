@@ -199,6 +199,45 @@ class TestPromptBuilder:
         assert "User" in content
         assert "models.ts" in content
 
+    def test_system_prompt_lists_changed_types(self) -> None:
+        """Both CHANGED claim types appear in the taxonomy and JSON
+        example of the system prompt."""
+        assert "CHANGED_FUNCTION" in SYSTEM_PROMPT
+        assert "CHANGED_CLASS" in SYSTEM_PROMPT
+        assert "The body of an existing function was changed" in SYSTEM_PROMPT
+        assert '"type": "CHANGED_FUNCTION"' in SYSTEM_PROMPT
+
+    def test_v10_prompt_lists_changed_types(self) -> None:
+        """Both CHANGED claim types appear in the v10 prompt taxonomy and
+        JSON example."""
+        from nowreck.model.prompts import PROMPT_SYSTEM_PROMPT_V10
+
+        assert "CHANGED_FUNCTION" in PROMPT_SYSTEM_PROMPT_V10
+        assert "CHANGED_CLASS" in PROMPT_SYSTEM_PROMPT_V10
+        assert '"type": "CHANGED_FUNCTION"' in PROMPT_SYSTEM_PROMPT_V10
+
+    def test_change_labels_cover_changed_and_call_removed(self) -> None:
+        """_CHANGE_LABELS covers CHANGED_* and CALL_REMOVED (P4 fix)."""
+        from nowreck.model.prompts import _CHANGE_LABELS
+
+        assert _CHANGE_LABELS[ChangeType.CHANGED_FUNCTION] == "Function changed"
+        assert _CHANGE_LABELS[ChangeType.CHANGED_CLASS] == "Class changed"
+        assert _CHANGE_LABELS[ChangeType.CALL_REMOVED] == "Call removed"
+
+    def test_changed_change_renders_with_label(self) -> None:
+        """A CHANGED_FUNCTION change renders as 'Function changed', not
+        the raw enum name."""
+        changes = [
+            _make_change(
+                ChangeType.CHANGED_FUNCTION,
+                file_path="app.py",
+                symbol_name="greet",
+            ),
+        ]
+        messages = PromptBuilder.build(changes)
+        content = messages[1]["content"]
+        assert "Function changed: greet (app.py)" in content
+
 
 # ---------------------------------------------------------------------------
 # ModelConfig

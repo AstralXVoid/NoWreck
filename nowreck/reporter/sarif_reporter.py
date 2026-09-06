@@ -142,6 +142,22 @@ _SARIF_RULES: list[dict[str, Any]] = [
         },
         "defaultConfiguration": {"level": "note"},
     },
+    {
+        "id": "NW016",
+        "name": "HallucinatedFunctionChange",
+        "shortDescription": {
+            "text": "AI claimed a function was changed but no body change was detected"
+        },
+        "defaultConfiguration": {"level": "error"},
+    },
+    {
+        "id": "NW017",
+        "name": "HallucinatedClassChange",
+        "shortDescription": {
+            "text": "AI claimed a class was changed but no body change was detected"
+        },
+        "defaultConfiguration": {"level": "error"},
+    },
 ]
 
 # Build lookup: rule index by rule ID
@@ -159,6 +175,8 @@ _CLAIM_TYPE_TO_RULE: dict[str, str] = {
     "REMOVE_ENUM": "NW008",
     "ADD_TYPE_ALIAS": "NW009",
     "REMOVE_TYPE_ALIAS": "NW010",
+    "CHANGED_FUNCTION": "NW016",
+    "CHANGED_CLASS": "NW017",
     "FILE_CREATED": "NW011",
     "FILE_DELETED": "NW012",
     "CALLS_FUNCTION": "NW013",

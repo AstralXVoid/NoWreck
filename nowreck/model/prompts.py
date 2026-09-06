@@ -33,6 +33,8 @@ Valid claim types:
 - REMOVE_ENUM      — An enum was removed from a file.
 - ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX).
 - REMOVE_TYPE_ALIAS — A type alias was removed from a file.
+- CHANGED_FUNCTION — The body of an existing function was changed.
+- CHANGED_CLASS    — The body of an existing class was changed.
 - FILE_CREATED     — An entirely new file was created.
 - FILE_DELETED     — An entire file was deleted.
 - CALLS_FUNCTION   — A function now calls another function.
@@ -49,6 +51,16 @@ Required JSON format:
       "called_name": null,
       "confidence": 0.95,
       "explanation": "Natural language explanation of why this change was made."
+    },
+    {
+      "type": "CHANGED_FUNCTION",
+      "symbol_name": "function_name",
+      "file_path": "path/to/file.py",
+      "parent_class": null,
+      "caller_name": null,
+      "called_name": null,
+      "confidence": 0.95,
+      "explanation": "Why the body of this existing function was changed."
     }
   ]
 }
@@ -57,6 +69,9 @@ Field notes:
 - symbol_name: Required for function/class claims; omit (null) for file-level claims.
 - file_path: Required for all claims. Relative to repository root.
 - parent_class: Required when the symbol is a method inside a class.
+- parent_class: For CALLS_FUNCTION claims about a method call (the caller is
+  a method inside a class), parent_class is REQUIRED — the class name must
+  match exactly or the claim cannot be verified.
 - caller_name / called_name: Required for CALLS_FUNCTION claims.
 - confidence: 0.0 (guess) to 1.0 (certain).\
 """
@@ -98,6 +113,8 @@ Valid claim types:
 - REMOVE_ENUM      — An enum was removed.
 - ADD_TYPE_ALIAS   — A type alias was added.
 - REMOVE_TYPE_ALIAS — A type alias was removed.
+- CHANGED_FUNCTION — The body of an existing function was changed.
+- CHANGED_CLASS    — The body of an existing class was changed.
 - FILE_CREATED     — An entirely new file was created.
 - FILE_DELETED     — An entire file was deleted.
 - CALLS_FUNCTION   — A function now calls another function.
@@ -114,6 +131,16 @@ Required JSON format:
       "called_name": null,
       "confidence": 0.95,
       "explanation": "Why this change was made."
+    },
+    {
+      "type": "CHANGED_FUNCTION",
+      "symbol_name": "function_name",
+      "file_path": "path/to/file.py",
+      "parent_class": null,
+      "caller_name": null,
+      "called_name": null,
+      "confidence": 0.95,
+      "explanation": "Why the body of this existing function was changed."
     }
   ],
   "patch": "--- a/file.py\n+++ b/file.py\n@@ ... @@\n ...diff..."
@@ -123,6 +150,9 @@ Field notes:
 - symbol_name: Required for function/class/interface/enum claims.
 - file_path: Required for all claims. Relative to repository root.
 - parent_class: Required when the symbol is a method inside a class.
+- parent_class: For CALLS_FUNCTION claims about a method call (the caller is
+  a method inside a class), parent_class is REQUIRED — the class name must
+  match exactly or the claim cannot be verified.
 - caller_name / called_name: Required for CALLS_FUNCTION claims.
 - confidence: 0.0 (guess) to 1.0 (certain).
 - patch: A unified diff string. Use --- a/ and +++ b/ prefixes.
@@ -273,7 +303,10 @@ _CHANGE_LABELS: dict[ChangeType, str] = {
     ChangeType.REMOVE_ENUM: "Enum removed",
     ChangeType.ADD_TYPE_ALIAS: "Type alias added",
     ChangeType.REMOVE_TYPE_ALIAS: "Type alias removed",
+    ChangeType.CHANGED_FUNCTION: "Function changed",
+    ChangeType.CHANGED_CLASS: "Class changed",
     ChangeType.FILE_CREATED: "File created",
     ChangeType.FILE_DELETED: "File deleted",
     ChangeType.CALL_DETECTED: "Call detected",
+    ChangeType.CALL_REMOVED: "Call removed",
 }

@@ -71,8 +71,8 @@ class TestSarifRules:
     """Verify SARIF rule definitions are correct."""
 
     def test_rule_count(self) -> None:
-        """Should have exactly 15 rules."""
-        assert len(_SARIF_RULES) == 15
+        """Should have exactly 17 rules."""
+        assert len(_SARIF_RULES) == 17
 
     def test_rule_ids_are_unique(self) -> None:
         """All rule IDs should be unique."""
@@ -100,12 +100,24 @@ class TestSarifRules:
         nw015 = next(r for r in _SARIF_RULES if r["id"] == "NW015")
         assert nw015["defaultConfiguration"]["level"] == "note"
 
+    def test_nw016_is_error(self) -> None:
+        """Rule NW016 (HallucinatedFunctionChange) should have level 'error'."""
+        nw016 = next(r for r in _SARIF_RULES if r["id"] == "NW016")
+        assert nw016["defaultConfiguration"]["level"] == "error"
+        assert nw016["name"] == "HallucinatedFunctionChange"
+
+    def test_nw017_is_error(self) -> None:
+        """Rule NW017 (HallucinatedClassChange) should have level 'error'."""
+        nw017 = next(r for r in _SARIF_RULES if r["id"] == "NW017")
+        assert nw017["defaultConfiguration"]["level"] == "error"
+        assert nw017["name"] == "HallucinatedClassChange"
+
 
 class TestClaimTypeToRule:
     """Verify claim type to rule mapping."""
 
     def test_all_claim_types_mapped(self) -> None:
-        """All 13 claim types should map to a rule."""
+        """All 15 claim types should map to a rule."""
         expected_types = {
             "ADD_FUNCTION",
             "REMOVE_FUNCTION",
@@ -117,11 +129,18 @@ class TestClaimTypeToRule:
             "REMOVE_ENUM",
             "ADD_TYPE_ALIAS",
             "REMOVE_TYPE_ALIAS",
+            "CHANGED_FUNCTION",
+            "CHANGED_CLASS",
             "FILE_CREATED",
             "FILE_DELETED",
             "CALLS_FUNCTION",
         }
         assert set(_CLAIM_TYPE_TO_RULE.keys()) == expected_types
+
+    def test_changed_types_map_to_nw016_nw017(self) -> None:
+        """CHANGED claim types map to their dedicated rules."""
+        assert _CLAIM_TYPE_TO_RULE["CHANGED_FUNCTION"] == "NW016"
+        assert _CLAIM_TYPE_TO_RULE["CHANGED_CLASS"] == "NW017"
 
     def test_mapping_values_are_valid_rule_ids(self) -> None:
         """All mapped rule IDs should exist in the rules list."""
@@ -233,6 +252,40 @@ class TestSarifReporter:
         assert results[0]["ruleId"] == "NW015"
         assert results[0]["level"] == "note"
 
+    def test_changed_function_contradicted_uses_nw016(self) -> None:
+        """CHANGED_FUNCTION CONTRADICTED should use NW016 with level error."""
+        reporter = SarifReporter()
+        claim = _make_claim(ClaimType.CHANGED_FUNCTION)
+        change = _make_change(ChangeType.REMOVE_FUNCTION)
+        result = VerificationResult(
+            claim=claim, verdict=Verdict.CONTRADICTED, matched_change=change
+        )
+        report = VerificationReport(results=[result])
+
+        output = reporter.report(report)
+        data = json.loads(output)
+        results = data["runs"][0]["results"]
+
+        assert results[0]["ruleId"] == "NW016"
+        assert results[0]["level"] == "error"
+
+    def test_changed_class_contradicted_uses_nw017(self) -> None:
+        """CHANGED_CLASS CONTRADICTED should use NW017 with level error."""
+        reporter = SarifReporter()
+        claim = _make_claim(ClaimType.CHANGED_CLASS)
+        change = _make_change(ChangeType.ADD_CLASS)
+        result = VerificationResult(
+            claim=claim, verdict=Verdict.CONTRADICTED, matched_change=change
+        )
+        report = VerificationReport(results=[result])
+
+        output = reporter.report(report)
+        data = json.loads(output)
+        results = data["runs"][0]["results"]
+
+        assert results[0]["ruleId"] == "NW017"
+        assert results[0]["level"] == "error"
+
     def test_calls_function_contradicted(self) -> None:
         """CALLS_FUNCTION CONTRADICTED should use NW013."""
         reporter = SarifReporter()
@@ -310,9 +363,9 @@ class TestSarifReporter:
         data = json.loads(output)
         rules = data["runs"][0]["tool"]["driver"]["rules"]
 
-        assert len(rules) == 15
+        assert len(rules) == 17
         assert rules[0]["id"] == "NW001"
-        assert rules[-1]["id"] == "NW015"
+        assert rules[-1]["id"] == "NW017"
 
 
 # ---------------------------------------------------------------------------

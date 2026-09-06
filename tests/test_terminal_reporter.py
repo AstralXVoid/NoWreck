@@ -492,6 +492,68 @@ class TestReporterEvidence:
         evidence = TerminalReporter._describe_evidence(dc)
         assert "removed" in evidence
 
+    def test_changed_function_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.CHANGED_FUNCTION,
+            file_path="hello.py",
+            symbol_name="greet",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Function 'greet' in hello.py: body changed"
+
+    def test_changed_class_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.CHANGED_CLASS,
+            file_path="calc.py",
+            symbol_name="Calculator",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Class 'Calculator' in calc.py: body changed"
+
+    def test_changed_method_evidence_with_parent_class(self) -> None:
+        dc = _make_change(
+            ChangeType.CHANGED_FUNCTION,
+            file_path="widget.py",
+            symbol_name="render",
+            parent_class="Widget",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Function 'render' in Widget in widget.py: body changed"
+
+    def test_method_call_evidence_renders_class_prefix(self) -> None:
+        """Call evidence renders Class.method (v16 new behavior) when the
+        caller's class is known."""
+        dc = _make_change(
+            ChangeType.CALL_DETECTED,
+            file_path="calc.py",
+            parent_class="Calculator",
+            caller_name="process",
+            called_name="validate",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == ("Function 'Calculator.process' calls 'validate' in calc.py")
+
+    def test_plain_call_evidence_unchanged(self) -> None:
+        """Plain-call evidence keeps its v0.15 rendering (no class)."""
+        dc = _make_change(
+            ChangeType.CALL_DETECTED,
+            file_path="app.py",
+            caller_name="main",
+            called_name="run",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert evidence == "Function 'main' calls 'run' in app.py"
+
+    def test_call_removed_evidence(self) -> None:
+        dc = _make_change(
+            ChangeType.CALL_REMOVED,
+            file_path="app.py",
+            caller_name="main",
+            called_name="run",
+        )
+        evidence = TerminalReporter._describe_evidence(dc)
+        assert "no longer calls" in evidence
+
 
 # ---------------------------------------------------------------------------
 # TerminalReporter — full integration scenario

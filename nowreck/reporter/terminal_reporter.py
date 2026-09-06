@@ -410,6 +410,14 @@ class TerminalReporter:
             return f"File '{change.file_path}' was created"
         if change.change_type is ChangeType.FILE_DELETED:
             return f"File '{change.file_path}' was deleted"
+        if change.change_type is ChangeType.CHANGED_FUNCTION:
+            owner = f" in {change.parent_class}" if change.parent_class else ""
+            return (
+                f"Function '{change.symbol_name}'{owner}"
+                f" in {change.file_path}: body changed"
+            )
+        if change.change_type is ChangeType.CHANGED_CLASS:
+            return f"Class '{change.symbol_name}' in {change.file_path}: body changed"
         if change.change_type in (
             ChangeType.CALL_DETECTED,
             ChangeType.CALL_REMOVED,
@@ -419,8 +427,11 @@ class TerminalReporter:
                 if change.change_type is ChangeType.CALL_DETECTED
                 else "no longer calls"
             )
+            caller = change.caller_name or ""
+            if change.parent_class:
+                caller = f"{change.parent_class}.{caller}"
             return (
-                f"Function '{change.caller_name}' {verb} "
+                f"Function '{caller}' {verb} "
                 f"'{change.called_name}' in {change.file_path}"
             )
         return f"Change detected: {change}"
@@ -677,6 +688,8 @@ _CLAIM_TYPE_LABELS: dict[ClaimType, str] = {
     ClaimType.REMOVE_ENUM: "REMOVE_ENUM",
     ClaimType.ADD_TYPE_ALIAS: "ADD_TYPE_ALIAS",
     ClaimType.REMOVE_TYPE_ALIAS: "REMOVE_TYPE_ALIAS",
+    ClaimType.CHANGED_FUNCTION: "CHANGED_FUNCTION",
+    ClaimType.CHANGED_CLASS: "CHANGED_CLASS",
     ClaimType.FILE_CREATED: "FILE_CREATED",
     ClaimType.FILE_DELETED: "FILE_DELETED",
     ClaimType.CALLS_FUNCTION: "CALLS_FUNCTION",
@@ -693,7 +706,10 @@ _CHANGE_TYPE_LABELS: dict[ChangeType, str] = {
     ChangeType.REMOVE_ENUM: "REMOVE_ENUM",
     ChangeType.ADD_TYPE_ALIAS: "ADD_TYPE_ALIAS",
     ChangeType.REMOVE_TYPE_ALIAS: "REMOVE_TYPE_ALIAS",
+    ChangeType.CHANGED_FUNCTION: "CHANGED_FUNCTION",
+    ChangeType.CHANGED_CLASS: "CHANGED_CLASS",
     ChangeType.FILE_CREATED: "FILE_CREATED",
     ChangeType.FILE_DELETED: "FILE_DELETED",
     ChangeType.CALL_DETECTED: "CALL_DETECTED",
+    ChangeType.CALL_REMOVED: "CALL_REMOVED",
 }
