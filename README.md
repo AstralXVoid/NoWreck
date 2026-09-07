@@ -2,7 +2,7 @@
 
 # NoWreck
 
-**Deterministic AI Verifier** — v0.15.0
+**Deterministic AI Verifier** — v0.16.0
 
 </div>
 <div align="center">
@@ -116,7 +116,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.15.0
+# → nowreck 0.16.0
 
 nowreck
 # → shows banner + usage
@@ -607,13 +607,18 @@ contradicting change exists (e.g., claim says "added" but detection shows
 | `REMOVE_ENUM` | An enum was removed (TS/TSX, Rust) | Structural existence check |
 | `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX, Rust, Go) | Structural existence check |
 | `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX, Rust, Go) | Structural existence check |
+| `CHANGED_FUNCTION` | A function's body was changed | Structural body-diff |
+| `CHANGED_CLASS` | A class's shell (fields, bases, decorators) was changed | Structural body-diff |
 | `FILE_CREATED` | A new file appeared | File-list diff |
 | `FILE_DELETED` | A file was removed | File-list diff |
 | `CALLS_FUNCTION` | A function now calls another | Structural call-site detection |
 
-All thirteen are evaluated using deterministic structural evidence. Note
+All fifteen are evaluated using deterministic structural evidence. Note
 that the mechanisms differ: `CALLS_FUNCTION` uses call-site analysis, while
-the existence-based claim types use symbol-existence comparison.
+the existence-based claim types use symbol-existence comparison, and the
+`CHANGED_*` types use a formatting-insensitive structural body hash (edited
+logic always changes it; reformatting, comment, and quote-style edits do
+not).
 
 ### Claim fields
 
@@ -628,7 +633,9 @@ Every claim accepts:
 - `line_number` — optional 1-based line number
 
 `CALLS_FUNCTION` additionally requires `caller_name` (the function that
-makes the call) and `called_name` (the function being called).
+makes the call) and `called_name` (the function being called). When the
+caller is a method, `parent_class` is **required** — evidence is matched
+strictly on the enclosing class.
 
 ---
 
@@ -719,7 +726,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.15.0",
+  "version": "0.16.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -775,7 +782,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.15.0",
+  "version": "0.16.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -829,10 +836,18 @@ NoWreck verifies structure, not semantics. Be aware of these boundaries:
   dynamic imports, `getattr()` / `setattr()` with dynamic arguments,
   metaclasses, monkey-patching, and reflection fall outside the scanner's
   supported structural analysis and may be reported as `UNVERIFIABLE`.
-- **`CALLS_FUNCTION` checks direct identifier calls only** — it verifies
-  calls of the form `sanitize_input()`. It does **not** resolve
-  `obj.sanitize_input()` or chained expressions, and it does not perform
-  full semantic call-graph resolution.
+- **`CALLS_FUNCTION` resolves member chains, not the full call graph** —
+  direct calls (`sanitize_input()`) and member/attribute/field/selector
+  calls (`obj.sanitize_input()`, `self.foo()`, `a.b.c()`, `pkg.Func()`,
+  `s.foo()`) are captured with the final name as `called_name`; receivers
+  that are themselves calls (`f().bar()`) and dunder-style names
+  (`obj.__x__()`) are excluded. No semantic call-graph resolution is
+  performed.
+- **`CHANGED_*` claims verify body edits structurally** — `CHANGED_FUNCTION`
+  / `CHANGED_CLASS` use a formatting-insensitive structural hash, so body
+  edits confirm, and reformat-only / comment-only / quote-style edits do
+  not. Python `async def` functions and methods are indexed (methods
+  inside classes) like their sync counterparts.
 - **No cross-file resolution** beyond direct name matching.
 - **No semantic analysis** — NoWreck verifies structural facts, not intent,
   code quality, or correctness.
@@ -980,7 +995,7 @@ jobs:
 
 ## Roadmap
 
-**v0.15.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.16.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -1000,6 +1015,8 @@ not present in the current release.
 | CI/CD integration (SARIF, JUnit, --compare) | ✅ v0.13.0 |
 | `--claims @file.json` — read claims from a file instead of inline JSON only | ✅ v0.14.0 |
 | PyPI publishing — `pip install nowreck` | ✅ v0.15.0 |
+| `CHANGED` claims (verifiable "I modified X") — function/class body edits | ✅ v0.16.0 |
+| Method/attribute call detection (`obj.method()`, `self.foo()`) with strict class matching | ✅ v0.16.0 |
 
 ---
 
@@ -1017,4 +1034,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.15.0 — September 2026*
+*NoWreck v0.16.0 — September 2026*

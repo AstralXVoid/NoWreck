@@ -589,6 +589,96 @@ class TestV10Flags:
         assert args.post is None
 
 
+class TestPromptModeMissingApiKey:
+    """Prompt mode with no API key must fail with a clean error — never
+    a raw traceback (the ModelError is raised inside ``verify()``, after
+    the snapshot is captured)."""
+
+    def test_missing_api_key_is_clean_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)  # no .nowreck/config.json here
+        monkeypatch.delenv("NOWRECK_API_KEY", raising=False)
+        (tmp_path / "app.py").write_text(
+            "def greet():\n    return 'hi'\n", encoding="utf-8"
+        )
+
+        parser = build_parser()
+        args = parser.parse_args(["fix", "add a greet function"])
+
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+
+        assert rc == 1
+        assert "Error:" in err
+        assert "No API key" in err
+        assert "Traceback" not in err
+
+    def test_missing_api_key_with_manual_snapshots_is_clean_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """The manual-snapshot prompt path resolves --pre/--post inside
+        the same try — missing key is a clean error there too."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("NOWRECK_API_KEY", raising=False)
+        pre = tmp_path / "pre"
+        post = tmp_path / "post"
+        pre.mkdir()
+        post.mkdir()
+        (pre / "app.py").write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+        (post / "app.py").write_text(
+            "def greet():\n    return 'hello'\n", encoding="utf-8"
+        )
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["fix", "change greet", "--pre", str(pre), "--post", str(post)]
+        )
+
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+
+        assert rc == 1
+        assert "Error:" in err
+        assert "Traceback" not in err
+
+    def test_invalid_manual_snapshot_path_is_clean_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A nonexistent --pre/--post path in prompt mode raises ValueError
+        inside the handler — caught, not a traceback."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("NOWRECK_API_KEY", raising=False)
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "fix",
+                "change greet",
+                "--pre",
+                str(tmp_path / "nope"),
+                "--post",
+                str(tmp_path / "nope2"),
+            ]
+        )
+
+        rc = handle_fix(args)
+        _, err = capsys.readouterr()
+
+        assert rc == 1
+        assert "Error:" in err
+        assert "Traceback" not in err
+
+
 class TestBuildModelConfigValidation:
     """P2-08: invalid stored temperature surfaces as ModelError."""
 

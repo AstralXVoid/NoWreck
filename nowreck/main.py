@@ -21,7 +21,7 @@ from nowreck.verifier.verifier import ClaimVerifier, VerificationReport
 # ---------------------------------------------------------------------------
 
 _BANNER = r"""  +------------------------------------+
-  |            NoWreck v0.15.0         |
+  |            NoWreck v0.16.0         |
   |    Deterministic AI Verifier       |
   +------------------------------------+"""
 
@@ -268,23 +268,35 @@ def _handle_prompt_mode(
 
     verifier = PromptModeVerifier(repo_path, model_config)
 
-    if args.pre and args.post:
-        # Manual snapshot mode
-        before_path = _resolve_path(args.pre)
-        after_path = _resolve_path(args.post)
-        log(f"Using manual snapshots: {before_path} \u2192 {after_path}")
-        result = verifier.verify_with_snapshots(
-            prompt,
-            before_path=before_path,
-            after_path=after_path,
-        )
-    else:
-        # Auto-snapshot mode
-        log("Capturing before state...")
-        result = verifier.verify(
-            prompt,
-            restore_after=True,
-        )
+    try:
+        if args.pre and args.post:
+            # Manual snapshot mode
+            before_path = _resolve_path(args.pre)
+            after_path = _resolve_path(args.post)
+            log(f"Using manual snapshots: {before_path} \u2192 {after_path}")
+            result = verifier.verify_with_snapshots(
+                prompt,
+                before_path=before_path,
+                after_path=after_path,
+            )
+        else:
+            # Auto-snapshot mode
+            log("Capturing before state...")
+            result = verifier.verify(
+                prompt,
+                restore_after=True,
+            )
+    except ModelError as exc:
+        # The model call happens *inside* verification (the snapshot is
+        # captured first), so a missing/invalid API key surfaces here —
+        # never as a raw traceback.  The finally-block in ``verify()``
+        # has already settled the working tree by this point.
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # Manual-snapshot mode resolves --pre/--post paths here.
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     if not result.model_result or not result.model_result.claims:
         print(

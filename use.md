@@ -41,7 +41,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.15.0
+# → nowreck 0.16.0
 
 nowreck
 # → shows banner + usage
@@ -424,9 +424,23 @@ nowreck fix --pre ./before --post ./after --claims @claims.json
 | `REMOVE_ENUM` | `symbol_name`, `file_path` | An enum was removed |
 | `ADD_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was added (TS/TSX/Rust/Go) |
 | `REMOVE_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was removed |
+| `CHANGED_FUNCTION` | `symbol_name`, `file_path` | A function's body was changed |
+| `CHANGED_CLASS` | `symbol_name`, `file_path` | A class's shell (fields, bases, decorators) was changed |
 | `FILE_CREATED` | `file_path` | An entirely new file appeared |
 | `FILE_DELETED` | `file_path` | An entire file was deleted |
 | `CALLS_FUNCTION` | `symbol_name`, `file_path`, `caller_name`, `called_name` | A function calls another function |
+
+> **Method calls require `parent_class`.** When the caller of a
+> `CALLS_FUNCTION` claim is a method (e.g. `process` inside `Calculator`),
+> the claim must carry `parent_class` — evidence is matched strictly on the
+> enclosing class, so a class-less claim cannot confirm against class
+> evidence.
+>
+> **`CHANGED_*` claims verify body edits structurally.** The formatting-
+> insensitive structural hash means a real edit always changes the hash;
+> reformat-only, comment-only, and quote-style edits do not. Method body
+> edits verify as `CHANGED_FUNCTION` (with `parent_class`); class-shell
+> edits (fields, bases, decorators) verify as `CHANGED_CLASS`.
 
 Every claim also accepts:
 - `confidence` — 0.0 to 1.0, how certain the AI is
@@ -468,7 +482,7 @@ changes:
 
 ```json
 {
-  "version": "0.15.0",
+  "version": "0.16.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -598,4 +612,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.15.0 — September 2026*
+*NoWreck v0.16.0 — September 2026*
