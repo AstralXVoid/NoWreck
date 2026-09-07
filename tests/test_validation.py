@@ -509,3 +509,170 @@ class TestDeterminism:
         assert report1.confirmed == report2.confirmed
         assert report1.unexplained_count == report2.unexplained_count
         assert report1.success == report2.success
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: CHANGED claims + async (P2) through the real pipeline
+# ---------------------------------------------------------------------------
+
+
+def _changed_claims_json(
+    symbol_name: str,
+    *,
+    claim_type: str = "CHANGED_FUNCTION",
+    file_path: str = "app.py",
+    parent_class: str | None = None,
+) -> str:
+    """A single CHANGED-type claim in wire format."""
+    claim: dict[str, object] = {
+        "type": claim_type,
+        "symbol_name": symbol_name,
+        "file_path": file_path,
+        "confidence": 0.9,
+    }
+    if parent_class is not None:
+        claim["parent_class"] = parent_class
+    return json.dumps({"claims": [claim]})
+
+
+class TestChangedClaims:
+    """CHANGED_* claims through the full scan → detect → verify pipeline."""
+
+    def test_changed_function_confirmed_on_body_edit(self) -> None:
+        pre = {"app.py": "def greet():\n    return 'hi'\n"}
+        post = {"app.py": "def greet():\n    return 'hello'\n"}
+        claims = _changed_claims_json("greet")
+
+        _, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert report.confirmed == 1
+        assert report.unverifiable == 0
+        assert report.unexplained_count == 0
+
+    def test_changed_class_confirmed_on_field_edit(self) -> None:
+        pre = {"app.py": "class Box:\n    size = 1\n"}
+        post = {"app.py": "class Box:\n    size = 2\n"}
+        claims = _changed_claims_json("Box", claim_type="CHANGED_CLASS")
+
+        _, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert report.confirmed == 1
+        assert report.unexplained_count == 0
+
+    def test_hallucinated_changed_function_is_unverifiable(self) -> None:
+        """Claiming a body edit for a function that was never touched."""
+        src = "def greet():\n    return 'hi'\n"
+        pre = {"app.py": src}
+        post = {"app.py": src}  # no changes at all
+        claims = _changed_claims_json("greet")
+
+        changes, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert changes == []
+        assert report.unverifiable == 1
+        assert report.confirmed == 0
+        assert report.unexplained_count == 0
+
+    def test_changed_function_contradicted_by_removal(self) -> None:
+        """Claiming CHANGED for a function that was actually removed."""
+        pre = {"app.py": "def greet():\n    return 'hi'\n"}
+        post = {"app.py": "x = 1\n"}
+        claims = _changed_claims_json("greet")
+
+        _, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert report.contradicted == 1
+        assert report.confirmed == 0
+        assert report.unexplained_count == 0
+
+    def test_missed_body_edit_is_unexplained(self) -> None:
+        """A real body edit the model failed to mention surfaces as an
+        unexplained CHANGED change."""
+        pre = {"app.py": "def greet():\n    return 'hi'\n"}
+        post = {"app.py": "def greet():\n    return 'hello'\n"}
+        # The model mentioned nothing about greet — only a wrong claim
+        # about some other function.
+        claims = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "ADD_FUNCTION",
+                        "symbol_name": "ghost",
+                        "file_path": "app.py",
+                    },
+                ],
+            }
+        )
+
+        changes, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert any(
+            c.symbol_name == "greet" and c.change_type == ChangeType.CHANGED_FUNCTION
+            for c in changes
+        )
+        # The ghost claim is unverifiable, and the real body edit is
+        # unexplained — the CHANGED change surfaces exactly like any
+        # other missed change.
+        assert report.unverifiable == 1
+        assert report.unexplained_count == 1
+        assert report.unexplained_changes[0].symbol_name == "greet"
+
+
+class TestAsyncClaims:
+    """Part B P2: async defs are indexed — their claims verify (they were
+    invisible before, making every async claim UNVERIFIABLE)."""
+
+    def test_async_function_added_claim_confirmed(self) -> None:
+        pre = {"app.py": "def sync_fn():\n    return 1\n"}
+        post = {
+            "app.py": (
+                "def sync_fn():\n    return 1\n\n"
+                "async def fetch_data():\n    return 42\n"
+            )
+        }
+        claims = json.dumps(
+            {
+                "claims": [
+                    {
+                        "type": "ADD_FUNCTION",
+                        "symbol_name": "fetch_data",
+                        "file_path": "app.py",
+                    },
+                ],
+            }
+        )
+
+        _, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert report.confirmed == 1, "async ADD_FUNCTION claim must confirm (P2)"
+        assert report.unexplained_count == 0
+
+    def test_async_method_body_edit_claim_confirmed(self) -> None:
+        pre = {
+            "app.py": ("class Fetcher:\n    async def fetch(self):\n        return 1\n")
+        }
+        post = {
+            "app.py": ("class Fetcher:\n    async def fetch(self):\n        return 2\n")
+        }
+        claims = _changed_claims_json("fetch", parent_class="Fetcher")
+
+        _, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert report.confirmed == 1, "async body-edit CHANGED claim must confirm"
+        assert report.unexplained_count == 0
+
+    def test_sync_to_async_conversion_claim_confirmed(self) -> None:
+        """sync → async of the same name is a CHANGED_FUNCTION (identity
+        deliberately excludes node type), and the CHANGED claim confirms."""
+        pre = {"app.py": "def fetch():\n    return 1\n"}
+        post = {"app.py": "async def fetch():\n    return 2\n"}
+        claims = _changed_claims_json("fetch")
+
+        changes, parse_result, report = _run_pipeline(pre, post, claims)
+        assert parse_result.success
+        assert any(
+            c.symbol_name == "fetch" and c.change_type == ChangeType.CHANGED_FUNCTION
+            for c in changes
+        ), "sync→async must be CHANGED_FUNCTION, not REMOVE+ADD"
+        assert report.confirmed == 1
+        assert report.unexplained_count == 0

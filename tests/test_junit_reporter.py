@@ -5,6 +5,8 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from nowreck.claims.models import Claim, ClaimType
 from nowreck.detector.change_detector import ChangeType, DetectedChange
 from nowreck.reporter.junit_reporter import (
@@ -159,6 +161,32 @@ class TestJUnitReporter:
         testcase = root.find("testsuite/testcase")
         assert testcase is not None
         assert testcase.get("name") == "ADD_FUNCTION validate_email"
+
+    @pytest.mark.parametrize(
+        "claim_type,type_name",
+        [
+            (ClaimType.CHANGED_FUNCTION, "CHANGED_FUNCTION"),
+            (ClaimType.CHANGED_CLASS, "CHANGED_CLASS"),
+        ],
+    )
+    def test_changed_claim_types_produce_valid_xml(
+        self, claim_type: ClaimType, type_name: str
+    ) -> None:
+        """CHANGED claims render as valid JUnit XML with their type
+        names in the testcase (Phase 5 — new claim types must not break
+        the reporter)."""
+        reporter = JUnitReporter()
+        claim = _make_claim(claim_type, symbol_name="greet")
+        result = VerificationResult(claim=claim, verdict=Verdict.CONFIRMED)
+        report = VerificationReport(results=[result])
+
+        output = reporter.report(report)
+        root = _parse_xml(output)
+        testcase = root.find("testsuite/testcase")
+        assert testcase is not None
+        assert testcase.get("name") == f"{type_name} greet"
+        # CONFIRMED → pass, no failure element
+        assert testcase.find("failure") is None
 
     def test_testcase_classname_is_file_path(self) -> None:
         """Testcase classname should be the full file path."""

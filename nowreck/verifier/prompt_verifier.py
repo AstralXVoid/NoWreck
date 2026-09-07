@@ -574,28 +574,44 @@ class PromptModeVerifier:
         """Restore the working tree and release snapshot resources.
 
         Called from ``verify()``'s ``finally`` block, so it runs on the
-        success path **and** whenever any step raises.  Guarantees:
+        success path **and** whenever any step raises.  Guarantees
+        (Part B P1):
 
-        * Snapshots taken via ``git stash`` are always popped — the
-          stash holds the user's uncommitted changes regardless of
-          whether a patch was applied.
+        * Git snapshots revert **only the patch's applied files** to
+          HEAD — never a blanket checkout.  A pushed stash is always
+          popped (it holds the user's own uncommitted work), even when
+          ``restore_after=False`` skips the revert or no patch was
+          applied.
         * Temp-copy snapshots restore the tree when a patch was
           actually applied and ``restore_after`` was requested.
+        * A run-created ``.nowreck/cache/`` is removed whenever it did
+          not pre-exist (Part B P3); a pre-existing one is untouched.
         * Temporary snapshot files are always cleaned up (best-effort).
         """
-        snapshot_dir = before.snapshot_dir
-        from_git_stash = (
-            snapshot_dir is not None and (snapshot_dir / ".git_stash").exists()
-        )
         try:
-            if from_git_stash:
-                logger.info("Snapshot used git stash — popping to return user changes.")
-                if self._snapshot_mgr.restore(before):
-                    logger.info("git stash pop succeeded.")
+            if before.from_git:
+                # Revert the patch's files only when a patch was
+                # applied and restore was requested; the stash pop
+                # always runs.
+                revert = patch_applied and restore_after
+                applied = (
+                    patch_result.applied_files if revert and patch_result else None
+                )
+                logger.info(
+                    "Snapshot used git strategy (%s) — %s",
+                    before.restore_mode,
+                    "reverting patched files and popping stash"
+                    if revert
+                    else "popping stash only",
+                )
+                if self._snapshot_mgr.restore(
+                    before, applied_files=applied, revert_files=revert
+                ):
+                    logger.info("Working tree settled (git strategy).")
                 else:
-                    logger.warning(
-                        "git stash pop failed — uncommitted changes may "
-                        "still be in 'git stash list'."
+                    logger.error(
+                        "Working tree could not be settled — uncommitted "
+                        "changes may still be in 'git stash list'."
                     )
             elif patch_applied and restore_after:
                 n_files = len(patch_result.applied_files) if patch_result else 0
@@ -603,13 +619,21 @@ class PromptModeVerifier:
                     "Restoring repo (%d patched files) from snapshot.",
                     n_files,
                 )
-                if self._snapshot_mgr.restore(before):
+                if self._snapshot_mgr.restore(
+                    before,
+                    applied_files=(
+                        patch_result.applied_files if patch_result else None
+                    ),
+                ):
                     logger.info("Repo restored to pre-patch state.")
                 else:
-                    logger.warning(
+                    logger.error(
                         "Restore failed — repo may still contain patch changes."
                     )
-            # else: nothing to undo (tree untouched or restore disabled).
+            else:
+                # Nothing to undo (tree untouched or restore disabled)
+                # — still settle the run-created cache.
+                self._snapshot_mgr.restore(before, revert_files=False)
         finally:
             self._snapshot_mgr.cleanup(before)
 

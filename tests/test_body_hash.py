@@ -595,13 +595,16 @@ class TestTsBodyHash:
         )
         assert before.body_hash != after.body_hash
 
-    def test_method_decorator_edit_changes_no_hash(self, tmp_path: Path) -> None:
+    def test_method_decorator_edit_changes_method_hash_not_class_hash(
+        self, tmp_path: Path
+    ) -> None:
         """TS decorators attach as siblings *outside* method_definition.
 
-        The class shell skips method-attached decorators as one unit, so
-        a decorator edit lands in neither the method hash nor the class
-        shell hash (Accepted Edges #1 — fixture-verified).  The test pins
-        this exact grammar behaviour.
+        The class shell skips method-attached decorators as one unit, and
+        the method hash folds the attached decorator run in — so a
+        decorator edit fires ``CHANGED_FUNCTION`` (Python parity) and
+        never ``CHANGED_CLASS`` (Accepted Edges #1 — outcome now
+        test-enforced, no silent divergence between languages).
         """
         symbols_a = {
             s.name: s
@@ -617,8 +620,10 @@ class TestTsBodyHash:
                 tmp_path,
             )
         }
+        # Disjoint-facts: the class shell is untouched…
         assert symbols_a["Foo"].body_hash == symbols_b["Foo"].body_hash
-        assert symbols_a["method"].body_hash == symbols_b["method"].body_hash
+        # …and the edit is visible on the method it decorates.
+        assert symbols_a["method"].body_hash != symbols_b["method"].body_hash
 
     def test_class_decorator_edit_changes_class_hash(self, tmp_path: Path) -> None:
         """Class-level decorators are children of class_declaration and

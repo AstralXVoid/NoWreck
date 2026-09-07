@@ -574,24 +574,75 @@ def collect_class_methods(
     if body_node is None:
         return
 
-    for member in body_node.children:
-        if member.type == "method_definition":
-            name_node = member.child_by_field_name("name")
-            if name_node is not None:
-                symbols.append(
-                    Symbol(
-                        name=text_of(name_node, source_bytes),
-                        symbol_type=SymbolType.METHOD,
-                        file_path=file_path,
-                        line_number=member.start_point[0] + 1,
-                        parent_class=class_name,
-                        body_hash=structural_hash(
-                            member,
-                            source_bytes,
-                            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
-                        ),
-                    )
-                )
+    children = body_node.children
+    for i, member in enumerate(children):
+        if member.type != "method_definition":
+            continue
+        name_node = member.child_by_field_name("name")
+        if name_node is None:
+            continue
+        # TypeScript/TSX attach method decorators as siblings *before*
+        # the ``method_definition``.  The class shell excludes them (they
+        # belong to the method, not the shell), so the method hash must
+        # include them — otherwise a method-decorator edit would be
+        # invisible to *both* hashes (Accepted Edges #1).  JavaScript
+        # attaches decorators inside the member node, so the backward
+        # run is empty there and this is a no-op.
+        first = i
+        while first > 0 and children[first - 1].type == "decorator":
+            first -= 1
+        if first < i:
+            body_hash = _method_hash_with_decorators(
+                children[first:i], member, source_bytes
+            )
+        else:
+            body_hash = structural_hash(
+                member,
+                source_bytes,
+                excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+            )
+        symbols.append(
+            Symbol(
+                name=text_of(name_node, source_bytes),
+                symbol_type=SymbolType.METHOD,
+                file_path=file_path,
+                line_number=member.start_point[0] + 1,
+                parent_class=class_name,
+                body_hash=body_hash,
+            )
+        )
+
+
+def _method_hash_with_decorators(
+    decorators: list[Node],
+    method_node: Node,
+    source_bytes: bytes,
+) -> str:
+    """Structural hash of a method plus its attached decorator siblings.
+
+    TypeScript/TSX grammar: a run of ``decorator`` nodes directly before
+    a ``method_definition`` decorates that method.  The class shell
+    excludes the run (it belongs to the method), so the method's own
+    hash folds it in — order-sensitive, so swapping decorators is a
+    change, and a decorator edit fires ``CHANGED_FUNCTION`` exactly like
+    Python.
+    """
+    parts = [
+        structural_hash(
+            decorator,
+            source_bytes,
+            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+        )
+        for decorator in decorators
+    ]
+    parts.append(
+        structural_hash(
+            method_node,
+            source_bytes,
+            excluded_leaf_types=ASI_LEAF_EXCLUSIONS,
+        )
+    )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def maybe_arrow_function_declarator(

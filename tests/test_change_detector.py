@@ -1789,6 +1789,130 @@ class TestChangedCrossLanguage:
         assert [c.symbol_name for c in changed] == ["C"]
         assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
 
+    def test_ts_reformat_only_edit_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            "function greet(): string { return 'hi'; }\n",
+            "function greet(): string {\n  return 'hi';\n}\n",
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_ts_quote_style_swap_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            "function greet(): string { return 'hi'; }\n",
+            'function greet(): string { return "hi"; }\n',
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_rust_reformat_only_edit_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "main.rs",
+            'fn greet() -> &\'static str { "hi" }\n',
+            'fn greet() -> &\'static str {\n    "hi"\n}\n',
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_rust_raw_string_swap_is_a_change(self, tmp_path: Path) -> None:
+        """Rust has one double-quoted string style; the raw-string
+        variant is a *separate node type* and is deliberately semantically
+        significant (`r"\n"` is literal backslash-n) — so this is a real
+        change, not a quote-style swap (pins the hash docstring rule)."""
+        changes = self._changes_between(
+            tmp_path,
+            "main.rs",
+            'fn greet() -> &\'static str { "hi" }\n',
+            'fn greet() -> &\'static str { r"hi" }\n',
+        )
+        assert [
+            c.symbol_name
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == ["greet"]
+
+    def test_go_reformat_only_edit_no_changed(self, tmp_path: Path) -> None:
+        changes = self._changes_between(
+            tmp_path,
+            "main.go",
+            'package main\n\nfunc greet() string { return "hi" }\n',
+            'package main\n\nfunc greet() string {\n    return "hi"\n}\n',
+        )
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+
+    def test_go_raw_string_swap_is_a_change(self, tmp_path: Path) -> None:
+        """Go's raw backtick literal is a separate node type from the
+        interpreted form — value-equivalent here, but the hash treats
+        raw vs interpreted as semantically significant (pins the hash
+        docstring rule)."""
+        changes = self._changes_between(
+            tmp_path,
+            "main.go",
+            'package main\n\nfunc greet() string { return "hi" }\n',
+            "package main\n\nfunc greet() string { return `hi` }\n",
+        )
+        assert [
+            c.symbol_name
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == ["greet"]
+
+    def test_ts_method_decorator_edit_changed_function_with_parent_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """TS decorators are siblings of the method — a decorator edit
+        must fire CHANGED_FUNCTION (Python parity), never be invisible
+        and never CHANGED_CLASS (disjoint-facts, Accepted Edges #1)."""
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            ("class C {\n  @dec\n  method() {\n    return 1;\n  }\n}\n"),
+            ("class C {\n  @dec2\n  method() {\n    return 1;\n  }\n}\n"),
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["method"]
+        assert changed[0].parent_class == "C"
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_tsx_method_decorator_edit_changed_function_with_parent_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """TSX uses the same grammar shape — same guarantee."""
+        changes = self._changes_between(
+            tmp_path,
+            "app.tsx",
+            ("class C {\n  @dec\n  method() {\n    return 1;\n  }\n}\n"),
+            ("class C {\n  @dec2\n  method() {\n    return 1;\n  }\n}\n"),
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["method"]
+        assert changed[0].parent_class == "C"
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_ts_class_level_decorator_edit_changed_class_only(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A class-level decorator belongs to the shell → CHANGED_CLASS
+        only (and no CHANGED_FUNCTION)."""
+        changes = self._changes_between(
+            tmp_path,
+            "app.ts",
+            ("@clsdec\nclass C {\n  method() {\n    return 1;\n  }\n}\n"),
+            ("@clsdec2\nclass C {\n  method() {\n    return 1;\n  }\n}\n"),
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["C"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
     def test_ts_interface_edit_never_changed(self, tmp_path: Path) -> None:
         """INTERFACE has no CHANGED claim type — its hash is never compared."""
         changes = self._changes_between(

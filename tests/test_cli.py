@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nowreck.claims.models import ClaimType
 from nowreck.cli import build_parser
 from nowreck.main import (
     _build_model_config,
@@ -717,6 +718,375 @@ class TestFlagConflicts:
         _, err = capsys.readouterr()
         assert rc == 1
         assert "cannot use --compare with --pre or --post" in err
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 E2E: CHANGED claims per language via the real pre/post pipeline
+# ---------------------------------------------------------------------------
+
+
+_LANG_CASES = [
+    (
+        "python",
+        "app.py",
+        "def greet():\n    return 'hi'\n",
+        "def greet():\n    return 'hello'\n",
+    ),
+    (
+        "js",
+        "app.js",
+        "function greet() { return 'hi'; }\n",
+        "function greet() { return 'hello'; }\n",
+    ),
+    (
+        "ts",
+        "app.ts",
+        "function greet(): string { return 'hi'; }\n",
+        "function greet(): string { return 'hello'; }\n",
+    ),
+    (
+        "rust",
+        "app.rs",
+        'fn greet() -> &\'static str { "hi" }\n',
+        'fn greet() -> &\'static str { "hello" }\n',
+    ),
+    (
+        "go",
+        "app.go",
+        'package main\n\nfunc greet() string { return "hi" }\n',
+        'package main\n\nfunc greet() string { return "hello" }\n',
+    ),
+]
+
+
+def _make_claim_dict(
+    claim_type: ClaimType,
+    *,
+    symbol_name: str | None = None,
+    file_path: str,
+    parent_class: str | None = None,
+    caller_name: str | None = None,
+    called_name: str | None = None,
+) -> dict[str, object]:
+    """Build a claim dict in the wire format the parser expects."""
+    claim: dict[str, object] = {
+        "type": claim_type.name,
+        "file_path": file_path,
+    }
+    if symbol_name is not None:
+        claim["symbol_name"] = symbol_name
+    if parent_class is not None:
+        claim["parent_class"] = parent_class
+    if caller_name is not None:
+        claim["caller_name"] = caller_name
+    if called_name is not None:
+        claim["called_name"] = called_name
+    return claim
+
+
+class TestE2EChangedPerLanguage:
+    """Modify a body in each language → `nowreck fix --pre --post` with a
+    CHANGED_FUNCTION claim → CONFIRMED via the real pipeline."""
+
+    @pytest.mark.parametrize("lang,file_name,pre_src,post_src", _LANG_CASES)
+    def test_body_edit_changed_claim_confirmed(
+        self,
+        capsys: pytest.CaptureFixture,
+        lang: str,
+        file_name: str,
+        pre_src: str,
+        post_src: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / file_name).write_text(pre_src, encoding="utf-8")
+            (post / file_name).write_text(post_src, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path=file_name,
+                )
+            ]
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out, out
+
+    def test_method_call_claim_confirmed_via_real_pipeline(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A method-call claim with parent_class confirms through the real
+        pre/post pipeline (call capture + strict class matching)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "calc.py").write_text(
+                "class Calculator:\n    def process(self, x):\n        return x\n",
+                encoding="utf-8",
+            )
+            (post / "calc.py").write_text(
+                "class Calculator:\n"
+                "    def process(self, x):\n"
+                "        return self.validate(x)\n"
+                "    def validate(self, x):\n"
+                "        return x > 0\n",
+                encoding="utf-8",
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            # The honest claim set for this edit: the new method, the
+            # method-body change, and the new call — no cross-talk, and
+            # nothing left unexplained.
+            claims = [
+                _make_claim_dict(
+                    ClaimType.ADD_FUNCTION,
+                    symbol_name="validate",
+                    file_path="calc.py",
+                    parent_class="Calculator",
+                ),
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="process",
+                    file_path="calc.py",
+                    parent_class="Calculator",
+                ),
+                _make_claim_dict(
+                    ClaimType.CALLS_FUNCTION,
+                    file_path="calc.py",
+                    parent_class="Calculator",
+                    caller_name="process",
+                    called_name="validate",
+                ),
+            ]
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out, out
+            assert "UNEXPLAINED" not in out, out
+
+    def test_hallucinated_changed_claim_unverifiable(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A CHANGED_FUNCTION claim about a function that was never
+        touched stays UNVERIFIABLE (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            src = "def greet():\n    return 'hi'\n"
+            (pre / "app.py").write_text(src, encoding="utf-8")
+            (post / "app.py").write_text(src, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="app.py",
+                )
+            ]
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "UNVERIFIABLE" in out
+
+    def test_hallucinated_changed_claim_contradicted_by_removal(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Claiming CHANGED_FUNCTION for a function that was actually
+        removed → CONTRADICTED (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "app.py").write_text(
+                "def greet():\n    return 'hi'\n", encoding="utf-8"
+            )
+            (post / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="app.py",
+                )
+            ]
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "CONTRADICTED" in out
+
+
+class TestExternalDirsGetNoCache:
+    """Part B P3: `--pre A --post B` scans external snapshot dirs —
+    no `.nowreck/` may be written inside them."""
+
+    def test_pre_post_scan_writes_no_cache(self, capsys: pytest.CaptureFixture) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "app.py").write_text(
+                "def greet():\n    return 'hi'\n", encoding="utf-8"
+            )
+            (post / "app.py").write_text(
+                "def greet():\n    return 'hello'\n", encoding="utf-8"
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            parser = build_parser()
+            args = parser.parse_args(["fix", "--pre", str(pre), "--post", str(post)])
+
+            handle_fix(args)
+            capsys.readouterr()
+
+            assert not (pre / ".nowreck").exists()
+            assert not (post / ".nowreck").exists()
+
+    def test_compare_mode_writes_no_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`--compare` extracts git-archive temps — neither snapshot
+        dir gets a cache."""
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text(
+            "def greet():\n    return 'hi'\n", encoding="utf-8"
+        )
+        env = dict(
+            {
+                "GIT_AUTHOR_NAME": "T",
+                "GIT_AUTHOR_EMAIL": "t@t.local",
+                "GIT_COMMITTER_NAME": "T",
+                "GIT_COMMITTER_EMAIL": "t@t.local",
+            }
+        )
+        for args in (["init"], ["add", "."], ["commit", "-m", "init"]):
+            assert (
+                subprocess.run(
+                    ["git", *args], cwd=repo, capture_output=True, text=True, env=env
+                ).returncode
+                == 0
+            )
+        # Modify + commit so --compare HEAD~1..HEAD sees a change
+        (repo / "app.py").write_text(
+            "def greet():\n    return 'hello'\n", encoding="utf-8"
+        )
+        assert (
+            subprocess.run(
+                ["git", "add", "."], cwd=repo, capture_output=True, text=True, env=env
+            ).returncode
+            == 0
+        )
+        assert (
+            subprocess.run(
+                ["git", "commit", "-m", "change"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                env=env,
+            ).returncode
+            == 0
+        )
+
+        from nowreck.cli import build_parser
+        from nowreck.main import handle_fix
+
+        monkeypatch.chdir(repo)  # compare mode resolves the repo from CWD
+        parser = build_parser()
+        args = parser.parse_args(["fix", "--compare", "HEAD~1"])
+        rc = handle_fix(args)
+        capsys.readouterr()
+
+        # A real change exists between the refs and no claims were
+        # given → the change is unexplained (exit 1), which is fine —
+        # the point is the run completed without writing `.nowreck/`
+        # into the user's repo or the throwaway snapshot temps.
+        assert rc == 1
+        assert not (repo / ".nowreck").exists()
 
 
 class TestFormatOutput:

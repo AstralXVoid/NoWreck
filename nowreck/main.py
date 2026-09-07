@@ -160,16 +160,18 @@ def handle_fix(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    # 1. Scan
+    # 1. Scan.  Pre/post snapshot dirs are external inputs — the
+    # persistent cache stays OFF so no `.nowreck/` is written into
+    # them (Part B P3).
     _log(f"Scanning pre snapshot:  {pre_path}")
-    pre_scan = RepositoryScanner(pre_path).scan()
+    pre_scan = RepositoryScanner(pre_path, use_cache=False).scan()
     _log(
         f"  \u2192 {pre_scan.success_count} files parsed, "
         f"{pre_scan.failure_count} failed"
     )
 
     _log(f"Scanning post snapshot: {post_path}")
-    post_scan = RepositoryScanner(post_path).scan()
+    post_scan = RepositoryScanner(post_path, use_cache=False).scan()
     _log(
         f"  \u2192 {post_scan.success_count} files parsed, "
         f"{post_scan.failure_count} failed"
@@ -603,14 +605,17 @@ def _handle_compare_mode(
                 log(f"Pre snapshot:  {pre_snapshot.path}")
                 log(f"Post snapshot: {post_snapshot.path}")
 
-                # 1. Scan
-                pre_scan = RepositoryScanner(pre_snapshot.path).scan()
+                # 1. Scan.  Git-archive temp dirs are throwaway inputs
+                # — cache OFF (Part B P3).
+                pre_scan = RepositoryScanner(pre_snapshot.path, use_cache=False).scan()
                 log(
                     f"  \u2192 {pre_scan.success_count} files parsed, "
                     f"{pre_scan.failure_count} failed"
                 )
 
-                post_scan = RepositoryScanner(post_snapshot.path).scan()
+                post_scan = RepositoryScanner(
+                    post_snapshot.path, use_cache=False
+                ).scan()
                 log(
                     f"  \u2192 {post_scan.success_count} files parsed, "
                     f"{post_scan.failure_count} failed"

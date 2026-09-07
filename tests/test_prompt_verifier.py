@@ -9,6 +9,8 @@ These tests prove the circularity fix:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -642,9 +644,12 @@ class TestRestoreAfterPatch:
                 scan_result=snap.scan_result,
                 symbol_index=snap.symbol_index,
                 snapshot_dir=sentinel,
+                restore_mode="stashed",
             )
 
-        def fake_restore(self: SnapshotManager, snap: Snapshot) -> bool:
+        def fake_restore(
+            self: SnapshotManager, snap: Snapshot, **kwargs: object
+        ) -> bool:
             restore_calls.append(snap)
             return True
 
@@ -778,3 +783,140 @@ class TestManualApplyHunks:
 
         assert result.success, result.errors
         assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Part B P1: prompt mode against real git repos
+# ---------------------------------------------------------------------------
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "NoWreck Test",
+    "GIT_AUTHOR_EMAIL": "test@nowreck.local",
+    "GIT_COMMITTER_NAME": "NoWreck Test",
+    "GIT_COMMITTER_EMAIL": "test@nowreck.local",
+}
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a git command inside *root* with deterministic identity."""
+    env = dict(os.environ)
+    env.update(_GIT_ENV)
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
+def _git_init_repo(root: Path) -> None:
+    """Turn *root* into a git repo with its current content committed."""
+    assert _git(root, "init").returncode == 0
+    assert _git(root, "add", ".").returncode == 0
+    assert _git(root, "commit", "-m", "init").returncode == 0
+
+
+def _git_stash_list(root: Path) -> list[str]:
+    result = _git(root, "stash", "list")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+class TestGitPromptMode:
+    """Part B P1 end-to-end: prompt-mode verify() on real git repos
+    must settle the working tree correctly in every path."""
+
+    def test_clean_git_repo_patch_is_removed(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clean git tree + patch → the patched file is reverted and no
+        stash is left behind (the bug: patch used to survive)."""
+        _git_init_repo(repo_dir)
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        result = verifier.verify("add fresh function")
+
+        assert result.patch_applied is True
+        assert not (repo_dir / "src" / "new.py").exists()
+        status = _git(repo_dir, "status", "--porcelain")
+        assert status.stdout.strip() == ""  # tree exactly as before
+        assert _git_stash_list(repo_dir) == []
+
+    def test_dirty_git_repo_user_edit_survives_patch_removed(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dirty git tree: the user's uncommitted edit returns intact,
+        the patch's file is gone, the stash is consumed (the bug: the
+        patch used to survive the stash pop)."""
+        _git_init_repo(repo_dir)
+        # User edits app.py after the commit
+        (repo_dir / "src" / "app.py").write_text(
+            "def greet(name):\n    return f'USER, {name}!\n", encoding="utf-8"
+        )
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        result = verifier.verify("add fresh function")
+
+        assert result.patch_applied is True
+        assert not (repo_dir / "src" / "new.py").exists()
+        assert (repo_dir / "src" / "app.py").read_text(encoding="utf-8") == (
+            "def greet(name):\n    return f'USER, {name}!\n"
+        )
+        assert _git_stash_list(repo_dir) == []
+
+    def test_no_restore_git_patch_stays_stash_popped(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """restore_after=False on a dirty git repo: the patch stays but
+        the user's stash is still popped."""
+        _git_init_repo(repo_dir)
+        (repo_dir / "src" / "app.py").write_text(
+            "def greet(name):\n    return f'USER, {name}!\n", encoding="utf-8"
+        )
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        verifier.verify("add fresh function", restore_after=False)
+
+        assert (repo_dir / "src" / "new.py").exists()
+        assert (repo_dir / "src" / "app.py").read_text(encoding="utf-8") == (
+            "def greet(name):\n    return f'USER, {name}!\n"
+        )
+        assert _git_stash_list(repo_dir) == []
+
+    def test_git_prompt_mode_removes_run_created_cache(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Part B P3: prompt mode scans the CWD, so `.nowreck/cache/` is
+        created during the run — verify() must remove it again (it did
+        not pre-exist)."""
+        _git_init_repo(repo_dir)
+        monkeypatch.chdir(repo_dir)  # prompt mode targets the CWD
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        verifier.verify("add fresh function")
+
+        assert not (repo_dir / ".nowreck").exists()
+        assert _git(repo_dir, "status", "--porcelain").stdout.strip() == ""
+
+    def test_git_prompt_mode_leaves_pre_existing_cache(
+        self, repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.nowreck/cache/` that pre-existed is left untouched."""
+        _git_init_repo(repo_dir)
+        cache_dir = repo_dir / ".nowreck" / "cache"
+        cache_dir.mkdir(parents=True)
+        marker = cache_dir / "scan_cache.json"
+        marker.write_text('{"keep": true}\n', encoding="utf-8")
+        monkeypatch.chdir(repo_dir)
+        _stub_patch_apply(monkeypatch, repo_dir)
+        verifier = _make_verifier(repo_dir, _patched_file_result())
+
+        verifier.verify("add fresh function")
+
+        assert cache_dir.is_dir()
+        assert marker.exists()

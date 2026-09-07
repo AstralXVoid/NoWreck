@@ -377,10 +377,10 @@ def _run_pre_post(reporter: TerminalReporter) -> None:
     # 4. Scan.
     print()
     print(f"Scanning pre snapshot:  {pre_path}")
-    pre_scan = RepositoryScanner(pre_path).scan()
+    pre_scan = RepositoryScanner(pre_path, use_cache=False).scan()
     _print_scan_summary(pre_scan)
 
-    post_scan = RepositoryScanner(post_path).scan()
+    post_scan = RepositoryScanner(post_path, use_cache=False).scan()
     print(f"Scanning post snapshot: {post_path}")
     _print_scan_summary(post_scan)
 
