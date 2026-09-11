@@ -11,17 +11,14 @@
 </div>
 
 <div align="center">NoWreck is a deterministic structural verifier for AI-generated code-change
-claims.<br></div> When an AI describes a code change, NoWreck compares the claims
+claims.<br></div> <div align="center">When an AI describes a code change, NoWreck compares the claims
 against structural evidence derived by its own scanners — the verifier never
-asks another AI for an opinion. Where the evidence comes from depends on the
+asks another AI for an opinion.</div><div align="center"> Where the evidence comes from depends on the
 mode: in Pre/Post and Claims modes, from actual before/after repository
-snapshots; in Prompt Mode, from the model's own proposed diff.
+snapshots; in Prompt Mode, from the model's own proposed diff.</div>
 
 
-<img width="1536" height="1024" alt="ChatGPT Image Sep 3, 2026, 09_45_07 PM" src="https://github.com/user-attachments/assets/07dcbbe2-acf8-4819-8c0d-8ea880977a95" />
-
-
-
+<img width="1983" height="793" alt="ChatGPT Image Sep 10, 2026, 09_48_57 PM" src="https://github.com/user-attachments/assets/f5e28277-2f18-4b12-9090-ac7e33a687f0" />
 
 ```
 $ nowreck fix "Add email validation to auth.py"
