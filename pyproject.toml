@@ -51,6 +51,9 @@ norecursedirs = [".nowreck", "test_repos"]
 
 [tool.ruff]
 target-version = "py311"
+# v0.17.0 Phase 0: corpus files deliberately contain formatting variety
+# (the audit dimension being tested); exclude them from check and format.
+exclude = ["tests/differential_corpus/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
