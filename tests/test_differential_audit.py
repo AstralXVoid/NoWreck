@@ -34,48 +34,18 @@ CORPUS_DIR = Path(__file__).parent / "differential_corpus"
 # (lang, corpus_file) → {diverging key: written justification}
 #
 # Keys are either symbol tuples rendered as ``repr((kind, name))`` or
-# bare called names.  Every entry documents an accepted edge (or a
-# finding awaiting a decision) — no entry may be added without a
-# justification, and the corpus must not regress into new unmapped
-# divergences.
+# bare called names.  Every entry must document a **live** divergence:
+# ``test_map_keys_are_live_divergences`` recomputes the corpus and fails
+# if an entry no longer diverges, so a fixed gap's entry is deleted
+# rather than left to rot (and can never silently mask a regression).
 #
-# REAL GAP entries (Phase 1 remediation candidates): the JS/TS call
-# walker only collects *named* arrow functions as callers
-# (``variable_declarator`` values).  Anonymous arrows in argument or
-# return position (``fn(() => x())``, ``return () => x()``) are skipped
-# by ``find_tree_sitter_calls_in_body`` — every call inside them is
-# invisible to the parser.  The checker captures them (they are real
-# calls), so the divergence is a genuine parser gap, not a checker
-# over-capture.
-EXPECTED_DIVERGENCES: dict[tuple[str, str], dict[str, str]] = {
-    ("javascript", "classes.js"): {
-        "increment": (
-            "REAL GAP: call inside a class-field arrow value "
-            "(``public_field_definition``) — the parser collects only "
-            "``variable_declarator`` arrows as callers, so class-field "
-            "arrow bodies are invisible. Phase 1 remediation candidate."
-        ),
-    },
-    ("javascript", "realworld.js"): {
-        "handler": (
-            "REAL GAP: call inside an anonymous arrow passed as a call "
-            "argument — the parser skips anonymous-arrow bodies (no "
-            "caller to attribute to). Phase 1 remediation candidate."
-        ),
-        "unsubscribe": (
-            "REAL GAP: call inside an anonymous arrow in return position "
-            "— the parser skips anonymous-arrow bodies (no caller to "
-            "attribute to). Phase 1 remediation candidate."
-        ),
-    },
-    ("typescript", "realworld.ts"): {
-        "off": (
-            "REAL GAP: call inside an anonymous arrow in return position "
-            "— the parser skips anonymous-arrow bodies (no caller to "
-            "attribute to). Phase 1 remediation candidate."
-        ),
-    },
-}
+# EMPTY since Phase 1: the first audit's three REAL GAPs — anonymous
+# arrows in argument/return position (G1/G2) and class-field arrows (G3)
+# — are fixed in the shared call walker
+# (``collect_tree_sitter_callers`` / ``find_tree_sitter_calls_in_body``),
+# so every corpus file now agrees exactly.  The mechanism stays for
+# future accepted edges introduced by later language phases.
+EXPECTED_DIVERGENCES: dict[tuple[str, str], dict[str, str]] = {}
 
 # Minimum corpus size per language (scope: 12–18 files).
 MIN_CORPUS_FILES = 12

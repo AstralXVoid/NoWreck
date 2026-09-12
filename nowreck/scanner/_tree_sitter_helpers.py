@@ -695,6 +695,69 @@ def maybe_arrow_function_declarator(
 # Call detection helpers (language-agnostic)
 # ---------------------------------------------------------------------------
 
+# Function-valued nodes: the forms an initialiser can take when a name
+# owns the function (``const f = () => {}``, ``incrementBy = () => ...``).
+# An *unnamed* instance of these is not a caller — its calls belong to the
+# nearest enclosing named caller.
+_FUNCTION_VALUE_TYPES: frozenset[str] = frozenset(
+    {"arrow_function", "function_expression", "generator_function"}
+)
+
+# Nodes whose ``value`` may own a function: a ``const``/``let``/``var``
+# declarator, and a JS (``field_definition``) or TS
+# (``public_field_definition``) class field.
+_INITIALISER_NODE_TYPES: frozenset[str] = frozenset(
+    {"variable_declarator", "field_definition", "public_field_definition"}
+)
+
+# Function-like nodes that always carry their own caller entry, so their
+# bodies are walked separately rather than folded into the enclosing one.
+_NAMED_FUNCTION_TYPES: frozenset[str] = frozenset(
+    {"function_declaration", "generator_function_declaration", "method_definition"}
+)
+
+
+def _function_valued_initialiser(node: Node) -> tuple[Node, Node] | None:
+    """Return ``(name_node, function_node)`` when *node* names a function.
+
+    Covers ``const f = () => {}`` (``variable_declarator``), JS class
+    fields (``field_definition``), and TS class fields
+    (``public_field_definition``).  Parenthesised values are unwrapped
+    first (``const f = (() => {})``).  Returns ``None`` when the node has
+    no name or its value is not a function expression.
+    """
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        # JS ``field_definition`` names its field ``property``; the TS
+        # ``public_field_definition`` and ``variable_declarator`` use
+        # ``name``.
+        name_node = node.child_by_field_name("property")
+    value_node = node.child_by_field_name("value")
+    if name_node is None or value_node is None:
+        return None
+    inner = unwrap_parens(value_node)
+    if inner is None or inner.type not in _FUNCTION_VALUE_TYPES:
+        return None
+    return name_node, inner
+
+
+def _has_own_caller(node: Node) -> bool:
+    """Whether *node* is a function-like node with its own caller entry.
+
+    Named declarations and methods always are; a declarator or class
+    field is one only when its value is a function expression
+    (``const f = () => {}``, ``incrementBy = (step) => ...``).  An
+    anonymous function expression is deliberately **not** a caller — its
+    calls are attributed to the nearest enclosing named caller, so a
+    nested anonymous arrow (``fn(() => x())``, ``return () => y()``)
+    contributes to the function that contains it (audit G1/G2).
+    """
+    if node.type in _NAMED_FUNCTION_TYPES:
+        return True
+    if node.type in _INITIALISER_NODE_TYPES:
+        return _function_valued_initialiser(node) is not None
+    return False
+
 
 def collect_tree_sitter_callers(
     node: Node,
@@ -702,9 +765,14 @@ def collect_tree_sitter_callers(
     result: list[tuple[str, Node, str | None]],
     parent_class: str | None = None,
 ) -> None:
-    """Recursively collect every ``function_declaration``,
-    ``method_definition``, and named ``arrow_function`` / ``function_expression``
-    assignee in the tree.
+    """Recursively collect every caller in the tree.
+
+    A caller is a ``function_declaration``, a ``method_definition``, or a
+    named function value: a declarator arrow (``const f = () => {}``) or
+    a class-field arrow (``incrementBy = (step) => ...``) — JS
+    ``field_definition`` and TS ``public_field_definition`` alike.
+    Anonymous function expressions are not callers; their calls belong to
+    the nearest enclosing named caller.
 
     Each entry is ``(caller_name, function_node, caller_parent_class)``
     where *function_node* is the CST node whose body should be searched
@@ -736,24 +804,13 @@ def collect_tree_sitter_callers(
         if name_node is not None:
             result.append((text_of(name_node, source_bytes), node, parent_class))
 
-    elif node.type == "variable_declarator":
-        value_node = node.child_by_field_name("value")
-        if value_node is not None:
-            inner = unwrap_parens(value_node)
-            if inner is not None and inner.type in (
-                "arrow_function",
-                "function_expression",
-                "generator_function",
-            ):
-                name_node = node.child_by_field_name("name")
-                if name_node is not None:
-                    result.append(
-                        (
-                            text_of(name_node, source_bytes),
-                            inner,
-                            parent_class,
-                        )
-                    )
+    elif node.type in _INITIALISER_NODE_TYPES:
+        initialiser = _function_valued_initialiser(node)
+        if initialiser is not None:
+            name_node, function_node = initialiser
+            result.append(
+                (text_of(name_node, source_bytes), function_node, parent_class)
+            )
 
     # Recurse into children to find nested functions
     for child in node.named_children:
@@ -783,32 +840,22 @@ def find_tree_sitter_calls_in_body(
     the member chain.  Dunder-style properties and call receivers
     (``f().bar()``) are excluded.
 
-    Skips nested function-like nodes that are not *root_func_node* so
-    their calls are not misattributed to the outer function.
+    Skips nested nodes that carry their own caller entry (named
+    functions/methods, function-valued declarators and class fields) so
+    each call is attributed to exactly one caller.  Anonymous function
+    expressions are deliberately *not* skipped: they have no entry of
+    their own, so their calls are attributed to the nearest enclosing
+    named caller (``fn(() => x())``, ``return () => y()`` — audit G1/G2).
     """
     for child in node.named_children:
-        # Skip nested function-like nodes — they have their own entry
-        if child is not root_func_node:
-            if child.type in (
-                "function_declaration",
-                "generator_function_declaration",
-                "method_definition",
-                "arrow_function",
-                "function_expression",
-                "generator_function",
-            ):
-                continue
-            # Skip const foo = () => {} inside a function body
-            if child.type == "variable_declarator":
-                value_node = child.child_by_field_name("value")
-                if value_node is not None:
-                    inner = unwrap_parens(value_node)
-                    if inner is not None and inner.type in (
-                        "arrow_function",
-                        "function_expression",
-                        "generator_function",
-                    ):
-                        continue
+        # Skip nested function-like nodes that carry their own caller
+        # entry — they are walked separately, so each call is attributed
+        # to exactly one caller.  Anonymous function expressions are
+        # deliberately *not* skipped: they have no entry of their own, so
+        # their calls belong to the nearest enclosing named caller
+        # (``fn(() => x())``, ``return () => y()`` — audit G1/G2).
+        if child is not root_func_node and _has_own_caller(child):
+            continue
 
         if child.type == "call_expression":
             func_node = child.child_by_field_name("function")

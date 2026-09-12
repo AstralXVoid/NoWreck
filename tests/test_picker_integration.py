@@ -884,6 +884,27 @@ class TestPickerTerminal:
 
     _TMUX_SESSION_BASE = "nw_picker_term"
 
+    # Load tolerance.  The waits below race against *process start-up*, not
+    # a fixed render delay: under a full-suite run the child interpreter
+    # can take several seconds just to import ``nowreck`` (cold page cache,
+    # CPU contention).  Measured cold start here is ~7s, so a fixed
+    # deadline with only 2x headroom is destined to flake — the wait polls
+    # generously, stops early the moment the process has actually exited,
+    # and retries the whole wait once before failing.
+    _PANE_TIMEOUT = 30.0
+    _PANE_INTERVAL = 0.25
+    _DEATH_TIMEOUT = 20.0
+
+    # Consecutive identical captures required before a matching pane is
+    # considered *settled*.  Matching alone is not a safe moment to assert
+    # on: a frame can match and still gain lines afterwards.  Empirical
+    # probes showed these frames render atomically (prompt + choices;
+    # result text + pause text), so this is a safety net for the general
+    # case rather than a fix for a specific observed half-render — and it
+    # is gated on the match, because the pane is stable-and-empty for the
+    # first ~2s before the menu exists.
+    _SETTLE_POLLS = 4
+
     def _session_name(self) -> str:
         """Return a unique tmux session name for this test instance."""
         return f"{self._TMUX_SESSION_BASE}_{id(self)}"
@@ -894,25 +915,19 @@ class TestPickerTerminal:
 
         return shutil.which("tmux") is not None
 
-    def _poll_pane(
-        self,
-        expected: str,
-        timeout: float = 15.0,
-        interval: float = 0.3,
-    ) -> str:
-        """Poll the tmux pane until *expected* appears or *timeout* elapses.
+    def _capture_pane(self) -> str:
+        """Capture the pane's scrollback with ANSI preserved.
 
         Uses ``-S -`` (scrollback) and ``-e`` (preserve ANSI) for best
         compatibility with questionary's cursor-based rendering.
 
-        Returns the full pane content at the end of polling.
+        Returns ``""`` when the pane cannot be captured (session already
+        gone) or the capture itself times out.  Both mean "keep waiting" —
+        a slow ``tmux`` under load must never turn into a test error.
         """
         import subprocess
-        import time
 
-        deadline = time.monotonic() + timeout
-        last_output = ""
-        while time.monotonic() < deadline:
+        try:
             result = subprocess.run(
                 [
                     "tmux",
@@ -928,27 +943,105 @@ class TestPickerTerminal:
                 text=True,
                 timeout=5,
             )
-            last_output = result.stdout
+        except subprocess.TimeoutExpired:
+            return ""
+        return result.stdout
+
+    def _wait_for_output_once(
+        self,
+        expected: str,
+        timeout: float,
+        interval: float,
+    ) -> str:
+        """One poll pass: wait for *expected* **and** a settled pane.
+
+        The pass ends on the first of three conditions:
+
+        * *expected* is on the pane **and** the pane has stopped changing
+          for ``_SETTLE_POLLS`` captures — the render is complete, so every
+          later assertion in the test sees the final frame;
+        * the session is gone — the process exited, so what is on the pane
+          is final (and waiting on a dead session cannot help);
+        * the deadline expires — the caller decides whether to retry.
+
+        Returns the last non-empty pane capture, so a failure message shows
+        what the process actually rendered.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        last_output = ""
+        stable = 0
+        matched = False
+        while time.monotonic() < deadline:
+            captured = self._capture_pane()
+            if captured:
+                stable = stable + 1 if captured == last_output else 0
+                last_output = captured
             if expected in last_output:
+                matched = True
+            if matched and stable >= self._SETTLE_POLLS:
+                return last_output
+            if not self._session_exists():
                 break
             time.sleep(interval)
         return last_output
 
+    def _wait_for_output(
+        self,
+        expected: str,
+        timeout: float | None = None,
+        interval: float | None = None,
+    ) -> str:
+        """Wait for *expected* on the pane, retrying the wait once.
+
+        A single slow start must not fail the test, so the whole wait runs
+        twice before the pane content is handed back for assertion.  The
+        retry is skipped once the process has exited — at that point the
+        output is final and re-waiting would only waste time.
+
+        Returns the full pane content (best effort) for the caller to
+        assert on.
+        """
+        import time
+
+        timeout = self._PANE_TIMEOUT if timeout is None else timeout
+        interval = self._PANE_INTERVAL if interval is None else interval
+        output = ""
+        for attempt in (1, 2):
+            output = self._wait_for_output_once(expected, timeout, interval)
+            if expected in output or not self._session_exists():
+                return output
+            if attempt == 1:
+                # Brief settle pause so the retry does not immediately
+                # re-read a pane captured mid-render.
+                time.sleep(interval)
+        return output
+
     def _session_exists(self) -> bool:
-        """Check whether the tmux session is still alive."""
+        """Check whether the tmux session is still alive.
+
+        A timed-out ``tmux`` call counts as "still alive" — the
+        conservative answer, so a slow command under load neither fails a
+        test nor ends a wait early.
+        """
         import subprocess
 
-        result = subprocess.run(
-            ["tmux", "has-session", "-t", self._session_name()],
-            capture_output=True,
-            timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                ["tmux", "has-session", "-t", self._session_name()],
+                capture_output=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            return True
         return result.returncode == 0
 
-    def _poll_session_dead(self, timeout: float = 10.0) -> bool:
+    def _poll_session_dead(self, timeout: float | None = None) -> bool:
         """Wait for the tmux session to die (process exited)."""
         import time
 
+        timeout = self._DEATH_TIMEOUT if timeout is None else timeout
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self._session_exists():
@@ -994,7 +1087,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # Poll until the menu appears
-            output = self._poll_pane("What would you like to do?")
+            output = self._wait_for_output("What would you like to do?")
 
             assert "What would you like to do?" in output, (
                 f"Menu prompt not found. Output:\n{output}"
@@ -1027,7 +1120,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # Wait for menu
-            self._poll_pane("What would you like to do?")
+            self._wait_for_output("What would you like to do?")
 
             # Send Ctrl+C
             subprocess.run(
@@ -1039,7 +1132,8 @@ class TestPickerTerminal:
             # Poll until the session dies (process exited)
             died = self._poll_session_dead()
             assert died, (
-                "nowreck did not exit within 5s after Ctrl+C — session still alive"
+                "nowreck did not exit within "
+                f"{self._DEATH_TIMEOUT:.0f}s after Ctrl+C — session still alive"
             )
 
         finally:
@@ -1056,7 +1150,7 @@ class TestPickerTerminal:
             self._start_session("nowreck --interactive")
 
             # --- Step 1: Wait for menu, select Verify by pressing Enter ---
-            self._poll_pane("What would you like to do?")
+            self._wait_for_output("What would you like to do?")
 
             subprocess.run(
                 ["tmux", "send-keys", "-t", self._session_name(), "Enter"],
@@ -1065,7 +1159,7 @@ class TestPickerTerminal:
             )
 
             # --- Step 2: Wait for the text prompt to render ---
-            output = self._poll_pane("Describe the change")
+            output = self._wait_for_output("Describe the change")
 
             # --- Step 3: Send Enter to submit empty prompt ---
             subprocess.run(
@@ -1075,7 +1169,7 @@ class TestPickerTerminal:
             )
 
             # --- Step 4: Wait for the result message ---
-            output = self._poll_pane("No prompt provided")
+            output = self._wait_for_output("No prompt provided")
 
             assert "No prompt provided" in output, (
                 f"Expected 'No prompt provided' in:\n{output}"

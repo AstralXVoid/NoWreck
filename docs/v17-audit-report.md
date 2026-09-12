@@ -87,6 +87,7 @@ verified against the real scanners, not assumed from docs:
 | **Rust trait default methods are callers** | `traits.rs` `trait Drawable { fn describe(...) }` body is walked | Their calls are still subject to the macro boundary above |
 | **Rust closures are walked (unlike JS arrows)** | `closures.rs` `b.1.cmp(&a.1)`, `traits.rs` `s.area()` inside closure args — captured | The Rust walker skips only `function_item`; closure bodies are attributed to the enclosing fn |
 | **Go `).`-paren receivers captured** | `structs.rs` `(dx * dx + dy * dy).sqrt()` emitted | Paren-group resolution: `(` preceded by an operator is a grouped expression, not a call |
+| **JS/TS class-field non-function initialisers are not calls** | Probe (Phase 1 review): `class A { n: number = compute(); }` → the parser emits nothing for `compute` and the checker independently agrees (both empty), unlike the arrow form of the same field (G3), which both capture | A class-field initialiser is class-shell content with no caller — the class-body form of the "a call must have a caller" boundary the corpus already pins for module-level statements. The asymmetry (arrow field = caller, expression field = not) is deliberate; pinned in `tests/test_call_edges.py` so it is visible rather than mistaken for a missed capture |
 
 ---
 
@@ -181,7 +182,7 @@ parser handles the construct correctly.
 | Call-capture completeness | See Section 4 — super calls captured, constructors excluded, macros token-tree, turbofish excluded, patterns excluded, decorator calls captured, optional chains captured, receiver precision verified. |
 | Hash normalization robustness | Not re-broken by any checker change; corpus formatting-variety files (`edge_formatting.*`) pass with identical symbol sets — the v16 pinned rows' spirit is preserved. (Body-hash level is outside the differential checker's scope by design — it compares symbols and calls, not hashes.) |
 | Accepted-edges hygiene | Every Section 4 boundary is now written down with evidence — the v17 replacement for v16's §Accepted Edges, which stays true where it touches this audit. |
-| Dead code / drift | `tests/helpers/pty_helper.py`: **zero importers** (repo-wide grep; 100 lines; PTY harness for `--interactive`, superseded by the tmux picker integration tests) → **Phase 1: delete**. Prompt drift: `SYSTEM_PROMPT` header claims "Python code repositories" (prompts.py:10) and the v10 claim list parenthesizes `(TS/TSX/Rust/Go)` (prompts.py:110) — both stale the moment a new language lands → updated in the language phase that introduces each language. |
+| Dead code / drift | `tests/helpers/pty_helper.py`: **zero importers** (repo-wide grep; PTY harness for `--interactive`, superseded by the tmux picker integration tests) → **deleted in Phase 1**. Prompt drift: `SYSTEM_PROMPT` header claims "Python code repositories" (prompts.py:10) and the v10 claim list parenthesizes `(TS/TSX/Rust/Go)` (prompts.py:110) — both stale the moment a new language lands → updated in the language phase that introduces each language. |
 
 ---
 
@@ -190,12 +191,12 @@ parser handles the construct correctly.
 | Language | Corpus | Checker bugs found (Section 5) | REAL GAPs | Accepted edges verified (Section 4) |
 |---|---|---|---|---|
 | Python | 12 files | module-level over-capture; decorator `@name(...)` call sites | none | decorator calls captured; `super().m()` / `f().bar()` excluded (receiver-is-a-call); nested functions are not symbols (parity) |
-| JavaScript | 12 files | `get`/`set`/`from` wrongly excluded; multi-line/async/static/generic method headers; template `${}` blanking; receiver-dot over-exclusion | **G2** (`realworld.js` `handler`, `unsubscribe`); **G3** (`classes.js` `increment`) | `new X()` excluded; `super.x()` captured; optional chains captured; subscript/string/paren/object-literal receivers captured |
-| TypeScript | 12 files | `get`/`set`/`from`; generic methods + generic functions; arrow consts with return types; typed consts; class-body depth freeze | **G2** (`realworld.ts` `off`) | `as (T)` casts stay keywords; interface members are not symbols (parity); same call set as JS |
+| JavaScript | 12 files | `get`/`set`/`from` wrongly excluded; multi-line/async/static/generic method headers; template `${}` blanking; receiver-dot over-exclusion | ~~**G2** (`realworld.js` `handler`, `unsubscribe`); **G3** (`classes.js` `increment`)~~ → **fixed in Phase 1** | `new X()` excluded; `super.x()` captured; optional chains captured; subscript/string/paren/object-literal receivers captured |
+| TypeScript | 12 files | `get`/`set`/`from`; generic methods + generic functions; arrow consts with return types; typed consts; class-body depth freeze | ~~**G2** (`realworld.ts` `off`)~~ → **fixed in Phase 1** | `as (T)` casts stay keywords; interface members are not symbols (parity); same call set as JS |
 | Rust | 12 files | lifetimes eaten as char literals; `r##"..."##` raw-string closer; macro arguments not blanked; `impl … where … {` pending state; pattern-position `Some/Ok/Err`; leading-dot chain lines | none | macro args are a flat `token_tree`; turbofish/`::` targets excluded; closures walked; trait default methods are callers |
 | Go | 12 files | trailing-newline-at-EOF parse requirement (corpus + permanent test); `type (...)` group form | none | pointer/generic receivers → METHOD; `).`-paren receivers captured |
 
-Totals: **3 REAL GAPs** (all one JS/TS caller-walker class), **12 accepted
+Totals: **3 REAL GAPs** (all one JS/TS caller-walker class), **13 accepted
 edges** evidence-verified, **14 checker defects fixed**, **60 corpus files**,
 **64 permanent tests**.
 
@@ -203,7 +204,8 @@ edges** evidence-verified, **14 checker defects fixed**, **60 corpus files**,
 
 ## 8. Phase 1 fix list (frozen)
 
-No new fixes enter Phase 1 without re-running the audit:
+No new fixes entered Phase 1 without re-running the audit. All four items are
+closed — the resolution log is Section 9:
 
 1. **G1 + G2**: anonymous arrows in argument/return position — collect as
    callers, attribute to nearest named caller. Tests: corpus files already
@@ -218,3 +220,115 @@ No new fixes enter Phase 1 without re-running the audit:
 
 Everything else in this report is either a fixed checker bug (Section 5,
 already green) or an accepted edge (Section 4, mirrored + documented).
+
+---
+
+## 9. Phase 1 remediation — closed
+
+### Production fix: G1 + G2 + G3 (one root cause)
+
+The three REAL GAPs were one defect in the shared call walker
+(`nowreck/scanner/_tree_sitter_helpers.py`), not three: the walker treated
+*every* function-valued node as caller-owning, so (a) an anonymous arrow
+(`fn(() => x())`, `return () => y()`) was skipped entirely — no caller to
+attribute its calls to — and (b) JS/TS class-field arrows were never
+collected as callers at all.
+
+| Change | Effect |
+|---|---|
+| `_FUNCTION_VALUE_TYPES` / `_INITIALISER_NODE_TYPES` / `_NAMED_FUNCTION_TYPES` module constants | One named place for the node sets, shared by the collector and the body walker (the old logic duplicated the type tuples in both functions — the drift that hid G3) |
+| `_function_valued_initialiser()` | Recognises `variable_declarator`, JS `field_definition`, TS `public_field_definition` — unwrapping parens — and returns `(name_node, function_node)` |
+| `_has_own_caller()` | A caller owns its body only when it is genuinely named: named declarations/methods always; declarators and class fields only when their value is a function. An anonymous function expression does **not** — its calls belong to the nearest *enclosing named* caller |
+| `find_tree_sitter_calls_in_body()` now skips only `_has_own_caller(child)` nodes | Anonymous-arrow calls are no longer dropped (G1/G2) and class-field arrow bodies are walked by their own collector entry (G3) |
+
+Net effect: JS `realworld.js` (`handler`, `unsubscribe`), TS `realworld.ts`
+(`off`) and JS `classes.js` (`increment`) all agree with the checker, so
+`EXPECTED_DIVERGENCES` is now **empty** — with the map-hygiene test
+(`test_map_keys_are_live_divergences`) keeping it honest, a fixed gap's entry
+must be deleted rather than left to rot.
+
+**Tests:** the corpus files above are the catching tests (they failed before
+the fix, pass after); 23 additional pinning tests in
+`tests/test_call_edges.py` freeze every documented boundary from Section 4 so
+a boundary cannot drift silently — including one boundary the audit had not
+probed and Phase 1's review surfaced (class-field initialisers whose value is
+not a function: not a caller, on both checker and parser, Section 4). Neither the corpus nor the pins were
+written to match the implementation — every assertion was verified against
+the parsers first.
+
+### Flake kill: `TestPickerTerminal` (the named Phase 1 item)
+
+Root cause is a **race with process start-up**, not a fixed render delay: the
+child `nowreck --interactive` interpreter needs ~7s (measured up to 8.4s under
+load) just to import and draw the menu, so the previous fixed 15s deadline
+had ~1.8x headroom — guaranteed to lose the race when the box is loaded (the
+full suite itself ranged 19s → 103s in these runs). The old loop also had two
+fast-failure paths: a `tmux` subprocess `TimeoutExpired` escaped as a test
+*error*, and the wait returned the instant the expected token appeared.
+
+| Change | Why |
+|---|---|
+| `_PANE_TIMEOUT` 30s (was 15s) | Sized to the measured start-up, not a guess |
+| `_capture_pane()` tolerates `TimeoutExpired` → `""` | A slow `tmux` under load must mean "keep waiting", never an error |
+| `_session_exists()` treats `TimeoutExpired` as "still alive" | Conservative answer: neither fails a test nor ends a wait early |
+| `_wait_for_output_once()` stops early when the session is gone | The process exited — the pane is final, so do not burn the deadline |
+| `_wait_for_output_once()` requires **settled** (4 identical captures) **after** matching | Scope's "pane-settled" condition: assertions see a complete frame |
+| `_wait_for_output()` retries the whole wait once | A single slow start must not fail the test (the scope's one-retry rule) |
+| `_poll_session_dead()` 20s, and its assertion message now interpolates the real timeout | The old message claimed "5s" while waiting 10s |
+
+Two empirical findings drove the shape of the fix, and both are why the
+obvious implementations are wrong:
+
+- A **naive settle check is a bug**: the pane is stable-and-empty for the
+  first ~2s before the menu exists, so "stop when stable" alone would exit
+  early and fail. The settle condition is therefore gated on `matched`.
+- The frames under test render **atomically** (prompt + all 5 choices; result
+  text + pause text in one frame), which is why settle is a safety net rather
+  than the fix for a half-render.
+
+**Honest record:** one failure was observed in a 10-run batch *before* this
+hardening (run 6, normal duration, identity not captured because only the
+summary line was retained — the batch was not logging tracebacks). It did not
+reproduce in ~25 subsequent runs around the same load, and the hardening
+above closes every fast-failure path the code has. The final code was then
+gated on:
+
+**Gate evidence — 10 consecutive clean full-suite runs, final code:**
+
+| Run | Result | Time |
+|---|---|---|
+| 1 | 1091 passed | 38.12s |
+| 2 | 1091 passed | 39.00s |
+| 3 | 1091 passed | 40.00s |
+| 4 | 1091 passed | 39.31s |
+| 5 | 1091 passed | 40.00s |
+| 6 | 1091 passed | 39.41s |
+| 7 | 1091 passed | 39.22s |
+| 8 | 1091 passed | 39.11s |
+| 9 | 1091 passed | 39.74s |
+| 10 | 1091 passed | 38.87s |
+
+All ten ran back-to-back on a 2-core host at load average 3.07 (i.e.
+deliberately *inside* the regime that produced the original flake); the suite
+was also observed at 103s under heavier load during this phase, so the
+headroom is real rather than incidental. Counting the same production-and-
+picker revision's earlier runs, that is **18 consecutive green full-suite
+runs on the final code** (8 + 10), out of 52 green full-suite runs across the
+phase's hardening batches (9/10, 15, 10, 8, 10) — against the one failure
+recorded before hardening.
+
+### Dead code
+
+`tests/helpers/pty_helper.py` deleted (Section 6) — zero importers, verified
+repo-wide before removal.
+
+### Phase 1 verification
+
+| Gate | Result |
+|---|---|
+| Differential audit | 64 passed, `EXPECTED_DIVERGENCES` empty and hygiene-enforced |
+| Accepted edges pinned | 23 tests in `tests/test_call_edges.py` |
+| Full suite | 1091 passed (1004 baseline + 64 differential + 23 pins) |
+| `ruff check` / `ruff format --check` | All checks passed / 93 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| Production code touched | `nowreck/scanner/_tree_sitter_helpers.py` only |
