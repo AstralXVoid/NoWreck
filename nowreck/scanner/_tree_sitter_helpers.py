@@ -19,12 +19,17 @@ logger = logging.getLogger(__name__)
 # Leaf node types whose text is part of the structural hash only after
 # quote-style normalisation: ``"x"`` and ``'x'`` must hash identically.
 # Union across grammars; a type absent from a grammar never matches.
+# ``character_literal`` is Java's ``'x'``.  Java text blocks are *not*
+# a separate node type — they parse as ``string_literal`` with a
+# three-character double-quote delimiter (Phase 2 probe J7), which
+# ``_strip_outer_quotes`` handles.
 STRING_NODE_TYPES: frozenset[str] = frozenset(
     {
         "string",
         "string_literal",
         "raw_string_literal",
         "char_literal",
+        "character_literal",
         "interpreted_string_literal",
         "rune_literal",
         "template_string",
@@ -215,28 +220,52 @@ def _strip_outer_quotes(text: str) -> str:
     ``"x"`` and ``'x'`` both become ``x``; a Rust raw string
     ``r"x"`` keeps its ``r`` prefix (the delimiters differ from the
     value, so quote-style normalisation does not apply).
+
+    A Java text block (``\"\"\"x\"\"\"``) strips all three delimiter
+    characters — stripping one would leave ``\"\"x\"\"`` and mangle the
+    hash (Phase 2 probe J7).  Java is the only grammar whose string
+    literal can carry a three-character delimiter.
     """
+    if len(text) >= 6 and text.startswith('"""') and text.endswith('"""'):
+        return text[3:-3]
     if len(text) >= 2 and text[0] == text[-1]:
         return text[1:-1]
     return text
 
 
-def _class_shell_hash(
+# Method-like nodes omitted from a class *shell* hash: a class shell
+# must never fire ``CHANGED_CLASS`` for a method edit (disjoint-facts
+# rule).  The set spans the grammars whose class shells are hashed —
+# JS/TS ``method_definition`` and Java ``method_declaration`` /
+# ``constructor_declaration`` / ``compact_constructor_declaration``
+# (a record's compact constructor is its own node type).
+_METHOD_NODE_TYPES: frozenset[str] = frozenset(
+    {
+        "method_definition",
+        "method_declaration",
+        "constructor_declaration",
+        "compact_constructor_declaration",
+    }
+)
+
+
+def class_shell_hash(
     class_node: Node,
     source_bytes: bytes,
     *,
     excluded_leaf_types: frozenset[str] = frozenset(),
 ) -> str:
-    """Structural hash of a class *shell only*.
+    """Structural hash of a class/record/enum *shell only*.
 
-    Serialises the ``class_declaration`` subtree (decorators, name,
-    heritage, class body) while excluding every ``method_definition``
-    subtree — getter/setter/static/async modifiers live *inside* the
-    method subtree and go with it — and, for TypeScript, decorator
-    siblings attached to a method.  A method edit therefore never fires
-    ``CHANGED_CLASS`` (disjoint-facts rule), at any nesting depth (e.g.
-    methods of a class expression stored in a static field).  Class-level
-    decorators and class fields remain in the shell.
+    Serialises the declaration subtree (modifiers, annotations, name,
+    heritage, class body) while excluding every method-like subtree
+    (``_METHOD_NODE_TYPES``) — getter/setter/static/async modifiers, and
+    Java modifiers/annotations, live *inside* the method subtree and go
+    with it — and, for TypeScript, decorator siblings attached to a
+    method.  A method edit therefore never fires ``CHANGED_CLASS``
+    (disjoint-facts rule), at any nesting depth (e.g. methods of a class
+    expression stored in a static field, or a Java nested class).
+    Class-level decorators/annotations and fields remain in the shell.
     """
     parts: list[str] = [class_node.type]
     for child in class_node.children:
@@ -271,7 +300,7 @@ def _serialize_node(
         return ""
     if node.type in excluded_leaf_types:
         return ""
-    if skip_methods and node.type == "method_definition":
+    if skip_methods and node.type in _METHOD_NODE_TYPES:
         return ""
     parts: list[str] = [node.type]
     if node.type in STRING_NODE_TYPES and node.type != "template_string":
@@ -336,7 +365,7 @@ def _is_method_decorator(children: list[Node], index: int) -> bool:
     j = index + 1
     while j < len(children) and children[j].type == "decorator":
         j += 1
-    return j < len(children) and children[j].type == "method_definition"
+    return j < len(children) and children[j].type in _METHOD_NODE_TYPES
 
 
 def is_dunder_name(name: str) -> bool:
@@ -487,7 +516,7 @@ def collect_top_level_symbols(
                         symbol_type=SymbolType.CLASS,
                         file_path=file_path,
                         line_number=class_line,
-                        body_hash=_class_shell_hash(
+                        body_hash=class_shell_hash(
                             node,
                             source_bytes,
                             excluded_leaf_types=ASI_LEAF_EXCLUSIONS,

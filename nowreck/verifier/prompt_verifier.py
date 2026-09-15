@@ -433,6 +433,7 @@ class PromptModeVerifier:
             + len(before.scan_result.ts_files)
             + len(before.scan_result.rust_files)
             + len(before.scan_result.go_files)
+            + len(before.scan_result.java_files)
         )
         logger.info("Captured BEFORE state: %d files", n_files)
 
@@ -473,6 +474,7 @@ class PromptModeVerifier:
                 + len(after.scan_result.ts_files)
                 + len(after.scan_result.rust_files)
                 + len(after.scan_result.go_files)
+                + len(after.scan_result.java_files)
             )
             logger.info("Captured AFTER state: %d files", n_files_after)
 

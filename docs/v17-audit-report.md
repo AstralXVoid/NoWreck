@@ -332,3 +332,64 @@ repo-wide before removal.
 | `ruff check` / `ruff format --check` | All checks passed / 93 files already formatted |
 | `basedpyright` | 0 errors, 0 warnings, 0 notes |
 | Production code touched | `nowreck/scanner/_tree_sitter_helpers.py` only |
+---
+
+## 10. Phase 2 — Java remediation — closed
+
+### Dependency floor (verified empirically before any collector code)
+
+`tree-sitter-java>=0.23` pinned in `pyproject.toml`; installed 0.23.5 verified
+against `tree-sitter` 0.26.0 (ABI 14, parses cleanly). Pinned permanently in
+`tests/test_java_probes.py` (`TestDependencyFloor`).
+
+### Fixture probes J1–J12 — resolved empirically, each pinned as a permanent test
+
+Every grammar shape the scanner depends on was probed before collector code was
+written and pinned in `tests/test_java_probes.py` (33 tests). Deviations from
+the scope's assumptions are recorded in the `java_scanner.py` module docstring;
+the two that changed behavior:
+
+- **J7**: Java text blocks are `string_literal` nodes, not a `text_block`
+  node type — the helper's Java string handling covers them as-is.
+- **Compact constructors** are `compact_constructor_declaration` (distinct
+  from `constructor_declaration`) — found while building the sample suite,
+  added to the method set and the shell-hash skip set, pinned (J5).
+
+### Scanner + pipeline integration
+
+`nowreck/scanner/java_scanner.py` (new): symbols (`class`/`record` → CLASS,
+`interface`/`@interface` → INTERFACE, `enum` → ENUM, all method-like decls →
+METHOD with `parent_class`) and calls (`method_invocation` with the JS/TS
+receiver rule: every receiver except a call resolves to its final name).
+Wired through `repository_scanner` (`.java` discovery, cache, failure
+accounting), `symbol_index` merge, `change_detector._extract_calls`,
+`prompt_verifier` n_files counts, and the model/verifier prompt language lists.
+
+### Family-policy parity (verified against the JS/TS production rule)
+
+`this.foo()`, `A.B.foo()`, `super.foo()`, `a[0].bar()`, `"s".strip()` are
+captured; `f().bar()` and `new Foo()` are excluded; `Foo::bar` is a reference,
+not a call. Member dunder-name calls are excluded, bare `__x__()` is not.
+
+### Adversarial parity probes (all exact parity, checker == parser)
+
+Anonymous classes (nested in a method and field-level), field-initializer
+lambdas, static/instance initializer blocks, explicit constructor invocations
+(`this(...)`/`super()`), enum-constant bodies — probed through the real
+`parse_corpus`/`extract_symbols`/`extract_called_names` API; zero divergence.
+All shapes were already pinned in the Java corpus (`edge_lambdas`,
+`edge_records`, `edge_negatives`).
+
+### Phase 2 verification
+
+| Gate | Result |
+|---|---|
+| Differential audit | 79 passed (64 + 15 Java corpus files), `EXPECTED_DIVERGENCES` empty |
+| Java probe pins | 33 passed (`tests/test_java_probes.py`) |
+| Full suite | 1190 passed (1091 + 33 probes + integration tests across scanner/symbol_index/detector/body_hash/cache/cli/dependency-errors + 6 milestone checkpoints) |
+| Sample suites | types + comprehensive + multiround all green (run as scripts) |
+| Milestone repo | `pure-java` checkpoint class green (94 passed in the checkpoint module) |
+| `ruff check` / `ruff format --check` | All checks passed / 98 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| Production code touched | `java_scanner.py` (new), `_tree_sitter_helpers.py` (Java comment/string node types + `_METHOD_NODE_TYPES`), pipeline wiring (repository_scanner, symbol_index, change_detector, prompt_verifier, model prompts), `pyproject.toml` (dependency) |
+| API hygiene | `_class_shell_hash` → public `class_shell_hash` (shared cross-module, matching `structural_hash`) |

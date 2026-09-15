@@ -52,6 +52,7 @@ PURE_TS_REPO = REPOS / "pure-ts" / "src"
 PURE_TSX_REPO = REPOS / "pure-tsx" / "src"
 PURE_RUST_REPO = REPOS / "pure-rust" / "src"
 PURE_GO_REPO = REPOS / "pure-go" / "src"
+PURE_JAVA_REPO = REPOS / "pure-java" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3  # greeter.py, calculator.py, models.py
@@ -60,6 +61,7 @@ EXPECTED_TS_FILES = 3  # greeter.ts, calculator.ts, models.ts
 EXPECTED_TSX_FILES = 3  # greeter.tsx, calculator.tsx, models.tsx
 EXPECTED_RUST_FILES = 3  # greeter.rs, calculator.rs, models.rs
 EXPECTED_GO_FILES = 3  # greeter.go, calculator.go, models.go
+EXPECTED_JAVA_FILES = 3  # Greeter.java, Calculator.java, Models.java
 EXPECTED_MIXED_PY = 2  # utils.py, main.py
 EXPECTED_MIXED_JS = 2  # utils.js, ui_handler.js
 
@@ -139,6 +141,11 @@ def pure_rust_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_go_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_GO_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_java_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_JAVA_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -881,7 +888,252 @@ class TestPureGoRepo:
         assert changes1 == changes2
 
 
-# 6. Mixed Python + JavaScript repo
+# 6. Pure Java repo
+# ---------------------------------------------------------------------------
+
+_JAVA_GREETER = """\
+package p;
+
+public class Greeter {
+    public static String greet(String name) {
+        return formatGreeting(name);
+    }
+}
+"""
+
+_JAVA_GREETER_WITH_CTOR = """\
+package p;
+
+public class Greeter {
+    private final String prefix;
+
+    public Greeter(String prefix) {
+        this.prefix = prefix;
+    }
+
+    public static String greet(String name) {
+        return formatGreeting(name);
+    }
+}
+"""
+
+_JAVA_ENUM_A = """\
+package p;
+
+enum Status {
+    ACTIVE, INACTIVE
+}
+"""
+
+_JAVA_ENUM_B = """\
+package p;
+
+enum Status {
+    ACTIVE, INACTIVE, ARCHIVED
+}
+"""
+
+
+def _java_changes(
+    tmp_path: Path,
+    pre: dict[str, str],
+    post: dict[str, str],
+) -> list[DetectedChange]:
+    """Scan two in-memory Java trees and detect changes between them."""
+    pre_dir = tmp_path / "pre"
+    post_dir = tmp_path / "post"
+    pre_dir.mkdir()
+    post_dir.mkdir()
+    for name, source in pre.items():
+        (pre_dir / name).write_text(source, encoding="utf-8")
+    for name, source in post.items():
+        (post_dir / name).write_text(source, encoding="utf-8")
+    return _changes_between(pre_dir, post_dir)
+
+
+class TestPureJavaRepo:
+    """3 Java files with classes, methods, interfaces, enums, calls."""
+
+    def test_discovers_all_files(self, pure_java_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_java_scan
+        assert scan.success_count == EXPECTED_JAVA_FILES
+        assert scan.failure_count == 0
+        assert len(scan.java_files) == EXPECTED_JAVA_FILES
+        assert set(scan.java_files) == {
+            Path("Greeter.java"),
+            Path("Calculator.java"),
+            Path("Models.java"),
+        }
+
+    def test_greeter_has_symbols(self, pure_java_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_java_scan
+        # Java has no top-level functions: methods carry parent_class.
+        greet = idx.by_name("greet")
+        assert len(greet) == 1
+        assert greet[0].symbol_type is SymbolType.METHOD
+        assert greet[0].parent_class == "Greeter"
+        assert len(idx.by_name("formatGreeting")) == 1
+        assert len(idx.by_name("farewell")) == 1
+
+    def test_calculator_has_class_and_methods(
+        self, pure_java_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_java_scan
+        # The constructor shares the class name — filter by type.
+        calc = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.CLASS
+        ]
+        assert len(calc) == 1
+        add_methods = [s for s in idx.by_name("add") if s.parent_class == "Calculator"]
+        assert len(add_methods) == 1
+        assert add_methods[0].symbol_type is SymbolType.METHOD
+        for name in ("subtract", "multiply", "divide", "display", "computeAverage"):
+            assert any(s.parent_class == "Calculator" for s in idx.by_name(name)), name
+
+    def test_constructor_is_a_method_named_after_the_class(
+        self, pure_java_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_java_scan
+        ctor = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.METHOD
+        ]
+        assert len(ctor) == 1
+        assert ctor[0].parent_class == "Calculator"
+
+    def test_models_has_types(self, pure_java_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_java_scan
+
+        def only(name: str, kind: SymbolType) -> list:
+            return [s for s in idx.by_name(name) if s.symbol_type is kind]
+
+        assert len(only("User", SymbolType.CLASS)) == 1
+        assert len(only("AdminUser", SymbolType.CLASS)) == 1
+        assert len(only("Reader", SymbolType.INTERFACE)) == 1
+        assert len(only("Status", SymbolType.ENUM)) == 1
+
+    def test_symbol_index_has_java_symbols(
+        self, pure_java_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_java_scan
+        assert len(idx.functions) == 0  # Java has no top-level functions
+        assert len(idx.classes) >= 4  # Greeter, Calculator, User, AdminUser
+        assert len(idx.interfaces) >= 1  # Reader
+        assert len(idx.enums) >= 1  # Status
+        assert len(idx.methods) >= 12
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_JAVA_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        # Greeter.greet -> formatGreeting
+        assert ("greet", "formatGreeting") in callers
+        # AdminUser.display -> super.display()
+        assert ("display", "display") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_JAVA_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_JAVA_FILES
+        assert ChangeType.ADD_FUNCTION in {c.change_type for c in changes}
+        assert ChangeType.ADD_CLASS in {c.change_type for c in changes}
+        assert ChangeType.ADD_INTERFACE in {c.change_type for c in changes}
+        assert ChangeType.ADD_ENUM in {c.change_type for c in changes}
+
+    def test_no_changes_when_identical(
+        self, pure_java_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan, idx = pure_java_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(
+        self, pure_java_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan1, idx1 = pure_java_scan
+        scan2, idx2 = _scan_and_index(PURE_JAVA_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
+
+    def test_adding_a_constructor_is_add_function_not_add_class(
+        self, tmp_path: Path
+    ) -> None:
+        """J5 pin: a constructor is a METHOD Symbol named after its class,
+        so adding one fires ``ADD_FUNCTION Foo`` with ``parent_class=Foo``
+        next to the existing ``CLASS Foo`` — the two coexist because kinds
+        differ in the symbol identity."""
+        changes = _java_changes(
+            tmp_path,
+            {"Greeter.java": _JAVA_GREETER},
+            {"Greeter.java": _JAVA_GREETER_WITH_CTOR},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [
+            ("Greeter", "Greeter")
+        ]
+        # The class itself still exists — no identity collision.
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_CLASS)
+
+    def test_enum_constant_edit_fires_changed_class(self, tmp_path: Path) -> None:
+        """J11 pin: enum constants are class-shell content, so adding one
+        surfaces as ``CHANGED_CLASS`` (there is no ``CHANGED_ENUM`` claim
+        type — ENUM collapses into CLASS for hash comparison)."""
+        changes = _java_changes(
+            tmp_path,
+            {"Status.java": _JAVA_ENUM_A},
+            {"Status.java": _JAVA_ENUM_B},
+        )
+        assert [
+            (c.symbol_name, c.change_type)
+            for c in changes
+            if c.change_type is ChangeType.CHANGED_CLASS
+        ] == [("Status", ChangeType.CHANGED_CLASS)]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert not _changes_of_type(changes, ChangeType.ADD_ENUM)
+
+    def test_method_edit_is_changed_function_only(self, tmp_path: Path) -> None:
+        """Disjoint facts: a method body edit never fires CHANGED_CLASS."""
+        body = (
+            "package p;\n\n"
+            "public class A {\n"
+            "    private int f = 1;\n\n"
+            "    int m() {\n"
+            "        return @V@;\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = _java_changes(
+            tmp_path,
+            {"A.java": body.replace("@V@", "1")},
+            {"A.java": body.replace("@V@", "2")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert changes[0].symbol_name == "m"
+        assert changes[0].parent_class == "A"
+
+    def test_field_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        """Disjoint facts, the other direction."""
+        body = (
+            "package p;\n\n"
+            "public class A {\n"
+            "    private int f = @V@;\n\n"
+            "    int m() {\n"
+            "        return 1;\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = _java_changes(
+            tmp_path,
+            {"A.java": body.replace("@V@", "1")},
+            {"A.java": body.replace("@V@", "2")},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+
+# 7. Mixed Python + JavaScript repo
 # ---------------------------------------------------------------------------
 
 

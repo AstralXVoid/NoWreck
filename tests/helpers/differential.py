@@ -40,13 +40,16 @@ String/comment stripping is deliberately conservative and line-preserving:
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
+from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Language registry
 # ---------------------------------------------------------------------------
 
-LANGS = ("python", "javascript", "typescript", "rust", "go")
+LANGS = ("python", "javascript", "typescript", "rust", "go", "java")
 
 KIND_FUNCTION = "function"
 KIND_METHOD = "method"
@@ -278,12 +281,38 @@ def _strip_go(source: str) -> str:
     return _GO_TOKEN.sub(_blank, source)
 
 
+# Java: a single left-to-right pass matches block comments, line
+# comments, text blocks (``"""``), double-quoted strings and character
+# literals as alternatives — the leftmost match wins, so a ``//`` inside
+# a string or a quote inside a comment can never be misattributed (no
+# ordering hazard).  The text-block alternative **must** precede the
+# plain-string one: both start at a ``"`` and the earlier alternative
+# wins, so ``"""…"""`` is consumed whole instead of leaving a dangling
+# quote behind (J7 — the grammar models text blocks as
+# ``string_literal`` and so does the stripper).  Text blocks may span
+# lines and a trailing ``\`` continues them, hence ``re.DOTALL``.
+_JAVA_TOKEN = re.compile(
+    r"(?P<block>/\*.*?\*/)"
+    r"|(?P<line>//[^\n]*)"
+    r'|(?P<textblock>"""(?:\\.|[^\\])*?""")'
+    r'|(?P<string>"(?:\\.|[^"\\])*"'
+    r"|'(?:\\.|[^'\\])*')",
+    re.DOTALL,
+)
+
+
+def _strip_java(source: str) -> str:
+    """Blank comments, text blocks, strings and char literals in one pass."""
+    return _JAVA_TOKEN.sub(_blank, source)
+
+
 _STRIPPERS = {
     "python": _strip_python,
     "javascript": _strip_javascript,
     "typescript": _strip_typescript,
     "rust": _strip_rust,
     "go": _strip_go,
+    "java": _strip_java,
 }
 
 
@@ -513,6 +542,63 @@ _KEYWORDS: dict[str, frozenset[str]] = {
             "goto",
             "import",
             "package",
+        }
+    ),
+    "java": frozenset(
+        {
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "switch",
+            "case",
+            "default",
+            "break",
+            "continue",
+            "return",
+            "throw",
+            "try",
+            "catch",
+            "finally",
+            "assert",
+            "synchronized",
+            "new",
+            "instanceof",
+            "this",
+            "super",
+            "class",
+            "interface",
+            "enum",
+            "extends",
+            "implements",
+            "throws",
+            "import",
+            "package",
+            "yield",
+            "void",
+            "public",
+            "protected",
+            "private",
+            "static",
+            "final",
+            "abstract",
+            "native",
+            "strictfp",
+            "transient",
+            "volatile",
+            "boolean",
+            "byte",
+            "char",
+            "short",
+            "int",
+            "long",
+            "float",
+            "double",
+            # NOTE: ``record`` / ``var`` / ``sealed`` / ``permits`` are
+            # *contextual* keywords in Java — they are legal method
+            # names (``obj.record()``), so they are deliberately NOT
+            # listed here.
         }
     ),
 }
@@ -753,12 +839,463 @@ def _go_call_mask(source: str) -> list[int]:
     return _brace_fn_mask(source, _strip_go, _GO_FN)
 
 
+# ---------------------------------------------------------------------------
+# Java: declaration heads (methods, constructors, types)
+# ---------------------------------------------------------------------------
+#
+# Java has no declaration keyword to anchor on — a method header is
+# ``name(params)`` like a call — so the checker classifies each
+# *statement* by shape.  A declaration is a ``name(...)`` group whose name
+# is preceded by a modifier/return-type prefix (``public int m(``,
+# ``void m(``, ``default int m(``) and whose prefix is neither a
+# control-flow head nor an assignment/member chain.
+#
+# Rejections that keep ordinary statements and control flow out:
+# ``foo(x);`` (bare name, ``;`` form), ``obj.foo(x);`` and
+# ``System.out.println(x);`` (prefix ends with ``.``), ``x = foo();``
+# (prefix ends with ``=``), ``Util.<T>parse(x);`` (prefix ends with
+# ``>``), ``return foo();`` / ``assert foo();`` / ``yield foo();``
+# (prefix head is a keyword), ``throw new Foo();`` / ``new Foo().bar();``
+# / anonymous-class bodies (prefix ends with ``new``), ``if (x) {`` /
+# ``for (…) {`` / ``catch (E e) {`` / ``switch (x) {`` /
+# ``synchronized (l) {`` (name is a control keyword), ``(x) -> {`` (no
+# paren group closes the head) and ``static {`` / ``{`` (no paren group
+# at all).  A **bare** ``Name(...)`` head is a declaration only in front
+# of a ``{`` — ``Foo(int x) {`` is a package-private constructor while
+# ``foo(x);`` is a call statement.
+_JAVA_NON_DECL_NAMES = frozenset(
+    {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "synchronized",
+        "new",
+        "return",
+        "throw",
+        "assert",
+        "do",
+        "else",
+        "case",
+        "yield",
+        "this",
+        "super",
+        "instanceof",
+        "try",
+        "finally",
+        "default",
+    }
+)
+# First word of the prefix: a control-flow / expression statement head.
+# ``default`` is deliberately absent — it is a legal method modifier
+# (``default int doubleIt() {``).
+_JAVA_NON_DECL_PREFIX = frozenset(
+    {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "synchronized",
+        "try",
+        "do",
+        "else",
+        "return",
+        "throw",
+        "assert",
+        "new",
+        "case",
+        "yield",
+        "break",
+        "continue",
+        "instanceof",
+        "this",
+        "super",
+        "package",
+        "import",
+    }
+)
+# A prefix ending in one of these is never a declaration head.
+_JAVA_PREFIX_BAD_TAIL = ".)]=+-*/&|!?:,"
+
+
+def _java_head_names(head: str, *, allow_bare: bool) -> tuple[str, bool] | None:
+    """Classify a brace-free Java statement head as a method/constructor.
+
+    Returns ``(name, has_prefix)`` — ``has_prefix`` is False for a bare
+    ``Name(...)`` head, the shape a package-private constructor shares with
+    an enum constant that has a body — or ``None`` when *head* is not a
+    declaration.  ``allow_bare`` must be True when classifying a head that
+    precedes a ``{`` (``Foo(int x) {`` is a constructor) and False for a
+    head that precedes a ``;`` (``foo(x);`` is a call statement).
+    """
+    s = re.sub(r"\s+", " ", head).strip()
+    if not s:
+        return None
+    # The head must end in ``)``, optionally followed by ``throws E``.
+    tail = re.search(r"\)(?:\s+throws\s+[\w$.,<>\[\]\s]+)?$", s)
+    if tail is None:
+        return None
+    depth = 0
+    open_paren = -1
+    j = tail.start()
+    while j >= 0:
+        ch = s[j]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            depth -= 1
+            if depth == 0:
+                open_paren = j
+                break
+        j -= 1
+    if open_paren < 0:
+        return None
+    # The name must be the identifier immediately before ``(``.
+    k = open_paren - 1
+    while k >= 0 and s[k].isspace():
+        k -= 1
+    if k < 0 or not (s[k].isalnum() or s[k] in "_$"):
+        return None
+    end = k + 1
+    while k >= 0 and (s[k].isalnum() or s[k] in "_$"):
+        k -= 1
+    name = s[k + 1 : end]
+    prefix = s[: k + 1].strip()
+    if name in _JAVA_NON_DECL_NAMES:
+        return None
+    if prefix:
+        # ``obj.m(x)`` / ``x = m(x)`` / ``Util.<T>parse(x)`` are calls.
+        if prefix[-1] in _JAVA_PREFIX_BAD_TAIL or _java_explicit_type_args(prefix):
+            return None
+        first_word = re.split(r"[\s(\[<]", prefix, maxsplit=1)[0]
+        if first_word in _JAVA_NON_DECL_PREFIX:
+            return None
+        # ``throw new Foo(...);`` / ``new Foo(...) {`` (anonymous body).
+        if re.search(r"\bnew\s*$", re.sub(r"<[^<>]*>\s*$", "", prefix)):
+            return None
+    elif not allow_bare:
+        # A body-less ``;`` declaration always has a modifier or return
+        # type; a bare ``foo(x);`` is a call statement.
+        return None
+    return name, bool(prefix)
+
+
+def _java_explicit_type_args(prefix: str) -> bool:
+    """Whether *prefix* ends in *call* type arguments (``Util.<T>``).
+
+    ``Util.<String>parse(x)`` is a call — its ``<`` follows a ``.`` —
+    while ``Map<String, Long> m(x)`` is a return type whose ``<`` follows
+    the type name.  Both end in ``>``, so the opener is what decides.
+    """
+    if not prefix.endswith(">"):
+        return False
+    depth = 0
+    i = len(prefix) - 1
+    while i >= 0:
+        if prefix[i] == ">":
+            depth += 1
+        elif prefix[i] == "<":
+            depth -= 1
+            if depth == 0:
+                return i >= 1 and prefix[i - 1] == "."
+        i -= 1
+    return False
+
+
+# Type declarations: ``class`` / ``interface`` / ``@interface`` /
+# ``enum`` / ``record``.  The preceding anchor keeps ``SomeType.class``
+# (a class literal) from matching.
+_JAVA_TYPE_RE = re.compile(
+    r"(?:^|[\s;{}])"
+    r"(?:(?:@[\w$.]+(?:\s*\([^)]*\))?)\s*)*"
+    r"(?:(?:public|protected|private|static|final|abstract|sealed|strictfp)\s+)*"
+    r"(?P<kind>@interface|interface|class|enum|record)\s+(?P<name>\w+)"
+)
+
+
+# Annotation and modifier prefixes that may precede a declaration name.
+_JAVA_ANNOTATION_PREFIX = re.compile(r"(?:@[\w$.]+(?:\s*\([^)]*\))?\s*)*")
+_JAVA_MODIFIER_PREFIX = re.compile(
+    r"(?:(?:public|protected|private|static|final|abstract|default|native|"
+    r"strictfp|synchronized|sealed|transient|volatile)\s+)*"
+)
+
+
+def _java_strip_modifiers(head: str) -> str:
+    """Drop leading annotations and modifiers from a declaration *head*.
+
+    ``public Point`` and ``@Deprecated private Point`` both reduce to
+    ``Point`` — the shape a record's compact constructor reduces to, which
+    is how it is recognised (it has no parameter list to anchor on).
+    """
+    flat = re.sub(r"\s+", " ", head).strip()
+    flat = _JAVA_ANNOTATION_PREFIX.sub("", flat)
+    flat = _JAVA_MODIFIER_PREFIX.sub("", flat)
+    return flat.strip()
+
+
+def _java_type_head(head: str) -> tuple[str, str] | None:
+    """``(kind, name)`` for a type declaration *head*, else ``None``.
+
+    ``record`` is a contextual keyword, so it only counts as a
+    declaration when a parameter list follows (``record Foo(int x)``);
+    ``record Foo;`` (a variable declaration) does not.
+    """
+    match = _JAVA_TYPE_RE.search(head)
+    if match is None:
+        return None
+    kind = match.group("kind")
+    if kind == "record":
+        rest = head[match.end() :]
+        if not re.match(r"\s*(?:<[^>]*>)?\s*\(", rest):
+            return None
+    return kind, match.group("name")
+
+
+class _JavaEvent(NamedTuple):
+    """One structural event from :func:`_java_structure`.
+
+    ``event`` is ``"open"`` (a ``{``), ``"close"`` (a ``}``) or
+    ``"semi"`` (a statement-level ``;`` — a semicolon inside parentheses
+    belongs to a ``for`` header and is not a boundary).
+    ``symbol_kind``/``name`` describe a symbol the parser would emit (one
+    of ``KIND_CLASS``/``KIND_INTERFACE``/``KIND_ENUM``/``KIND_METHOD``) or
+    are ``None``.  ``is_fn`` is True when an ``open`` brace begins a body
+    that owns calls (a method, a constructor, or a record's compact
+    constructor).  ``index`` is the event's offset in the source and
+    ``head_start`` the offset where a *declaration* head starts, which is
+    whitespace-blanked before call extraction; it is ``None`` when the
+    head may legitimately contain calls (control flow, anonymous classes).
+    """
+
+    event: str
+    symbol_kind: str | None
+    name: str | None
+    is_fn: bool
+    index: int
+    head_start: int | None
+
+
+def _java_structure(src: str) -> Iterator[_JavaEvent]:
+    """Walk stripped Java source, yielding structural events.
+
+    Classification works on the *statement* text between boundaries, not
+    on a single line, so a header split across lines (a wrapped return
+    type or a multi-line parameter list) is still classified correctly.
+    The parser is the ground truth and this walk mirrors it: members are
+    symbols only while the innermost open body is a *type* body, and an
+    enum constant with a body is never a method.
+    """
+    stack: list[tuple[str, str, str, bool]] = []
+    stmt_start = 0
+    paren = 0
+    for idx, ch in enumerate(src):
+        if ch == "(":
+            paren += 1
+            continue
+        if ch == ")":
+            paren = max(0, paren - 1)
+            continue
+        if ch == "{":
+            head = src[stmt_start:idx]
+            innermost = stack[-1] if stack else None
+            at_type_level = innermost is None or innermost[0] == "type"
+            methods_are_symbols = at_type_level and (
+                innermost is None or innermost[2] != "annotation"
+            )
+            enum_constants = (
+                innermost is not None
+                and innermost[0] == "type"
+                and innermost[2] == "enum"
+                and innermost[3]
+            )
+            type_head = _java_type_head(head)
+            decl = (
+                None
+                if type_head is not None
+                else _java_head_names(head, allow_bare=True)
+            )
+            # Enum constants are separated by commas, so the head of a
+            # constant with a body starts with ```` ,```` — classify it
+            # without the separator.
+            enum_decl = (
+                _java_head_names(head.lstrip(" \t\n,"), allow_bare=True)
+                if enum_constants
+                else None
+            )
+            symbol_kind: str | None = None
+            name: str | None = None
+            is_fn = False
+            blank_from: int | None = None
+            if type_head is not None:
+                tk, tname = type_head
+                if tk in ("@interface", "interface"):
+                    symbol_kind = KIND_INTERFACE
+                elif tk == "enum":
+                    symbol_kind = KIND_ENUM
+                else:
+                    symbol_kind = KIND_CLASS
+                name = tname
+                blank_from = stmt_start
+                # ``@interface`` is a distinct member-grammar: its
+                # elements are ``annotation_type_element_declaration``
+                # nodes, so they are NOT method symbols (nested types
+                # inside it still are).
+                type_kind = "annotation" if tk == "@interface" else tk
+                stack.append(
+                    ("type", tname, type_kind, tk == "enum")
+                    if at_type_level
+                    else ("block", "", "", False)
+                )
+            elif enum_decl is not None and not enum_decl[1]:
+                # ``PLUS(1) { … }`` — an enum constant with a body; it is
+                # not a method and owns no symbols.
+                blank_from = stmt_start
+                stack.append(("block", "", "", False))
+            elif decl is not None:
+                if methods_are_symbols:
+                    symbol_kind = KIND_METHOD
+                    name = decl[0]
+                is_fn = True
+                blank_from = stmt_start
+                stack.append(("block", "", "", False))
+            else:
+                bare = _java_strip_modifiers(head)
+                if (
+                    innermost is not None
+                    and innermost[0] == "type"
+                    and innermost[2] == "record"
+                    and bare == innermost[1]
+                ):
+                    # A record's compact constructor: ``Point { … }``,
+                    # possibly with modifiers and annotations.
+                    symbol_kind = KIND_METHOD
+                    name = bare
+                    is_fn = True
+                    blank_from = stmt_start
+                stack.append(("block", "", "", False))
+            if not at_type_level:
+                symbol_kind = None
+                name = None
+            yield _JavaEvent("open", symbol_kind, name, is_fn, idx, blank_from)
+            stmt_start = idx + 1
+        elif ch == "}":
+            if stack:
+                stack.pop()
+            stmt_start = idx + 1
+            yield _JavaEvent("close", None, None, False, idx, None)
+        elif ch == ";" and paren == 0:
+            head = src[stmt_start:idx]
+            head_start = stmt_start
+            stmt_start = idx + 1
+            innermost = stack[-1] if stack else None
+            at_type_level = innermost is None or innermost[0] == "type"
+            methods_are_symbols = at_type_level and (
+                innermost is None or innermost[2] != "annotation"
+            )
+            enum_constants = (
+                innermost is not None
+                and innermost[0] == "type"
+                and innermost[2] == "enum"
+                and innermost[3]
+            )
+            decl = _java_head_names(head, allow_bare=False)
+            if decl is not None and methods_are_symbols:
+                yield _JavaEvent("semi", KIND_METHOD, decl[0], False, idx, head_start)
+            else:
+                if decl is None and enum_constants:
+                    # The ``;`` that ends an enum's constant region.
+                    stack[-1] = ("type", innermost[1], "enum", False)
+                yield _JavaEvent("semi", None, None, False, idx, None)
+
+
+def _blank_java_decl_heads(src: str) -> str:
+    """Blank the *declaration* heads of stripped Java source.
+
+    Call extraction must not read a method/constructor/type header as if
+    it were a call — ``void render() {`` and ``enum Mode { FAST(1) {``
+    both contain ``name(`` shapes.  Head spans come from the same
+    :func:`_java_structure` walk that drives symbols and the caller mask,
+    so a head can never be blanked in one place and honoured in another.
+    Control-flow heads are deliberately left intact: ``if (check()) {``
+    contains a real call, and so does an anonymous-class head.
+
+    Whole-head blanking is sound for declarations: a valid Java header
+    holds only modifiers, annotations with constant arguments and
+    parameter types — none of which is a ``method_invocation``.
+    """
+    spans: list[tuple[int, int]] = []
+    for ev in _java_structure(src):
+        if ev.head_start is not None:
+            spans.append((ev.head_start, ev.index))
+    if not spans:
+        return src
+    chars = list(src)
+    for start, end in spans:
+        for i in range(start, end):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def _java_call_mask(source: str) -> list[int]:
+    """Per-line body-start column for Java (methods and constructors).
+
+    Only method/constructor bodies are callers: a call needs a caller to
+    be attributed to, so class-level fields, initializer blocks and
+    annotation arguments are excluded.  Anonymous-class and lambda bodies
+    are *not* openers — their calls attribute to the nearest enclosing
+    method (the same anonymous-function rule the JS/TS walker applies) —
+    while a local or nested class's own methods are callers.
+    """
+    src = _strip_java(source)
+    lines = src.splitlines()
+    mask = [-1] * len(lines)
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+    brace_stack: list[tuple[int, bool]] = []
+    fn_ranges: list[tuple[int, int]] = []
+    opened_col: dict[int, int] = {}
+    for ev in _java_structure(src):
+        row = bisect_right(line_starts, ev.index) - 1
+        if ev.event == "open":
+            brace_stack.append((row, ev.is_fn))
+            if ev.is_fn and row not in opened_col:
+                opened_col[row] = ev.index - line_starts[row]
+        elif ev.event == "close" and brace_stack:
+            open_row, open_is_fn = brace_stack.pop()
+            if open_is_fn:
+                fn_ranges.append((open_row, row))
+    # ``running`` counts how many call-owning bodies cover each row: 0 →
+    # not a caller, 1 → inside one (mask from its opening column), 2+ →
+    # nested, so the enclosing body's start (0) governs.
+    deltas = [0] * (len(lines) + 1)
+    for start, end in fn_ranges:
+        deltas[start] += 1
+        if end + 1 <= len(lines):
+            deltas[end + 1] -= 1
+    running = 0
+    for i in range(len(lines)):
+        running += deltas[i]
+        if running > 1:
+            mask[i] = 0
+        elif running == 1:
+            mask[i] = opened_col.get(i, 0)
+    return mask
+
+
 _MASKS: dict[str, object] = {
     "python": _py_call_mask,
     "javascript": _js_call_mask,
     "typescript": _js_call_mask,
     "rust": _rust_call_mask,
     "go": _go_call_mask,
+    "java": _java_call_mask,
 }
 
 
@@ -831,6 +1368,79 @@ def _receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
 _RUST_PATTERN_PREFIX = re.compile(r"(?:let|match|=>)\s+$")
 
 
+def _java_receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
+    """Java receiver rule: only a ``method_invocation`` receiver is excluded.
+
+    ``f().bar()`` is excluded (the receiver is itself a call), but
+    ``new Foo().bar()`` is **not** — the receiver there is an
+    ``object_creation_expression`` (J2), so the parser captures ``bar``.
+    """
+    if not _receiver_is_call(lines, i, name_start):
+        return False
+    text = lines[i]
+    dot = name_start - 1
+    if dot >= 1 and text[dot - 1] == ")":
+        close = dot - 1
+    else:
+        if i == 0:
+            return True
+        prev = lines[i - 1].rstrip()
+        if not prev.endswith(")"):
+            return True
+        text = prev
+        close = len(prev) - 1
+    depth = 1
+    idx = close - 1
+    while idx >= 0 and depth:
+        ch = text[idx]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            depth -= 1
+        idx -= 1
+    open_idx = idx + 1
+    k = open_idx - 1
+    while k >= 0 and text[k].isspace():
+        k -= 1
+    # Skip the callee's own type arguments (``new Box<String>(...)``).
+    if k >= 0 and text[k] == ">":
+        depth = 0
+        while k >= 0:
+            if text[k] == ">":
+                depth += 1
+            elif text[k] == "<":
+                depth -= 1
+                if depth == 0:
+                    k -= 1
+                    break
+            k -= 1
+        while k >= 0 and text[k].isspace():
+            k -= 1
+    end = k + 1
+    while k >= 0 and (text[k].isalnum() or text[k] in "_$"):
+        k -= 1
+    callee = text[k + 1 : end]
+    if not callee:
+        return True
+    # ``new Foo(...).bar()`` / ``new Foo<T>(...).bar()`` — the receiver is
+    # a constructor, not a call.
+    before = re.sub(r"<[^<>]*>\s*$", "", text[: k + 1].rstrip()).rstrip()
+    return not re.search(r"\bnew\s*$", before)
+
+
+def _java_is_annotation(line: str, name_start: int) -> bool:
+    """Whether the identifier at *name_start* is part of an ``@Annotation``.
+
+    Annotations are never ``method_invocation`` nodes, so their argument
+    parens must not be read as calls — including the qualified form
+    ``@Foo.Bar(1)``, where the identifier is preceded by a dot chain.
+    """
+    k = name_start - 1
+    while k >= 0 and (line[k] in "_$" or line[k].isalnum() or line[k] == "."):
+        k -= 1
+    return k >= 0 and line[k] == "@"
+
+
 def extract_called_names(lang: str, source: str) -> set[str]:
     """Return every distinct called name in *source*.
 
@@ -847,9 +1457,16 @@ def extract_called_names(lang: str, source: str) -> set[str]:
     - dunder attributes excluded (``obj.__x__()``),
     - Rust ``::``-qualified targets excluded (parser boundary) and
       ``Some``/``Ok``/``Err``/``None`` in pattern position,
-    - Rust macro invocations blanked (args are a flat ``token_tree``).
+    - Rust macro invocations blanked (args are a flat ``token_tree``),
+    - Java declaration heads blanked (``void render() {``), annotation
+      argument parens excluded (``@Foo(1)`` is not a call), and
+      ``new Foo().bar()`` captured while ``f().bar()`` is excluded.
     """
     src = _STRIPPERS[lang](source)
+    if lang == "java":
+        # A declaration head must never read as a call (``void render() {``,
+        # ``enum Mode { FAST(1) {``).
+        src = _blank_java_decl_heads(src)
     keywords = _KEYWORDS[lang]
     names: set[str] = set()
     mask = _MASKS[lang](source)  # type: ignore[operator]
@@ -867,7 +1484,12 @@ def extract_called_names(lang: str, source: str) -> set[str]:
             name = match.group(1)
             if name in keywords:
                 continue
-            if _receiver_is_call(lines, i, match.start()):
+            if lang == "java":
+                if _java_is_annotation(line, match.start()):
+                    continue
+                if _java_receiver_is_call(lines, i, match.start()):
+                    continue
+            elif _receiver_is_call(lines, i, match.start()):
                 continue
             # Dunder *attributes* (``obj.__x__()``) are excluded by the
             # parsers; a bare ``__str__()`` call is not.
@@ -877,9 +1499,10 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                 and line[match.start() - 1] == "."
             ):
                 continue
-            # ``new X(...)`` — JS/TS only: ``new_expression`` is not a
-            # ``call_expression``, so the parsers never emit the target.
-            if lang in ("javascript", "typescript") and re.search(
+            # ``new X(...)`` — JS/TS/Java only: ``new_expression`` /
+            # ``object_creation_expression`` is not a call expression, so
+            # the parsers never emit the target.
+            if lang in ("javascript", "typescript", "java") and re.search(
                 r"\bnew\s+$",
                 line[: match.start()],
             ):
@@ -1250,6 +1873,40 @@ def extract_symbols_go(source: str) -> set[SymbolTuple]:
 
 
 # ---------------------------------------------------------------------------
+# Symbol extraction — Java (statement walk)
+# ---------------------------------------------------------------------------
+#
+# The parser emits the type declarations directly contained in a type
+# body plus their direct methods/constructors, and never enters a method
+# body while collecting members.  Consequences the checker mirrors:
+# nested types are symbols, but local classes (inside a method) and
+# anonymous-class bodies produce none — and neither do their members.
+# :func:`_java_structure` classifies each opened ``{`` as a *type* body
+# (``class``/``interface``/``enum``/``record``) or a plain ``block``
+# (method, initializer, lambda, anonymous/local class, array
+# initializer); symbols are only collected while the innermost open body
+# is a type body.
+#
+# Two Java-specific traps the classifier closes:
+def extract_symbols_java(source: str) -> set[SymbolTuple]:
+    """Type declarations and their direct methods/constructors.
+
+    Mirrors ``java_scanner``: ``class_declaration``/``record_declaration``
+    → class, ``interface_declaration``/``annotation_type_declaration``
+    (``@interface``) → interface, ``enum_declaration`` → enum, and
+    ``method_declaration``/``constructor_declaration``/
+    ``compact_constructor_declaration`` → method.  All of that — nesting,
+    the compact constructor and the enum-constant-with-body trap — is
+    resolved by :func:`_java_structure`, so this is a pure consumer.
+    """
+    symbols: set[SymbolTuple] = set()
+    for ev in _java_structure(_strip_java(source)):
+        if ev.symbol_kind is not None and ev.name is not None:
+            symbols.add((ev.symbol_kind, ev.name))
+    return symbols
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -1259,6 +1916,7 @@ _SYMBOL_EXTRACTORS: dict[str, object] = {
     "typescript": extract_symbols_typescript,
     "rust": extract_symbols_rust,
     "go": extract_symbols_go,
+    "java": extract_symbols_java,
 }
 
 

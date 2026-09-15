@@ -815,36 +815,53 @@ class TestFlagConflicts:
 # ---------------------------------------------------------------------------
 
 
+# (lang, file_name, pre_src, post_src, parent_class)
+#
+# ``parent_class`` is required for Java because Java has no top-level
+# functions — its callables are always methods of a type, so the
+# CHANGED_FUNCTION claim must name the owning class.
 _LANG_CASES = [
     (
         "python",
         "app.py",
         "def greet():\n    return 'hi'\n",
         "def greet():\n    return 'hello'\n",
+        None,
     ),
     (
         "js",
         "app.js",
         "function greet() { return 'hi'; }\n",
         "function greet() { return 'hello'; }\n",
+        None,
     ),
     (
         "ts",
         "app.ts",
         "function greet(): string { return 'hi'; }\n",
         "function greet(): string { return 'hello'; }\n",
+        None,
     ),
     (
         "rust",
         "app.rs",
         'fn greet() -> &\'static str { "hi" }\n',
         'fn greet() -> &\'static str { "hello" }\n',
+        None,
     ),
     (
         "go",
         "app.go",
         'package main\n\nfunc greet() string { return "hi" }\n',
         'package main\n\nfunc greet() string { return "hello" }\n',
+        None,
+    ),
+    (
+        "java",
+        "App.java",
+        "class App { int greet() { return 1; } }\n",
+        "class App { int greet() { return 2; } }\n",
+        "App",
     ),
 ]
 
@@ -878,7 +895,9 @@ class TestE2EChangedPerLanguage:
     """Modify a body in each language → `nowreck fix --pre --post` with a
     CHANGED_FUNCTION claim → CONFIRMED via the real pipeline."""
 
-    @pytest.mark.parametrize("lang,file_name,pre_src,post_src", _LANG_CASES)
+    @pytest.mark.parametrize(
+        "lang,file_name,pre_src,post_src,parent_class", _LANG_CASES
+    )
     def test_body_edit_changed_claim_confirmed(
         self,
         capsys: pytest.CaptureFixture,
@@ -886,6 +905,7 @@ class TestE2EChangedPerLanguage:
         file_name: str,
         pre_src: str,
         post_src: str,
+        parent_class: str | None,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             pre = Path(tmpdir) / "pre"
@@ -903,6 +923,7 @@ class TestE2EChangedPerLanguage:
                     ClaimType.CHANGED_FUNCTION,
                     symbol_name="greet",
                     file_path=file_name,
+                    parent_class=parent_class,
                 )
             ]
             parser = build_parser()
@@ -1080,6 +1101,245 @@ class TestE2EChangedPerLanguage:
 
             assert rc == 1
             assert "CONTRADICTED" in out
+
+
+class TestE2EJavaPipeline:
+    """Phase 2 gate 5: the real CLI pipeline over Java sources.
+
+    Covers ``--pre/--post`` with all three output formats, ``--compare``
+    against a git repo, and both non-CONFIRMED verdict paths for Java.
+    """
+
+    _PRE = "class App { int greet() { return 1; } }\n"
+    _POST = "class App { int greet() { return 2; } }\n"
+
+    def _snapshots(self, tmpdir: str) -> tuple[Path, Path]:
+        pre = Path(tmpdir) / "pre"
+        post = Path(tmpdir) / "post"
+        pre.mkdir()
+        post.mkdir()
+        (pre / "App.java").write_text(self._PRE, encoding="utf-8")
+        (post / "App.java").write_text(self._POST, encoding="utf-8")
+        return pre, post
+
+    @pytest.mark.parametrize("fmt", ["json", "sarif", "junit"])
+    def test_java_change_renders_every_format(
+        self, capsys: pytest.CaptureFixture, fmt: str
+    ) -> None:
+        """An unexplained Java change renders through json/sarif/junit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    fmt,
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            # A CHANGED_FUNCTION with no claim is unexplained → exit 1.
+            assert rc == 1, out
+            if fmt == "json":
+                data = json.loads(out)
+                assert "version" in data and "results" in data
+                unexplained = data["unexplained_changes"]
+                assert any(
+                    c["symbol_name"] == "greet" and c["parent_class"] == "App"
+                    for c in unexplained
+                ), unexplained
+            elif fmt == "sarif":
+                data = json.loads(out)
+                assert data["version"] == "2.1.0"
+                assert "$schema" in data
+            else:
+                assert "testsuites" in out
+                assert "nowreck" in out
+
+    def test_java_claim_confirmed_via_pre_post(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The honest claim set for a Java body edit is CONFIRMED."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.java",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_java_hallucinated_claim_unverifiable(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A CHANGED_FUNCTION claim about a Java method nobody touched is
+        UNVERIFIABLE (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            src = "class App { int greet() { return 1; } }\n"
+            (pre / "App.java").write_text(src, encoding="utf-8")
+            (post / "App.java").write_text(src, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.java",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "UNVERIFIABLE" in out
+
+    def test_java_changed_claim_contradicted_by_removal(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Claiming CHANGED_FUNCTION for a Java method that was actually
+        removed is CONTRADICTED (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "App.java").write_text(
+                "class App { int gone() { return 1; } }\n", encoding="utf-8"
+            )
+            (post / "App.java").write_text("class App { }\n", encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="gone",
+                    file_path="App.java",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "CONTRADICTED" in out
+
+    def test_java_compare_mode_detects_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """``--compare HEAD~1`` picks up a Java method-body edit from git."""
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "App.java").write_text(
+            "class App { int greet() { return 1; } }\n", encoding="utf-8"
+        )
+        env = {
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t.local",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t.local",
+        }
+
+        def git(*args: str) -> None:
+            assert (
+                subprocess.run(
+                    ["git", *args], cwd=repo, capture_output=True, text=True, env=env
+                ).returncode
+                == 0
+            ), args
+
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "init")
+        (repo / "App.java").write_text(
+            "class App { int greet() { return 2; } }\n", encoding="utf-8"
+        )
+        git("add", ".")
+        git("commit", "-m", "change")
+
+        from nowreck.cli import build_parser
+        from nowreck.main import handle_fix
+
+        monkeypatch.chdir(repo)
+        args = build_parser().parse_args(
+            ["fix", "--compare", "HEAD~1", "--format", "json"]
+        )
+        rc = handle_fix(args)
+        out, _ = capsys.readouterr()
+
+        assert rc == 1, out
+        data = json.loads(out)
+        assert any(
+            c["symbol_name"] == "greet" and c["parent_class"] == "App"
+            for c in data["unexplained_changes"]
+        )
 
 
 class TestExternalDirsGetNoCache:

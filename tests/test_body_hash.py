@@ -885,3 +885,107 @@ class TestGoBodyHash:
             ),
         )
         assert no_trailing.body_hash == trailing.body_hash
+
+
+class TestJavaBodyHash:
+    """Java body hashes via structural_hash (v0.17.0 Phase 2).
+
+    Java has no header/impl split, so every method/constructor hash covers
+    the whole declaration (annotations included — probe J4); CLASS and
+    ENUM symbols hash the class *shell* (fields, enum constants, heritage)
+    with method subtrees excluded.
+    """
+
+    def _scan(self, code: str, tmp_path: Path) -> list[Symbol]:
+        from nowreck.scanner.java_scanner import scan_java_file
+
+        return _scan_source(scan_java_file, ".java", code, tmp_path)
+
+    def _one(
+        self,
+        code: str,
+        name: str,
+        tmp_path: Path,
+        kind: SymbolType | None = None,
+    ) -> Symbol:
+        """The single symbol named *name* (optionally of *kind*).
+
+        ``kind`` matters for Java: a class and its constructor share a
+        name, so ``class A { A() {} }`` yields two symbols named ``A``.
+        """
+        found = [
+            s
+            for s in self._scan(code, tmp_path)
+            if s.name == name and (kind is None or s.symbol_type is kind)
+        ]
+        assert len(found) == 1, f"expected one symbol named {name}, got {found}"
+        return found[0]
+
+    def test_method_body_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one("class A { int m() { return 1; } }", "m", tmp_path)
+        after = self._one("class A { int m() { return 2; } }", "m", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_reformat_and_comments_do_not_change_hash(self, tmp_path: Path) -> None:
+        compact = self._one("class A { int m() { return 1; } }", "m", tmp_path)
+        padded = self._one(
+            "// lead\n"
+            "class A {\n"
+            "    /* block */\n"
+            "    int m() {\n"
+            "        return 1;\n"
+            "    }\n"
+            "}\n",
+            "m",
+            tmp_path,
+        )
+        assert compact.body_hash == padded.body_hash
+
+    def test_method_edit_does_not_change_class_hash(self, tmp_path: Path) -> None:
+        before = self._one("class A { int f = 1; void m() {} }", "A", tmp_path)
+        after = self._one("class A { int f = 1; void m() { call(); } }", "A", tmp_path)
+        assert before.body_hash == after.body_hash
+
+    def test_field_edit_changes_class_hash(self, tmp_path: Path) -> None:
+        before = self._one("class A { int f = 1; void m() {} }", "A", tmp_path)
+        after = self._one("class A { int f = 2; void m() {} }", "A", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_annotation_is_inside_the_method_hash(self, tmp_path: Path) -> None:
+        plain = self._one("class A { void m() {} }", "m", tmp_path)
+        annotated = self._one("class A { @Deprecated void m() {} }", "m", tmp_path)
+        assert plain.body_hash != annotated.body_hash
+
+    def test_text_block_quote_style_is_normalised(self, tmp_path: Path) -> None:
+        quoted = self._one('class A { String m() { return "x"; } }', "m", tmp_path)
+        block = self._one('class A { String m() { return """x"""; } }', "m", tmp_path)
+        assert quoted.body_hash == block.body_hash
+
+    def test_text_block_content_edit_changes_hash(self, tmp_path: Path) -> None:
+        one = self._one('class A { String m() { return """aa"""; } }', "m", tmp_path)
+        two = self._one('class A { String m() { return """bb"""; } }', "m", tmp_path)
+        assert one.body_hash != two.body_hash
+
+    def test_semicolon_is_hashed_content(self, tmp_path: Path) -> None:
+        """Java ``;`` is required syntax, so it is deliberately *not* in
+        the ASI exclusion set: adding an empty statement changes the hash.
+        """
+        without = self._one("class A { void m() { } }", "m", tmp_path)
+        with_empty = self._one("class A { void m() { ; } }", "m", tmp_path)
+        assert without.body_hash != with_empty.body_hash
+
+    def test_enum_constant_edit_changes_enum_hash(self, tmp_path: Path) -> None:
+        before = self._one("enum E { A, B; void m() {} }", "E", tmp_path)
+        after = self._one("enum E { A, C; void m() {} }", "E", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_constructor_edit_changes_its_own_hash_only(self, tmp_path: Path) -> None:
+        before_src = "class A { A(int x) { this.x = x; } int x; }"
+        after_src = "class A { A(int x) { this.x = x + 1; } int x; }"
+        # A class and its constructor share the name “A”, so filter by kind.
+        ctor_before = self._one(before_src, "A", tmp_path, SymbolType.METHOD)
+        ctor_after = self._one(after_src, "A", tmp_path, SymbolType.METHOD)
+        shell_before = self._one(before_src, "A", tmp_path, SymbolType.CLASS)
+        shell_after = self._one(after_src, "A", tmp_path, SymbolType.CLASS)
+        assert ctor_before.body_hash != ctor_after.body_hash
+        assert shell_before.body_hash == shell_after.body_hash

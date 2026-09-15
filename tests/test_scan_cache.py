@@ -561,3 +561,73 @@ class TestCacheBodyHashV16:
 
         fresh = json.loads(cache_file.read_text())
         assert fresh["version"] == CACHE_VERSION
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 2: Java cache round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def java_repo(tmp_path: Path) -> Path:
+    """A repo with a valid Java file (class, ctor, method, nested type)."""
+    (tmp_path / "Greeter.java").write_text(
+        "package p;\n\n"
+        "public class Greeter {\n"
+        "    private final String prefix;\n\n"
+        "    public Greeter(String prefix) {\n"
+        "        this.prefix = prefix;\n"
+        "    }\n\n"
+        "    public String greet(String name) {\n"
+        "        return prefix + name;\n"
+        "    }\n"
+        "}\n"
+    )
+    return tmp_path
+
+
+class TestJavaCacheRoundTrip:
+    """Java scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_java_symbols(self, java_repo: Path) -> None:
+        scanner = RepositoryScanner(java_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.java_files) == set(result_warm.java_files)
+        for path in result_cold.java_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.java_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.java_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_java_body_hash(self, java_repo: Path) -> None:
+        scanner = RepositoryScanner(java_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.java_files[Path("Greeter.java")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+        # The class shell hash and every method hash must survive the
+        # cache round-trip distinctly (no collapsing to one value).
+        assert len({s.body_hash for s in symbols}) == len(symbols)
+
+    def test_cache_file_records_java_language(self, java_repo: Path) -> None:
+        RepositoryScanner(java_repo).scan()
+        cache_file = java_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = [e for e in data["entries"].values() if e["language"] == "java"]
+        assert len(entries) == 1
+
+    def test_cache_schema_version_is_still_v2(self, java_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(java_repo).scan()
+        cache_file = java_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2

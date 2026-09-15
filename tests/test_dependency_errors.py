@@ -125,6 +125,7 @@ class TestTreeSitterMissing:
                         "tree_sitter_typescript": None,
                         "tree_sitter_rust": None,
                         "tree_sitter_go": None,
+                        "tree_sitter_java": None,
                     }}
 
                     with patch.dict("sys.modules", blocked):
@@ -182,6 +183,15 @@ class TestTreeSitterMissing:
         assert "pip install" in output
         assert "ERROR" in output
 
+    def test_java_file_graceful_error(self, tmp_path: Path) -> None:
+        """Java file with missing tree-sitter should return helpful error."""
+        java_file = tmp_path / "Test.java"
+        java_file.write_text("class Test { void hello() {} }")
+        output = self._scan_file_with_missing_tree_sitter(java_file, "parse_java_file")
+        assert "tree-sitter" in output
+        assert "pip install" in output
+        assert "ERROR" in output
+
     def test_scan_with_missing_tree_sitter_no_crash(self, tmp_path: Path) -> None:
         """Full scan with JS files and missing tree-sitter should not crash."""
         js_file = tmp_path / "test.js"
@@ -201,6 +211,7 @@ class TestTreeSitterMissing:
                         "tree_sitter_typescript": None,
                         "tree_sitter_rust": None,
                         "tree_sitter_go": None,
+                        "tree_sitter_java": None,
                     }}
 
                     with patch.dict("sys.modules", blocked):

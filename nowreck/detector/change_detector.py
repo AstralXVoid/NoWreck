@@ -217,13 +217,20 @@ class ChangeDetector:
         """Group a symbol type for body-hash comparison.
 
         FUNCTION and METHOD collapse into one kind (methods carry
-        ``parent_class`` to disambiguate); CLASS is its own kind.
-        INTERFACE/ENUM/TYPE_ALIAS return ``None`` — they have no
-        ``CHANGED_*`` claim types, so their hashes are never compared.
+        ``parent_class`` to disambiguate); CLASS is its own kind.  ENUM
+        also collapses into CLASS: an enum body is class-shell content
+        (constants, fields, heritage), so an enum edit surfaces as
+        ``CHANGED_CLASS`` — there is no ``CHANGED_ENUM`` claim type, the
+        same way there is no ``CHANGED_METHOD``.  This is inert for
+        languages whose enum symbols carry no hash (TypeScript, Rust),
+        and is what makes Java enum-constant edits visible (v0.17.0
+        Phase 2, probe J11).  INTERFACE/TYPE_ALIAS return ``None`` —
+        they have no ``CHANGED_*`` claim types, so their hashes are
+        never compared.
         """
         if symbol_type in (SymbolType.FUNCTION, SymbolType.METHOD):
             return "FUNCTION"
-        if symbol_type is SymbolType.CLASS:
+        if symbol_type in (SymbolType.CLASS, SymbolType.ENUM):
             return "CLASS"
         return None
 
@@ -292,9 +299,9 @@ class ChangeDetector:
     ) -> list[DetectedChange]:
         """Compare file sets to find created and deleted files.
 
-        Includes both Python modules and JavaScript files in the file
-        set so that adding or removing a ``.js`` file surfaces a
-        ``FILE_CREATED`` / ``FILE_DELETED`` change.
+        Includes every scanned language in the file set, so that adding
+        or removing any source file surfaces a ``FILE_CREATED`` /
+        ``FILE_DELETED`` change.
         """
         changes: list[DetectedChange] = []
         pre_files: set[Path] = (
@@ -303,6 +310,7 @@ class ChangeDetector:
             | set(pre.ts_files)
             | set(pre.rust_files)
             | set(pre.go_files)
+            | set(pre.java_files)
             | set(pre.failed_files)
         )
         post_files: set[Path] = (
@@ -311,6 +319,7 @@ class ChangeDetector:
             | set(post.ts_files)
             | set(post.rust_files)
             | set(post.go_files)
+            | set(post.java_files)
             | set(post.failed_files)
         )
 
@@ -461,18 +470,21 @@ class ChangeDetector:
     ) -> set[CallEvidence]:
         """Extract all :class:`CallEvidence` objects from a scan result.
 
-        Handles Python, JavaScript, TypeScript, Rust, and Go source files:
+        Handles Python, JavaScript, TypeScript, Rust, Go, and Java source
+        files:
 
         **Python:** walks every function/method body looking for
         ``ast.Call`` nodes with a simple ``ast.Name`` or an
         ``ast.Attribute`` chain (``self.foo()``, ``a.b.c()``) function
         expression, carrying the enclosing class name.
 
-        **JavaScript/TypeScript/Rust/Go:** re-parses each file listed in
-        ``scan.js_files``, ``scan.ts_files``, ``scan.rust_files``, or
-        ``scan.go_files`` using the respective tree-sitter scanner and
-        extracts        ``call_expression`` nodes whose target is a simple
-        ``identifier`` or a member/field/selector chain.
+        **JavaScript/TypeScript/Rust/Go/Java:** re-parses each file
+        listed in ``scan.js_files``, ``scan.ts_files``,
+        ``scan.rust_files``, ``scan.go_files``, or ``scan.java_files``
+        using the respective tree-sitter scanner and extracts a
+        ``call_expression`` (Java: ``method_invocation``) whose target is
+        a simple ``identifier``, a member/field/selector chain, or — for
+        Java — the invocation's own ``name``.
 
         Non-Python files are re-read from disk.  File paths are resolved
         through :meth:`_resolve_call_file`: against ``scan.repo_root``
@@ -569,6 +581,23 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read Go file for call detection: %s — %s",
+                    abs_path,
+                    exc,
+                )
+
+        # --- Java calls ---
+        from nowreck.scanner.java_scanner import scan_java_calls  # noqa: PLC0415
+
+        for file_path in scan.java_files:
+            abs_path = ChangeDetector._resolve_call_file(repo_root, file_path)
+            if abs_path is None:
+                continue
+            try:
+                java_calls = scan_java_calls(abs_path, repo_root=repo_root)
+                calls.update(java_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read Java file for call detection: %s — %s",
                     abs_path,
                     exc,
                 )

@@ -1000,3 +1000,69 @@ class TestSymbolIndexGo:
         assert len(display_methods) == 1
         assert display_methods[0].parent_class == "User"
         assert display_methods[0].symbol_type is SymbolType.METHOD
+
+
+class TestSymbolIndexJava:
+    """build_symbol_index processes java_files from ScanResult."""
+
+    def _index(self):
+        from pathlib import Path
+
+        from nowreck.scanner.java_scanner import scan_java_file
+
+        test_file = Path("test_java_samples/basic.java")
+        if not test_file.exists():
+            pytest.skip("test_java_samples/basic.java not found")
+
+        symbols = scan_java_file(test_file, repo_root=Path("test_java_samples"))
+        return build_symbol_index(ScanResult(java_files={Path("basic.java"): symbols}))
+
+    def test_build_with_java_files(self) -> None:
+        idx = self._index()
+
+        # The class and its constructor share the name "Basic".
+        basic = idx.by_name("Basic")
+        assert len(basic) == 2
+        assert {s.symbol_type for s in basic} == {
+            SymbolType.CLASS,
+            SymbolType.METHOD,
+        }
+        assert idx.by_name("Shape")[0].symbol_type is SymbolType.INTERFACE
+        assert idx.by_name("Color")[0].symbol_type is SymbolType.ENUM
+        assert idx.by_name("Point")[0].symbol_type is SymbolType.CLASS  # record
+
+    def test_java_methods_have_parent_class(self) -> None:
+        idx = self._index()
+        greet = idx.by_name("greet")
+        assert len(greet) == 1
+        assert greet[0].symbol_type is SymbolType.METHOD
+        assert greet[0].parent_class == "Basic"
+        assert greet[0].body_hash is not None
+
+    def test_java_has_no_toplevel_functions(self) -> None:
+        idx = self._index()
+        assert idx.functions == []
+
+    def test_java_merges_with_other_languages(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.java_scanner import scan_java_file
+
+        test_file = Path("test_java_samples/basic.java")
+        if not test_file.exists():
+            pytest.skip("test_java_samples/basic.java not found")
+
+        symbols = scan_java_file(test_file, repo_root=Path("test_java_samples"))
+        python_module = ast.parse("def greet():\n    return 1\n")
+        idx = build_symbol_index(
+            ScanResult(
+                modules={Path("app.py"): python_module},
+                java_files={Path("basic.java"): symbols},
+            )
+        )
+        # Same-named symbols from different languages coexist.
+        greet = idx.by_name("greet")
+        assert {s.symbol_type for s in greet} == {
+            SymbolType.FUNCTION,
+            SymbolType.METHOD,
+        }

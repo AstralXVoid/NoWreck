@@ -381,14 +381,29 @@ def go_only_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def java_only_repo(tmp_path: Path) -> Path:
+    """A repo with Java files only."""
+    (tmp_path / "Main.java").write_text(
+        'public class Main {\n  static String greet() { return "hello"; }\n}\n',
+    )
+    (tmp_path / "Utils.java").write_text(
+        "public class Utils {\n  static int helper() { return 42; }\n}\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
 def multi_lang_repo(tmp_path: Path) -> Path:
-    """A repo with Python, JS, TS, Rust, and Go files."""
+    """A repo with Python, JS, TS, Rust, Go, and Java files."""
     (tmp_path / "app.py").write_text("def run(): ...\n")
     (tmp_path / "util.js").write_text("function greet() {}\n")
     (tmp_path / "mod.ts").write_text("function hello(): void {}\n")
     (tmp_path / "lib.rs").write_text("fn compute() -> i32 { 0 }\n")
     (tmp_path / "srv.go").write_text(
         "package main\n\nfunc serve() {}\n",
+    )
+    (tmp_path / "App.java").write_text(
+        "public class App {\n  void boot() {}\n}\n",
     )
     return tmp_path
 
@@ -481,19 +496,70 @@ class TestRepositoryScannerGo:
             assert syms1 == syms2
 
 
+class TestRepositoryScannerJava:
+    """Java file discovery and parsing."""
+
+    def test_scan_finds_java_files(self, java_only_repo: Path) -> None:
+        scanner = RepositoryScanner(java_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("Main.java") in result.java_files
+        assert Path("Utils.java") in result.java_files
+
+        main_syms = result.java_files[Path("Main.java")]
+        # Java has no top-level functions: the class plus its method.
+        assert [(s.name, s.symbol_type.name) for s in main_syms] == [
+            ("Main", "CLASS"),
+            ("greet", "METHOD"),
+        ]
+        assert main_syms[1].parent_class == "Main"
+
+    def test_scan_java_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "Visible.java").write_text("public class Visible {}\n")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "Ignored.java").write_text("public class Ignored {}\n")
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("Visible.java") in result.java_files
+        assert Path("Ignored.java") not in result.java_files
+
+    def test_scan_java_deterministic(self, java_only_repo: Path) -> None:
+        scanner = RepositoryScanner(java_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.java_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.java_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.java_files[path]]
+            assert syms1 == syms2
+
+    def test_scan_java_counts_in_success_total(self, java_only_repo: Path) -> None:
+        result = RepositoryScanner(java_only_repo).scan()
+        assert result.success_count == len(result.java_files)
+
+
 class TestRepositoryScannerMultiLang:
-    """Multi-language repo with all 5 families."""
+    """Multi-language repo with all 6 families."""
 
     def test_scan_discovers_all_languages(self, multi_lang_repo: Path) -> None:
         scanner = RepositoryScanner(multi_lang_repo)
         result = scanner.scan()
 
-        assert result.success_count == 5
+        assert result.success_count == 6
         assert Path("app.py") in result.modules
         assert Path("util.js") in result.js_files
         assert Path("mod.ts") in result.ts_files
         assert Path("lib.rs") in result.rust_files
         assert Path("srv.go") in result.go_files
+        assert Path("App.java") in result.java_files
 
     def test_scan_success_count_includes_all(
         self,
@@ -507,5 +573,6 @@ class TestRepositoryScannerMultiLang:
             + len(result.ts_files)
             + len(result.rust_files)
             + len(result.go_files)
+            + len(result.java_files)
         )
         assert result.success_count == expected

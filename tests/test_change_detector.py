@@ -1202,6 +1202,325 @@ class TestDetectGoChanges:
         assert "helper" in main_calls
 
 
+class TestDetectJavaChanges:
+    """Java detector matrix: symbols, shells, calls, disjount facts.
+
+    Uses the real ``RepositoryScanner`` (not ``ast``) because Java is a
+    tree-sitter language.  Every row of the Phase 2 matrix is pinned here.
+    """
+
+    def _scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scan_result = RepositoryScanner(tmp_path).scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def _changes(
+        self,
+        tmp_path: Path,
+        pre: dict[str, str],
+        post: dict[str, str],
+    ) -> list[DetectedChange]:
+        pre_scan, pre_sym = self._scan(tmp_path / "pre", pre)
+        post_scan, post_sym = self._scan(tmp_path / "post", post)
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    # -- symbol add / remove -------------------------------------------
+
+    def test_java_method_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int f = 1; }\n"},
+            {"A.java": "class A { int f = 1; int m() { return 1; } }\n"},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("m", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_java_method_removed(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int f = 1; int m() { return 1; } }\n"},
+            {"A.java": "class A { int f = 1; }\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in removed] == [("m", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_java_class_interface_enum_record_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {},
+            {
+                "Types.java": (
+                    "class A {}\ninterface B {}\nenum C { X }\nrecord D(int x) {}\n"
+                )
+            },
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ] == [
+            "A",
+            "D",
+        ]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        ] == ["B"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_ENUM)
+        ] == ["C"]
+
+    def test_java_constructor_added_is_add_function_with_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """J5: a constructor is a METHOD named after its class, so adding
+        one fires ADD_FUNCTION with parent_class=Foo — no collision with
+        the existing CLASS Foo (identity kinds differ)."""
+        changes = self._changes(
+            tmp_path,
+            {"Foo.java": "class Foo { }\n"},
+            {"Foo.java": "class Foo { Foo(int x) { this.x = x; } int x; }\n"},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("Foo", "Foo")]
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_CLASS)
+
+    def test_java_remove_and_recreate_is_remove_plus_add(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { void old() {} }\n"},
+            {"A.java": "class A { void fresh() {} }\n"},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        ] == ["old"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["fresh"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    # -- disjoint facts ------------------------------------------------
+
+    def test_java_method_body_edit_is_changed_function_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int f = 1; int m() { return 1; } }\n"},
+            {"A.java": "class A { int f = 1; int m() { return 2; } }\n"},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("m", "A")
+
+    def test_java_class_field_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int f = 1; int m() { return 1; } }\n"},
+            {"A.java": "class A { int f = 2; int m() { return 1; } }\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_java_class_base_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class Base {}\nclass A { int m() { return 1; } }\n"},
+            {
+                "A.java": (
+                    "class Base {}\nclass A extends Base { int m() { return 1; } }\n"
+                )
+            },
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_java_class_annotation_edit_is_changed_class_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int m() { return 1; } }\n"},
+            {"A.java": "@Deprecated\nclass A { int m() { return 1; } }\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+
+    def test_java_annotation_edit_is_changed_function_on_the_method(
+        self, tmp_path: Path
+    ) -> None:
+        """J4: annotations are children of the declaration, so a method
+        annotation edit fires CHANGED_FUNCTION on the method, never
+        CHANGED_CLASS on the class."""
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int f = 1; void m() {} }\n"},
+            {"A.java": "class A { int f = 1; @Deprecated void m() {} }\n"},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("m", "A")
+
+    def test_java_enum_constant_edit_is_changed_class(self, tmp_path: Path) -> None:
+        """J11: enum bodies are class-shell content → CHANGED_CLASS."""
+        changes = self._changes(
+            tmp_path,
+            {"Status.java": "enum Status { ACTIVE, INACTIVE; }\n"},
+            {"Status.java": "enum Status { ACTIVE, INACTIVE, ARCHIVED; }\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "Status"
+
+    def test_java_interface_default_method_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {
+                "G.java": (
+                    "interface G {\n"
+                    "    String name();\n"
+                    '    default String greet() { return "hi"; }\n'
+                    "}\n"
+                )
+            },
+            {
+                "G.java": (
+                    "interface G {\n"
+                    "    String name();\n"
+                    '    default String greet() { return "hello"; }\n'
+                    "}\n"
+                )
+            },
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("greet", "G")
+
+    def test_java_record_component_edit_is_changed_class(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"R.java": "record R(int x) {}\n"},
+            {"R.java": "record R(long x) {}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+
+    # -- normalisation -------------------------------------------------
+
+    def test_java_reformat_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int m() { return 1; } }\n"},
+            {
+                "A.java": (
+                    "class A\n{\n    int m()\n    {\n        return 1;\n    }\n}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_java_comment_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": "class A { int m() { return 1; } }\n"},
+            {
+                "A.java": (
+                    "// leading comment\n"
+                    "/** doc */\n"
+                    "class A {\n"
+                    "    /* inline */ int m() { return 1; } // trailing\n"
+                    "}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_java_text_block_swap_is_no_change(self, tmp_path: Path) -> None:
+        """J7: ``"x"`` and a text block holding ``x`` normalise to the
+        same hash — quote style is not content."""
+        changes = self._changes(
+            tmp_path,
+            {"A.java": 'class A { String m() { return "x"; } }\n'},
+            {"A.java": 'class A { String m() { return """x"""; } }\n'},
+        )
+        assert changes == []
+
+    def test_java_string_content_edit_is_changed_function(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.java": 'class A { String m() { return "x"; } }\n'},
+            {"A.java": 'class A { String m() { return "y"; } }\n'},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_FUNCTION]
+
+    # -- files ---------------------------------------------------------
+
+    def test_java_file_created_and_deleted(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"Old.java": "class Old {}\n"},
+            {"New.java": "class New {}\n"},
+        )
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_CREATED)
+        ] == ["New.java"]
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_DELETED)
+        ] == ["Old.java"]
+
+    # -- calls ---------------------------------------------------------
+
+    def test_java_calls_captured_and_excluded(self, tmp_path: Path) -> None:
+        source = (
+            "class Base { void helper() {} }\n"
+            "class A extends Base {\n"
+            "    void run() {\n"
+            "        helper();\n"
+            "        this.helper();\n"
+            "        super.helper();\n"
+            "        Base.helper();\n"
+            "        A an = new A();\n"
+            "        Runnable r = A::helper;\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"A.java": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        called = {c.called_name for c in calls if c.caller_name == "run"}
+        assert called == {"helper"}
+        assert all(c.parent_class == "A" for c in calls if c.caller_name == "run")
+        # ``new A()`` and ``A::helper`` are not calls.
+        assert "A" not in called
+
+    def test_java_nested_class_caller_attribution(self, tmp_path: Path) -> None:
+        source = (
+            "class Outer {\n"
+            "    void om() {}\n"
+            "    static class Nested {\n"
+            "        void nm() { helper(); }\n"
+            "        void helper() {}\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"Outer.java": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert any(
+            c.caller_name == "nm"
+            and c.called_name == "helper"
+            and c.parent_class == "Nested"
+            for c in calls
+        )
+
+
 class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""
 

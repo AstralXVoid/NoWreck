@@ -34,6 +34,9 @@ class ScanResult:
         go_files: Mapping of file paths (relative to repo root) to the
             list of ``Symbol`` objects extracted from each successfully
             parsed Go file (``.go``).
+        java_files: Mapping of file paths (relative to repo root) to the
+            list of ``Symbol`` objects extracted from each successfully
+            parsed Java file (``.java``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -43,6 +46,7 @@ class ScanResult:
     ts_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     rust_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     go_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    java_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
     repo_root: Path | None = None
 
@@ -54,6 +58,7 @@ class ScanResult:
             + len(self.ts_files)
             + len(self.rust_files)
             + len(self.go_files)
+            + len(self.java_files)
         )
 
     @property
@@ -63,15 +68,16 @@ class ScanResult:
 
 class RepositoryScanner:
     """Scans a repository directory for Python, JavaScript, TypeScript,
-    Rust, and Go files and parses them into their respective structural
-    representations.
+    Rust, Go, and Java files and parses them into their respective
+    structural representations.
 
     This scanner discovers ``.py`` files recursively and parses each with
     ``ast.parse``, discovers ``.js`` files and parses each with the
     tree-sitter-based JavaScript scanner, discovers ``.ts``/``.tsx`` files
     and parses each with the tree-sitter-based TypeScript scanner,
-    discovers ``.rs`` files and parses each with the Rust scanner, and
-    discovers ``.go`` files and parses each with the Go scanner.  The
+    discovers ``.rs`` files and parses each with the Rust scanner,
+    discovers ``.go`` files and parses each with the Go scanner, and
+    discovers ``.java`` files and parses each with the Java scanner.  The
     results are collected into a :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
@@ -96,7 +102,7 @@ class RepositoryScanner:
 
     def scan(self) -> ScanResult:
         """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
-        and ``.go`` files under the repository root.
+        ``.go``, and ``.java`` files under the repository root.
 
         When the scan cache is enabled (the default), previously parsed
         files are cached on disk and reused if their mtime and size
@@ -105,7 +111,7 @@ class RepositoryScanner:
 
         Returns:
             A :class:`ScanResult` containing all successfully parsed
-            modules, JS/TS/Rust/Go symbol lists, and any files
+            modules, JS/TS/Rust/Go/Java symbol lists, and any files
             that failed to parse.
         """
         from nowreck.scanner.symbol_index import Symbol as SymbolClass  # noqa: PLC0415
@@ -117,6 +123,7 @@ class RepositoryScanner:
         ts_files: dict[Path, list[Symbol]] = {}
         rust_files: dict[Path, list[Symbol]] = {}
         go_files: dict[Path, list[Symbol]] = {}
+        java_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         # --- Python files ---
@@ -319,6 +326,47 @@ class RepositoryScanner:
                 elif error is not None:
                     failed[relative] = error
 
+        # --- Java files ---
+        for java_file in self._discover_files(".java"):
+            relative = java_file.relative_to(self._repo_path)
+            try:
+                stat = java_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
+
+            java_hash = file_content_hash(java_file)
+            cached = (
+                cache.get(relative, mtime, size, java_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                java_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                symbols, error = self._parse_java_file(java_file)
+                if symbols is not None:
+                    java_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="java",
+                                content_hash=java_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
         # Persist cache at the end of a successful scan.
         if cache is not None:
             cache.save()
@@ -332,6 +380,7 @@ class RepositoryScanner:
             + len(ts_files)
             + len(rust_files)
             + len(go_files)
+            + len(java_files)
             + len(failed)
         )
         success = total - len(failed)
@@ -343,7 +392,17 @@ class RepositoryScanner:
                 success,
                 total,
                 rate,
-                sum(1 for _ in (modules, js_files, ts_files, rust_files, go_files)),
+                sum(
+                    1
+                    for _ in (
+                        modules,
+                        js_files,
+                        ts_files,
+                        rust_files,
+                        go_files,
+                        java_files,
+                    )
+                ),
             )
         elif total > 0:
             logger.debug(
@@ -358,6 +417,7 @@ class RepositoryScanner:
             ts_files=ts_files,
             rust_files=rust_files,
             go_files=go_files,
+            java_files=java_files,
             failed_files=failed,
             repo_root=self._repo_path,
         )
@@ -629,6 +689,51 @@ class RepositoryScanner:
 
         try:
             symbols = scan_go_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # Java discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_java_files(self) -> list[Path]:
+        """Recursively discover all ``.java`` files, skipping hidden dirs.
+
+        Hidden directories (names starting with ``.``) are excluded by
+        default to avoid scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
+        """
+        return self._discover_files(".java")
+
+    def _parse_java_file(
+        self,
+        file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single Java file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        try:
+            from nowreck.scanner.java_scanner import scan_java_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for Java scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-java"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+        try:
+            symbols = scan_java_file(file_path, repo_root=self._repo_path)
             return symbols, None
         except (FileNotFoundError, SyntaxError, OSError) as exc:
             exc_type = type(exc).__name__

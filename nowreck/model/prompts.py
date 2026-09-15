@@ -7,7 +7,7 @@ from nowreck.detector.change_detector import ChangeType, DetectedChange
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are Nowreck, an AI assistant that explains structural changes in Python \
+You are Nowreck, an AI assistant that explains structural changes in \
 code repositories.
 
 You will receive a list of detected changes between two versions of a \
@@ -27,11 +27,11 @@ Valid claim types:
 - REMOVE_FUNCTION  — A function was removed from a file.
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
-- ADD_INTERFACE    — An interface was added to a file (TypeScript/TSX).
+- ADD_INTERFACE    — An interface was added to a file (TypeScript/TSX/Rust/Go/Java).
 - REMOVE_INTERFACE — An interface was removed from a file.
-- ADD_ENUM         — An enum was added to a file (TypeScript/TSX).
+- ADD_ENUM         — An enum was added to a file (TypeScript/TSX/Rust/Java).
 - REMOVE_ENUM      — An enum was removed from a file.
-- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX).
+- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX/Rust/Go).
 - REMOVE_TYPE_ALIAS — A type alias was removed from a file.
 - CHANGED_FUNCTION — The body of an existing function was changed.
 - CHANGED_CLASS    — The body of an existing class was changed.
@@ -107,11 +107,11 @@ Valid claim types:
 - REMOVE_FUNCTION  — A function was removed from a file.
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
-- ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go).
+- ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go/Java).
 - REMOVE_INTERFACE — An interface was removed.
-- ADD_ENUM         — An enum was added.
+- ADD_ENUM         — An enum was added (TS/TSX/Rust/Java).
 - REMOVE_ENUM      — An enum was removed.
-- ADD_TYPE_ALIAS   — A type alias was added.
+- ADD_TYPE_ALIAS   — A type alias was added (TS/TSX/Rust/Go).
 - REMOVE_TYPE_ALIAS — A type alias was removed.
 - CHANGED_FUNCTION — The body of an existing function was changed.
 - CHANGED_CLASS    — The body of an existing class was changed.
