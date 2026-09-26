@@ -311,6 +311,7 @@ class ChangeDetector:
             | set(pre.rust_files)
             | set(pre.go_files)
             | set(pre.java_files)
+            | set(pre.kotlin_files)
             | set(pre.failed_files)
         )
         post_files: set[Path] = (
@@ -320,6 +321,7 @@ class ChangeDetector:
             | set(post.rust_files)
             | set(post.go_files)
             | set(post.java_files)
+            | set(post.kotlin_files)
             | set(post.failed_files)
         )
 
@@ -470,7 +472,8 @@ class ChangeDetector:
     ) -> set[CallEvidence]:
         """Extract all :class:`CallEvidence` objects from a scan result.
 
-        Handles Python, JavaScript, TypeScript, Rust, Go, and Java source
+        Handles Python, JavaScript, TypeScript, Rust, Go, Java, and Kotlin
+        source
         files:
 
         **Python:** walks every function/method body looking for
@@ -478,13 +481,13 @@ class ChangeDetector:
         ``ast.Attribute`` chain (``self.foo()``, ``a.b.c()``) function
         expression, carrying the enclosing class name.
 
-        **JavaScript/TypeScript/Rust/Go/Java:** re-parses each file
+        **JavaScript/TypeScript/Rust/Go/Java/Kotlin:** re-parses each file
         listed in ``scan.js_files``, ``scan.ts_files``,
-        ``scan.rust_files``, ``scan.go_files``, or ``scan.java_files``
-        using the respective tree-sitter scanner and extracts a
-        ``call_expression`` (Java: ``method_invocation``) whose target is
-        a simple ``identifier``, a member/field/selector chain, or — for
-        Java — the invocation's own ``name``.
+        ``scan.rust_files``, ``scan.go_files``, ``scan.java_files``, or
+        ``scan.kotlin_files`` using the respective tree-sitter scanner
+        and extracts a ``call_expression`` (Java: ``method_invocation``)
+        whose target is a simple ``identifier``, a member/field/selector
+        chain, or — for Java — the invocation's own ``name``.
 
         Non-Python files are re-read from disk.  File paths are resolved
         through :meth:`_resolve_call_file`: against ``scan.repo_root``
@@ -598,6 +601,23 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read Java file for call detection: %s — %s",
+                    abs_path,
+                    exc,
+                )
+
+        # --- Kotlin calls ---
+        from nowreck.scanner.kotlin_scanner import scan_kotlin_calls  # noqa: PLC0415
+
+        for file_path in scan.kotlin_files:
+            abs_path = ChangeDetector._resolve_call_file(repo_root, file_path)
+            if abs_path is None:
+                continue
+            try:
+                kotlin_calls = scan_kotlin_calls(abs_path, repo_root=repo_root)
+                calls.update(kotlin_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read Kotlin file for call detection: %s — %s",
                     abs_path,
                     exc,
                 )

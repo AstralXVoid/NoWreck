@@ -37,6 +37,9 @@ class ScanResult:
         java_files: Mapping of file paths (relative to repo root) to the
             list of ``Symbol`` objects extracted from each successfully
             parsed Java file (``.java``).
+        kotlin_files: Mapping of file paths (relative to repo root) to
+            the list of ``Symbol`` objects extracted from each
+            successfully parsed Kotlin file (``.kt`` and ``.kts``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -47,6 +50,7 @@ class ScanResult:
     rust_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     go_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     java_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    kotlin_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
     repo_root: Path | None = None
 
@@ -59,6 +63,7 @@ class ScanResult:
             + len(self.rust_files)
             + len(self.go_files)
             + len(self.java_files)
+            + len(self.kotlin_files)
         )
 
     @property
@@ -67,8 +72,8 @@ class ScanResult:
 
 
 class RepositoryScanner:
-    """Scans a repository directory for Python, JavaScript, TypeScript,
-    Rust, Go, and Java files and parses them into their respective
+    """Scans a repository for Python, JavaScript, TypeScript, Rust, Go,
+    Java, and Kotlin files and parses them into their respective
     structural representations.
 
     This scanner discovers ``.py`` files recursively and parses each with
@@ -76,9 +81,10 @@ class RepositoryScanner:
     tree-sitter-based JavaScript scanner, discovers ``.ts``/``.tsx`` files
     and parses each with the tree-sitter-based TypeScript scanner,
     discovers ``.rs`` files and parses each with the Rust scanner,
-    discovers ``.go`` files and parses each with the Go scanner, and
-    discovers ``.java`` files and parses each with the Java scanner.  The
-    results are collected into a :class:`ScanResult`.
+    discovers ``.go`` files and parses each with the Go scanner,
+    discovers ``.java`` files and parses each with the Java scanner, and
+    discovers ``.kt``/``.kts`` files and parses each with the Kotlin
+    scanner.  The results are collected into a :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
     ``OSError`` are recorded in ``failed_files`` rather than halting the
@@ -102,7 +108,8 @@ class RepositoryScanner:
 
     def scan(self) -> ScanResult:
         """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
-        ``.go``, and ``.java`` files under the repository root.
+        ``.go``, ``.java``, and ``.kt``/``.kts`` files under the
+        repository root.
 
         When the scan cache is enabled (the default), previously parsed
         files are cached on disk and reused if their mtime and size
@@ -111,7 +118,7 @@ class RepositoryScanner:
 
         Returns:
             A :class:`ScanResult` containing all successfully parsed
-            modules, JS/TS/Rust/Go/Java symbol lists, and any files
+            modules, JS/TS/Rust/Go/Java/Kotlin symbol lists, and any files
             that failed to parse.
         """
         from nowreck.scanner.symbol_index import Symbol as SymbolClass  # noqa: PLC0415
@@ -124,6 +131,7 @@ class RepositoryScanner:
         rust_files: dict[Path, list[Symbol]] = {}
         go_files: dict[Path, list[Symbol]] = {}
         java_files: dict[Path, list[Symbol]] = {}
+        kotlin_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         # --- Python files ---
@@ -367,6 +375,47 @@ class RepositoryScanner:
                 elif error is not None:
                     failed[relative] = error
 
+        # --- Kotlin files ---
+        for kotlin_file in self._discover_files(".kt", ".kts"):
+            relative = kotlin_file.relative_to(self._repo_path)
+            try:
+                stat = kotlin_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
+
+            kotlin_hash = file_content_hash(kotlin_file)
+            cached = (
+                cache.get(relative, mtime, size, kotlin_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                kotlin_files[relative] = [
+                    SymbolClass.from_dict(s) for s in cached.symbols
+                ]
+            else:
+                symbols, error = self._parse_kotlin_file(kotlin_file)
+                if symbols is not None:
+                    kotlin_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="kotlin",
+                                content_hash=kotlin_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
         # Persist cache at the end of a successful scan.
         if cache is not None:
             cache.save()
@@ -381,6 +430,7 @@ class RepositoryScanner:
             + len(rust_files)
             + len(go_files)
             + len(java_files)
+            + len(kotlin_files)
             + len(failed)
         )
         success = total - len(failed)
@@ -401,6 +451,7 @@ class RepositoryScanner:
                         rust_files,
                         go_files,
                         java_files,
+                        kotlin_files,
                     )
                 ),
             )
@@ -418,6 +469,7 @@ class RepositoryScanner:
             rust_files=rust_files,
             go_files=go_files,
             java_files=java_files,
+            kotlin_files=kotlin_files,
             failed_files=failed,
             repo_root=self._repo_path,
         )
@@ -734,6 +786,55 @@ class RepositoryScanner:
 
         try:
             symbols = scan_java_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # Kotlin discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_kotlin_files(self) -> list[Path]:
+        """Recursively discover ``.kt`` and ``.kts`` files, skipping
+        hidden dirs.
+
+        Both suffixes belong to the same language and fold into the
+        single ``kotlin_files`` field (``.kts`` is a Kotlin script, which
+        the grammar parses with the same node types).  Hidden directories
+        (names starting with ``.``) are excluded by default to avoid
+        scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
+        """
+        return self._discover_files(".kt", ".kts")
+
+    def _parse_kotlin_file(
+        self,
+        file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single Kotlin file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        try:
+            from nowreck.scanner.kotlin_scanner import scan_kotlin_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for Kotlin scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-kotlin"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+        try:
+            symbols = scan_kotlin_file(file_path, repo_root=self._repo_path)
             return symbols, None
         except (FileNotFoundError, SyntaxError, OSError) as exc:
             exc_type = type(exc).__name__

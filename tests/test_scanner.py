@@ -393,8 +393,24 @@ def java_only_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def kotlin_only_repo(tmp_path: Path) -> Path:
+    """A repo with Kotlin files only.
+
+    Unlike Java, Kotlin has top-level functions, so one file exercises the
+    FUNCTION path and the other the CLASS/METHOD path.
+    """
+    (tmp_path / "Main.kt").write_text(
+        'class Main {\n    fun greet(): String = "hello"\n}\n',
+    )
+    (tmp_path / "Utils.kt").write_text(
+        "fun helper(): Int {\n    return 42\n}\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
 def multi_lang_repo(tmp_path: Path) -> Path:
-    """A repo with Python, JS, TS, Rust, Go, and Java files."""
+    """A repo with Python, JS, TS, Rust, Go, Java, and Kotlin files."""
     (tmp_path / "app.py").write_text("def run(): ...\n")
     (tmp_path / "util.js").write_text("function greet() {}\n")
     (tmp_path / "mod.ts").write_text("function hello(): void {}\n")
@@ -404,6 +420,9 @@ def multi_lang_repo(tmp_path: Path) -> Path:
     )
     (tmp_path / "App.java").write_text(
         "public class App {\n  void boot() {}\n}\n",
+    )
+    (tmp_path / "App.kt").write_text(
+        "class App {\n  fun boot() {}\n}\n",
     )
     return tmp_path
 
@@ -546,20 +565,152 @@ class TestRepositoryScannerJava:
         assert result.success_count == len(result.java_files)
 
 
+class TestRepositoryScannerKotlin:
+    """Kotlin file discovery and parsing (v0.17.0 Phase 3)."""
+
+    def test_scan_finds_kotlin_files(self, kotlin_only_repo: Path) -> None:
+        scanner = RepositoryScanner(kotlin_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("Main.kt") in result.kotlin_files
+        assert Path("Utils.kt") in result.kotlin_files
+
+        main_syms = result.kotlin_files[Path("Main.kt")]
+        assert [(s.name, s.symbol_type.name) for s in main_syms] == [
+            ("Main", "CLASS"),
+            ("greet", "METHOD"),
+        ]
+        assert main_syms[1].parent_class == "Main"
+
+        # Kotlin *does* have top-level functions (Java does not).
+        util_syms = result.kotlin_files[Path("Utils.kt")]
+        assert [(s.name, s.symbol_type.name) for s in util_syms] == [
+            ("helper", "FUNCTION"),
+        ]
+        assert util_syms[0].parent_class is None
+
+    def test_scan_kotlin_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "Visible.kt").write_text("class Visible\n")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "Ignored.kt").write_text("class Ignored\n")
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("Visible.kt") in result.kotlin_files
+        assert Path("Ignored.kt") not in result.kotlin_files
+
+    def test_scan_kotlin_deterministic(self, kotlin_only_repo: Path) -> None:
+        scanner = RepositoryScanner(kotlin_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.kotlin_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.kotlin_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.kotlin_files[path]]
+            assert syms1 == syms2
+
+    def test_scan_kotlin_counts_in_success_total(self, kotlin_only_repo: Path) -> None:
+        result = RepositoryScanner(kotlin_only_repo).scan()
+        assert result.success_count == len(result.kotlin_files)
+
+    def test_scan_kotlin_preceding_annotations_report_their_line(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: the attached and detached spellings report the same line.
+
+        The grammar begins a declaration at its annotation when it attaches
+        it and excludes it when it detaches it, so the scanner folds a
+        *preceding* annotation into the declaration's reported start.
+        """
+        (tmp_path / "Detached.kt").write_text(
+            "fun plain(): Int {\n"
+            "    return 1\n"
+            "}\n"
+            "@Deprecated\n"
+            '@Suppress("x")\n'
+            "class B {\n"
+            "    val x: Int = 1\n"
+            "}\n"
+        )
+        (tmp_path / "Attached.kt").write_text(
+            "class Z {}\n"
+            "@Deprecated\n"
+            '@Suppress("x")\n'
+            "class A {\n"
+            "    val x: Int = 1\n"
+            "}\n"
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert [
+            (s.name, s.line_number) for s in result.kotlin_files[Path("Detached.kt")]
+        ] == [("plain", 1), ("B", 4)]
+        assert [
+            (s.name, s.line_number) for s in result.kotlin_files[Path("Attached.kt")]
+        ] == [("Z", 1), ("A", 2)]
+
+    def test_scan_kotlin_contained_annotation_keeps_the_declaration_line(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: an annotation *inside* a declaration is content, not a prefix.
+
+        A property annotation in a class body and a local annotation in a
+        function body are folded into the enclosing declaration's hash, but
+        they must not move its reported line — the declaration still names
+        itself on its own line (the sample suite's line-number round).
+        """
+        (tmp_path / "Outer.kt").write_text(
+            "class Outer {\n"
+            '    @Suppress("UNUSED")\n'
+            "    val x = 1\n"
+            "\n"
+            "    fun tagged(name: String) {\n"
+            '        @Suppress("UNUSED")\n'
+            "        val value = name.length\n"
+            "    }\n"
+            "}\n"
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert [
+            (s.name, s.symbol_type.name, s.line_number)
+            for s in result.kotlin_files[Path("Outer.kt")]
+        ] == [("Outer", "CLASS", 1), ("tagged", "METHOD", 5)]
+
+    def test_scan_kotlin_script_extension(self, tmp_path: Path) -> None:
+        """``.kts`` files are discovered alongside ``.kt``."""
+        (tmp_path / "build.kts").write_text("fun build(): Int {\n    return 1\n}\n")
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert Path("build.kts") in result.kotlin_files
+        assert [s.name for s in result.kotlin_files[Path("build.kts")]] == ["build"]
+
+
 class TestRepositoryScannerMultiLang:
-    """Multi-language repo with all 6 families."""
+    """Multi-language repo with all 7 families."""
 
     def test_scan_discovers_all_languages(self, multi_lang_repo: Path) -> None:
         scanner = RepositoryScanner(multi_lang_repo)
         result = scanner.scan()
 
-        assert result.success_count == 6
+        assert result.success_count == 7
         assert Path("app.py") in result.modules
         assert Path("util.js") in result.js_files
         assert Path("mod.ts") in result.ts_files
         assert Path("lib.rs") in result.rust_files
         assert Path("srv.go") in result.go_files
         assert Path("App.java") in result.java_files
+        assert Path("App.kt") in result.kotlin_files
 
     def test_scan_success_count_includes_all(
         self,
@@ -574,5 +725,6 @@ class TestRepositoryScannerMultiLang:
             + len(result.rust_files)
             + len(result.go_files)
             + len(result.java_files)
+            + len(result.kotlin_files)
         )
         assert result.success_count == expected

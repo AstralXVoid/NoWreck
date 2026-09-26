@@ -631,3 +631,85 @@ class TestJavaCacheRoundTrip:
         cache_file = java_repo / CACHE_DIR / CACHE_FILE
         assert json.loads(cache_file.read_text())["version"] == 2
         assert CACHE_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 3: Kotlin cache round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kotlin_repo(tmp_path: Path) -> Path:
+    """A repo with a Kotlin class file and a Kotlin script (``.kts``)."""
+    (tmp_path / "Greeter.kt").write_text(
+        "package p\n\n"
+        "class Greeter(private val prefix: String) {\n"
+        "    fun greet(name: String): String {\n"
+        "        return prefix + name\n"
+        "    }\n\n"
+        "    companion object {\n"
+        "        fun defaults(): Greeter {\n"
+        '            return Greeter("hi ")\n'
+        "        }\n"
+        "    }\n"
+        "}\n\n"
+        'fun Greeter.exclaim(text: String): String = text + "!"\n'
+    )
+    (tmp_path / "build.kts").write_text(
+        'fun configure() {\n    println("configured")\n}\n'
+    )
+    return tmp_path
+
+
+class TestKotlinCacheRoundTrip:
+    """Kotlin scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_kotlin_symbols(self, kotlin_repo: Path) -> None:
+        scanner = RepositoryScanner(kotlin_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.kotlin_files) == set(result_warm.kotlin_files)
+        assert set(result_cold.kotlin_files) == {Path("Greeter.kt"), Path("build.kts")}
+        for path in result_cold.kotlin_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.kotlin_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.kotlin_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_kotlin_body_hash(self, kotlin_repo: Path) -> None:
+        scanner = RepositoryScanner(kotlin_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.kotlin_files[Path("Greeter.kt")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+        # The class shell hash and every member hash must survive the
+        # cache round-trip distinctly (no collapsing to one value).
+        assert len({s.body_hash for s in symbols}) == len(symbols)
+
+    def test_cache_file_records_kotlin_language_for_both_extensions(
+        self, kotlin_repo: Path
+    ) -> None:
+        RepositoryScanner(kotlin_repo).scan()
+        cache_file = kotlin_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {
+            path: e for path, e in data["entries"].items() if e["language"] == "kotlin"
+        }
+        assert set(entries) == {"Greeter.kt", "build.kts"}
+
+    def test_cache_schema_version_is_still_v2_for_kotlin(
+        self, kotlin_repo: Path
+    ) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(kotlin_repo).scan()
+        cache_file = kotlin_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2

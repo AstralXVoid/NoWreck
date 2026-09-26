@@ -1521,6 +1521,569 @@ class TestDetectJavaChanges:
         )
 
 
+class TestDetectKotlinChanges:
+    """Kotlin detector matrix: symbols, shells, calls, disjoint facts.
+
+    Uses the real ``RepositoryScanner`` (not ``ast``) because Kotlin is a
+    tree-sitter language.  Every row of the Phase 3 matrix is pinned here.
+    """
+
+    _CLASS = (
+        "class A {\n    val f = 1\n\n    fun m(): Int {\n        return 1\n    }\n}\n"
+    )
+
+    def _scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scan_result = RepositoryScanner(tmp_path).scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def _changes(
+        self,
+        tmp_path: Path,
+        pre: dict[str, str],
+        post: dict[str, str],
+    ) -> list[DetectedChange]:
+        pre_scan, pre_sym = self._scan(tmp_path / "pre", pre)
+        post_scan, post_sym = self._scan(tmp_path / "post", post)
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    # -- symbol add / remove -------------------------------------------
+
+    def test_kotlin_method_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {
+                "A.kt": (
+                    "class A {\n"
+                    "    val f = 1\n\n"
+                    "    fun m(): Int {\n"
+                    "        return 1\n"
+                    "    }\n\n"
+                    "    fun n(): Int {\n"
+                    "        return 2\n"
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("n", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_kotlin_method_removed(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {"A.kt": "class A {\n    val f = 1\n}\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in removed] == [("m", "A")]
+
+    def test_kotlin_top_level_function_added_has_no_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """Kotlin has top-level functions (unlike Java), so the claim
+        carries no parent_class."""
+        changes = self._changes(
+            tmp_path,
+            {"app.kt": "val x = 1\n"},
+            {"app.kt": ("val x = 1\n\nfun hello(): Int {\n    return 1\n}\n")},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("hello", None)]
+
+    def test_kotlin_type_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {},
+            {"Types.kt": ("class A\ninterface B\nenum class C { X }\nobject D\n")},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ] == ["A", "D"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        ] == ["B"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_ENUM)
+        ] == ["C"]
+
+    def test_kotlin_annotation_class_added_is_add_interface(
+        self, tmp_path: Path
+    ) -> None:
+        """Grammar defect D3: ``annotation class`` destroys the type
+        declaration node; the scanner recovers it as an INTERFACE (the
+        same kind Java's ``@interface`` maps to)."""
+        changes = self._changes(
+            tmp_path,
+            {},
+            {"Ann.kt": "annotation class Ann(val x: Int)\n"},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        ] == ["Ann"]
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+
+    def test_kotlin_constructor_added_is_add_function_with_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """A secondary constructor is a METHOD named after its class, so
+        adding one fires ADD_FUNCTION with parent_class=Foo — no
+        collision with the existing CLASS Foo (identity kinds differ)."""
+        changes = self._changes(
+            tmp_path,
+            {"Foo.kt": "class Foo\n"},
+            {
+                "Foo.kt": (
+                    "class Foo {\n"
+                    "    constructor(x: Int) {\n"
+                    "        this.x = x\n"
+                    "    }\n\n"
+                    "    val x: Int\n"
+                    "}\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("Foo", "Foo")]
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_CLASS)
+
+    def test_kotlin_remove_and_recreate_is_remove_plus_add(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class A {\n    fun old() {}\n}\n"},
+            {"A.kt": "class A {\n    fun fresh() {}\n}\n"},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        ] == ["old"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["fresh"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_kotlin_soft_keyword_function_is_recovered(self, tmp_path: Path) -> None:
+        """Grammar defect D5: a declaration named after a soft keyword
+        (``dynamic``) parses with a MISSING identifier plus an unnamed
+        token; the real name is recovered, so the change is still an
+        honest ADD_FUNCTION."""
+        changes = self._changes(
+            tmp_path,
+            {"app.kt": "val x = 1\n"},
+            {"app.kt": ("val x = 1\n\nfun dynamic(): Int {\n    return 1\n}\n")},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("dynamic", None)]
+
+    # -- disjoint facts ------------------------------------------------
+
+    def test_kotlin_method_body_edit_is_changed_function_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {"A.kt": self._CLASS.replace("return 1", "return 2")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("m", "A")
+
+    def test_kotlin_property_initializer_edit_is_changed_class_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {"A.kt": self._CLASS.replace("val f = 1", "val f = 2")},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_kotlin_supertype_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class Base\nclass A {}\n"},
+            {"A.kt": "class Base\nclass A : Base() {}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_kotlin_class_annotation_edit_is_changed_class_only(
+        self, tmp_path: Path
+    ) -> None:
+        """The annotated class is the file's only declaration, so the
+        annotation stays attached."""
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class A {}\n"},
+            {"A.kt": "@Deprecated\nclass A {}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_kotlin_detached_annotation_edit_is_changed_class_only(
+        self, tmp_path: Path
+    ) -> None:
+        """Grammar defect D4: with any sibling after it the annotation
+        detaches into an ``annotated_expression``, yet the annotation is
+        canonicalised into the class hash — so the change still lands on
+        the class, never on the sibling."""
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class A {}\nclass B {}\n"},
+            {"A.kt": "@Deprecated\nclass A {}\nclass B {}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_kotlin_stacked_annotation_class_survives_a_new_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """Grammar defect D7: a second declaration dissolves the annotated
+        class *silently* when two annotations are stacked.  The scanner
+        recovers it, so appending the sibling is ADD_CLASS on the sibling
+        and nothing else — no REMOVE_CLASS on B, no CHANGED_CLASS."""
+        body = '@Deprecated\n@Suppress("x")\nclass B {\n    val x: Int = 1\n}\n'
+        changes = self._changes(
+            tmp_path,
+            {"B.kt": body},
+            {"B.kt": body + "class Z {}\n"},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.ADD_CLASS, "Z")
+        ]
+
+    def test_kotlin_stacked_annotation_class_body_edit_is_changed_class(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: the blinded re-parse keeps hashing the class, not the sibling
+        the damaged chain used to absorb it into."""
+        pre = (
+            "@Deprecated\n"
+            '@Suppress("x")\n'
+            "class B {\n"
+            "    val x: Int = 1\n"
+            "}\n"
+            "class Z {}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"B.kt": pre},
+            {"B.kt": pre.replace("val x: Int = 1", "val x: Int = 2")},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_CLASS, "B")
+        ]
+
+    def test_kotlin_stacked_annotation_edit_is_changed_class_only(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: editing the *second* annotation of a stack is still an edit of
+        the annotated class, never of the following declaration."""
+        pre = "@Tag(1)\n@Tag(2)\nclass B {\n    val x: Int = 1\n}\nclass Z {}\n"
+        changes = self._changes(
+            tmp_path,
+            {"B.kt": pre},
+            {"B.kt": pre.replace("@Tag(2)", "@Tag(3)")},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_CLASS, "B")
+        ]
+
+    def test_kotlin_bodyless_stacked_annotation_keeps_the_absorbed_class(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: a bodyless destroyed class absorbs the next class into its
+        infix chain.  With blinding, both are emitted — so editing the
+        absorbed class is CHANGED_CLASS on it alone."""
+        pre = "@A\n@B\nclass B\nclass C {\n    val x: Int = 1\n}\nclass Z {}\n"
+        changes = self._changes(
+            tmp_path,
+            {"B.kt": pre},
+            {"B.kt": pre.replace("val x: Int = 1", "val x: Int = 2")},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_CLASS, "C")
+        ]
+
+    def test_kotlin_stacked_annotation_class_declaration_survives_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """D3 × D7: an annotated ``annotation class`` is destroyed even with
+        *one* annotation; with two and a following sibling it is still
+        recovered as the interface it declares."""
+        body = "@Target(1)\n@Retention(2)\nannotation class Ann {\n    val v: Int\n}\n"
+        changes = self._changes(
+            tmp_path,
+            {"Ann.kt": body},
+            {"Ann.kt": body + "class Z {}\n"},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.ADD_CLASS, "Z")
+        ]
+
+    def test_kotlin_detached_argument_annotation_keeps_the_callers_calls(
+        self, tmp_path: Path
+    ) -> None:
+        """D4/D7: ``@Ann(1)`` detaches into a sibling when a declaration
+        follows.  The annotation still folds into the function's hash and
+        the function keeps its calls — so this is CHANGED_FUNCTION on ``a``
+        with no call churn."""
+        pre = "fun a() {\n    work()\n}\nfun b() {}\n"
+        post = '@Deprecated("x")\n' + pre
+        changes = self._changes(tmp_path, {"A.kt": pre}, {"A.kt": post})
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "a")
+        ]
+
+    def test_kotlin_local_annotation_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        """D7: a run inside a declaration but before no symbol (a local
+        annotation, a property annotation) belongs to the enclosing symbol —
+        it folds into that function's hash, never into the class shell."""
+        pre = (
+            "class A {\n"
+            "    fun m() {\n"
+            '        @Suppress("UNUSED")\n'
+            "        val x = 1\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": pre},
+            {"A.kt": pre.replace('@Suppress("UNUSED")', '@Suppress("UNCHECKED")')},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "m")
+        ]
+
+    def test_kotlin_method_annotation_edit_is_changed_function_on_the_method(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class A {\n    fun m() {}\n}\n"},
+            {"A.kt": "class A {\n    @Deprecated\n    fun m() {}\n}\n"},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("m", "A")
+
+    def test_kotlin_enum_constant_edit_is_changed_class(self, tmp_path: Path) -> None:
+        """Enum entry lists are class-shell content → CHANGED_CLASS."""
+        changes = self._changes(
+            tmp_path,
+            {"Status.kt": "enum class Status { ACTIVE, INACTIVE }\n"},
+            {"Status.kt": "enum class Status { ACTIVE, INACTIVE, ARCHIVED }\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "Status"
+
+    def test_kotlin_annotated_single_entry_enum_constant_edit_is_changed_class(
+        self, tmp_path: Path
+    ) -> None:
+        """Grammar defect D2: an annotated single-entry enum without a
+        trailing comma is mis-parsed as an infix expression; the scanner
+        recovers the type, so a second entry is CHANGED_CLASS on E."""
+        changes = self._changes(
+            tmp_path,
+            {"E.kt": "@Deprecated\nenum class E { A }\nclass Z\n"},
+            {"E.kt": "@Deprecated\nenum class E { A, B }\nclass Z\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "E"
+
+    def test_kotlin_companion_method_edit_is_changed_function_on_member(
+        self, tmp_path: Path
+    ) -> None:
+        """A companion object has no symbol of its own — its methods
+        belong to the outer class."""
+        pre = (
+            "class A {\n"
+            "    companion object {\n"
+            "        fun defaults(): Int {\n"
+            "            return 1\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": pre},
+            {"A.kt": pre.replace("return 1", "return 2")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("defaults", "A")
+
+    def test_kotlin_interface_default_method_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        pre = (
+            "interface G {\n"
+            "    fun name(): String\n\n"
+            "    fun greet(): String {\n"
+            '        return "hi"\n'
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"G.kt": pre},
+            {"G.kt": pre.replace('"hi"', '"hello"')},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("greet", "G")
+
+    # -- normalisation -------------------------------------------------
+
+    def test_kotlin_reformat_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {
+                "A.kt": (
+                    "class A\n"
+                    "{\n"
+                    "    val f = 1\n\n"
+                    "    fun m(): Int\n"
+                    "    {\n"
+                    "        return 1\n"
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_kotlin_comment_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": self._CLASS},
+            {"A.kt": "// leading\n/* doc */\n" + self._CLASS},
+        )
+        assert changes == []
+
+    def test_kotlin_semicolon_only_is_no_change(self, tmp_path: Path) -> None:
+        """Kotlin semicolons are optional syntax (the ASI exclusion)."""
+        changes = self._changes(
+            tmp_path,
+            {"A.kt": "class A {\n    fun m() {\n        work()\n    }\n}\n"},
+            {"A.kt": "class A {\n    fun m() {\n        work();\n    }\n}\n"},
+        )
+        assert changes == []
+
+    def test_kotlin_raw_string_swap_is_changed_function(self, tmp_path: Path) -> None:
+        """Kotlin diverges from Java's text blocks here: a raw string and
+        a quoted string are semantically different, so swapping the
+        delimiter is a real body change."""
+        changes = self._changes(
+            tmp_path,
+            {
+                "A.kt": (
+                    'class A {\n    fun m(): String {\n        return "x"\n    }\n}\n'
+                )
+            },
+            {
+                "A.kt": (
+                    "class A {\n"
+                    "    fun m(): String {\n"
+                    '        return """x"""\n'
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_FUNCTION]
+
+    # -- files ---------------------------------------------------------
+
+    def test_kotlin_file_created_and_deleted(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"Old.kt": "class Old\n"},
+            {"New.kt": "class New\n"},
+        )
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_CREATED)
+        ] == ["New.kt"]
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_DELETED)
+        ] == ["Old.kt"]
+
+    # -- calls ---------------------------------------------------------
+
+    def test_kotlin_calls_captured_and_excluded(self, tmp_path: Path) -> None:
+        """A constructor call and a trailing lambda call are real calls;
+        ``make().add(5)`` contributes only ``make`` (a call receiver is
+        not itself a call), and ``::add`` is a reference, not a call."""
+        source = (
+            "class Calc {\n"
+            "    fun run() {\n"
+            "        add(1, 2)\n"
+            "        this.add(3, 4)\n"
+            "        list.forEach { println(it) }\n"
+            "        make().add(5)\n"
+            "        1.plus(2)\n"
+            "        Calc()\n"
+            "        val r = ::add\n"
+            "    }\n\n"
+            "    fun add(a: Int, b: Int): Int {\n"
+            "        return a + b\n"
+            "    }\n"
+            "}\n\n"
+            "fun top() {\n"
+            "    helper()\n"
+            "}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"A.kt": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        assert {c.called_name for c in run_calls} == {
+            "add",
+            "Calc",
+            "forEach",
+            "make",
+            "plus",
+            "println",
+        }
+        assert all(c.parent_class == "Calc" for c in run_calls)
+        # The top-level function has no owning class.
+        top_calls = [c for c in calls if c.caller_name == "top"]
+        assert [(c.called_name, c.parent_class) for c in top_calls] == [
+            ("helper", None)
+        ]
+
+    def test_kotlin_removed_call_detected(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"app.kt": "fun main() {\n    validate(1)\n}\n"},
+            {"app.kt": "fun main() {\n    println(1)\n}\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        assert [(c.caller_name, c.called_name) for c in removed] == [
+            ("main", "validate")
+        ]
+
+
 class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""
 

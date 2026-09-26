@@ -49,7 +49,7 @@ from typing import NamedTuple
 # Language registry
 # ---------------------------------------------------------------------------
 
-LANGS = ("python", "javascript", "typescript", "rust", "go", "java")
+LANGS = ("python", "javascript", "typescript", "rust", "go", "java", "kotlin")
 
 KIND_FUNCTION = "function"
 KIND_METHOD = "method"
@@ -306,6 +306,67 @@ def _strip_java(source: str) -> str:
     return _JAVA_TOKEN.sub(_blank, source)
 
 
+# Kotlin: a single left-to-right pass matches block comments, line
+# comments, raw (triple-quoted) strings, plain strings and char literals
+# as alternatives — the leftmost match wins, so a ``//`` inside a string
+# or a quote inside a comment can never be misattributed (no ordering
+# hazard).  The raw alternative **must** precede the plain-string one:
+# both start at a ``"`` and the earlier alternative wins, so ``"""…"""``
+# is consumed whole instead of leaving a dangling quote behind (K7 — the
+# grammar models a raw string as ``multiline_string_literal``).  Raw
+# strings may span lines, hence ``[\s\S]``; a plain string may not.
+_KOTLIN_TOKEN = re.compile(
+    r"(?P<block>/\*.*?\*/)"
+    r"|(?P<line>//[^\n]*)"
+    r'|(?P<raw>"""(?:\\.|[\s\S])*?""")'
+    r'|(?P<string>"(?:\\.|[^"\\\n])*")'
+    r"|(?P<char>'(?:\\.|[^'\\\n])*')",
+    re.DOTALL,
+)
+
+
+def _strip_kotlin(source: str) -> str:
+    """Blank comments and string/char literals in one ordered pass.
+
+    Strings are blanked whole \u2014 interpolation included \u2014 and the calls
+    inside a ``${\u2026}`` region are recovered separately by
+    :func:`_kotlin_interpolation_names`.  Keeping the region here instead
+    would leak an interpolation's ``)`` into the *receiver* test of the
+    following line — a raw string whose last line interpolates, with
+    ``.trimIndent()`` chained on after it, which is how that shape reads in
+    real code.
+    """
+    return _KOTLIN_TOKEN.sub(_blank, source)
+
+
+# ``${\u2026}`` interpolation: the parser sees real calls in here (probe K7),
+# so they are collected from the raw line and only inside a caller body.
+_KOTLIN_INTERPOLATION = re.compile(r"\$\{(?P<body>[^{}]*)\}", re.DOTALL)
+
+
+def _kotlin_interpolation_names(raw_lines: list[str], mask: list[int]) -> set[str]:
+    """Called names inside ``${\u2026}`` interpolation (probe K7).
+
+    ``"total: ${format(count)}"`` holds a real ``call_expression``, so the
+    name is collected from the *raw* line \u2014 on rows that already sit
+    inside a caller body, which is exactly where the parser attributes it.
+    A multi-line interpolation is a documented limitation (the corpus
+    stays single-line, as the JS/TS template rule does).
+    """
+    names: set[str] = set()
+    keywords = _KEYWORDS["kotlin"]
+    pattern = re.compile(rf"(?<![A-Za-z0-9_$])({_IDENT})\s*\(")
+    for i, line in enumerate(raw_lines):
+        if mask[i] < 0:
+            continue
+        for interpolation in _KOTLIN_INTERPOLATION.finditer(line):
+            for match in pattern.finditer(interpolation.group("body")):
+                name = match.group(1)
+                if name not in keywords:
+                    names.add(name)
+    return names
+
+
 _STRIPPERS = {
     "python": _strip_python,
     "javascript": _strip_javascript,
@@ -313,6 +374,7 @@ _STRIPPERS = {
     "rust": _strip_rust,
     "go": _strip_go,
     "java": _strip_java,
+    "kotlin": _strip_kotlin,
 }
 
 
@@ -599,6 +661,53 @@ _KEYWORDS: dict[str, frozenset[str]] = {
             # *contextual* keywords in Java — they are legal method
             # names (``obj.record()``), so they are deliberately NOT
             # listed here.
+        }
+    ),
+    "kotlin": frozenset(
+        {
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "when",
+            "return",
+            "break",
+            "continue",
+            "throw",
+            "try",
+            "catch",
+            "finally",
+            "class",
+            "interface",
+            "object",
+            "enum",
+            "super",
+            "this",
+            "null",
+            "true",
+            "false",
+            "is",
+            "as",
+            "in",
+            "val",
+            "var",
+            "fun",
+            "typealias",
+            "package",
+            "import",
+            "out",
+            "where",
+            "typeof",
+            "constructor",
+            "companion",
+            "init",
+            # NOTE: ``get``/``set``/``by``/``field``/``value``/``dynamic``/
+            # ``suspend`` are *soft* keywords in Kotlin — ``list.get(0)``
+            # and ``obj.field()`` are ordinary calls — so they are
+            # deliberately NOT listed (probe K12e).  Accessor heads are
+            # blanked instead, and the D5/D6 soft-keyword defects live in
+            # the grammar, not in the call-name extraction.
         }
     ),
 }
@@ -1289,6 +1398,517 @@ def _java_call_mask(source: str) -> list[int]:
     return mask
 
 
+# ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+#
+# Kotlin is the least keyword-shaped of the nine grammars and the checker
+# therefore mirrors the scanner's *documented* boundaries rather than a
+# keyword list (probes K1–K11):
+#
+# * a member is a symbol only while the innermost open body is a **type**
+#   body — a local ``fun`` inside a method body and an enum-entry body's
+#   methods are not symbols (K1/K11), while a nested class's members are;
+# * ``interface`` is a type kind, ``enum``/``annotation`` are modifiers
+#   that change it (``annotation class`` → ``interface``, matching Java's
+#   ``@interface``), and ``companion object`` is a type body with **no**
+#   symbol of its own (K3) — named or not;
+# * caller bodies are ``fun`` bodies and expression bodies, secondary
+#   constructors, property accessors and function-valued properties.
+#   Class-level property initialisers, ``init`` blocks and *primary*
+#   constructor defaults own no calls (K11) — which is why a *type* head
+#   is blanked before call extraction, exactly as a Java declaration head
+#   is (``Base()`` in ``class A : Base()`` is a ``delegation_specifier``,
+#   not a call, and so is a primary-constructor default);
+# * a ``fun`` head is **not** blanked — only its name token is — because a
+#   Kotlin parameter default (``fun f(x: Int = compute())``) *is* a call
+#   (K11), unlike Java's annotation arguments;
+# * ``${…}`` interpolation survives the stripper, so ``"x ${format(v)}"``
+#   still reports ``format`` (K7).
+
+_KOTLIN_MODIFIERS = (
+    "public|private|protected|internal|open|abstract|final|override|sealed|"
+    "data|value|enum|annotation|inner|expect|actual|external|inline|infix|"
+    "operator|suspend|tailrec|const|lateinit|vararg|reified|crossinline|"
+    "noinline|companion|fun|out"
+)
+_KOTLIN_ANNOTATION_PREFIX = r"(?:@[\w.]+(?:\s*\([^)]*\))?\s+)*"
+_KOTLIN_MODIFIER_PREFIX = rf"(?:(?:{_KOTLIN_MODIFIERS})\s+)*"
+_KOTLIN_DECL_PREFIX = _KOTLIN_ANNOTATION_PREFIX + _KOTLIN_MODIFIER_PREFIX
+
+_KOTLIN_TYPE_DECL = re.compile(
+    r"(?P<prefix>"
+    + _KOTLIN_DECL_PREFIX
+    + r")"
+    + r"(?P<kind>class|interface|object|typealias)\s+(?P<name>"
+    + _IDENT
+    + r")"
+)
+_KOTLIN_UNNAMED_COMPANION = re.compile(
+    _KOTLIN_ANNOTATION_PREFIX + r"companion\s+object\b"
+)
+_KOTLIN_FUN_KEYWORD = re.compile(r"(?:^|[\s;{}])fun\s+")
+_KOTLIN_CTOR_HEAD = re.compile(_KOTLIN_DECL_PREFIX + r"constructor\s*\(")
+_KOTLIN_ACCESSOR_HEAD = re.compile(_KOTLIN_DECL_PREFIX + r"(?P<accessor>get|set)\s*\(")
+_KOTLIN_FUNCTION_PROPERTY = re.compile(
+    _KOTLIN_DECL_PREFIX + r"(?:val|var)\s+" + _IDENT + r"[^=\n]*=\s*(?:\{|fun\s*\()"
+)
+# Continuation characters: a statement that ends with one of these keeps
+# accumulating across a newline (``fun f(): Int =`` then the expression on
+# the next line).  The test reads the *raw* line, so a blanked string or a
+# trailing comment can never masquerade as a continuation.
+_KOTLIN_CONTINUATION_TAIL = ",.+-*/:=?"
+
+
+def _kotlin_statement_continues(stripped: str, raw: str, paren_depth: int) -> bool:
+    """Whether the statement opened so far continues past the newline.
+
+    Kotlin has no statement terminator, so the boundary is the first
+    newline at paren depth 0 — unless the line ends in an operator, in
+    which case the expression continues (``fun f(): Int =`` / ``class A :``).
+    The *raw* text decides: the stripped copy has had string and comment
+    text replaced by spaces, which would make ``val x = "s"`` look like a
+    dangling ``=``.
+
+    ``paren_depth`` is the walker's live paren count.  It settles the case
+    the tail character cannot: a multi-line parameter list whose last line
+    ends in a *type* — ``fun f(\n    items: List<Int>\n)`` — must keep
+    accumulating, and no tail heuristic can see that
+    (``…List<Int>`` ends in ``>``).
+    """
+    if paren_depth > 0:
+        return True
+    tail = raw.rstrip()
+    if not tail:
+        return True
+    if tail[-1] in "([{":
+        return True
+    if tail.endswith(("&&", "||", "->")):
+        return True
+    if tail[-1] in _KOTLIN_CONTINUATION_TAIL:
+        return True
+    return not stripped.strip()
+
+
+def _kotlin_fun_name(head: str) -> tuple[str, int, int] | None:
+    """``(name, start, end)`` of a ``fun`` declaration head, else ``None``.
+
+    The name is the last identifier before the parameter list in every
+    spelling: ``fun f(``, ``fun <T> f(`` and ``fun List<String>.f(`` —
+    the extension receiver is simply an earlier identifier.
+    """
+    match = _KOTLIN_FUN_KEYWORD.search(head)
+    if match is None:
+        return None
+    open_paren = head.find("(", match.end())
+    if open_paren < 0:
+        return None
+    prefix = head[:open_paren].rstrip()
+    if prefix.endswith(">"):
+        # Drop a trailing type-parameter list: ``fun map<R>(`` names ``map``,
+        # not ``R``.  (A receiver's type arguments close earlier, so the
+        # last ``<``\u2026``>`` pair is the only one that can sit here.)
+        depth = 0
+        for i in range(len(prefix) - 1, -1, -1):
+            if prefix[i] == ">":
+                depth += 1
+            elif prefix[i] == "<":
+                depth -= 1
+                if depth == 0:
+                    prefix = prefix[:i].rstrip()
+                    break
+    found = list(re.finditer(_IDENT, prefix))
+    if not found:
+        return None
+    last = found[-1]
+    return last.group(0), last.start(), last.end()
+
+
+def _kotlin_param_open(
+    head: str,
+    fun_name: tuple[str, int, int] | None,
+    accessor: bool,
+    ctor: bool,
+) -> int:
+    """Offset of the parameter list's ``(`` in a declaration head, or ``-1``.
+
+    Anchoring on the name (for ``fun``) or on the ``get``/``set``/
+    ``constructor`` keyword matters when an annotation carries its own
+    parens: in ``@Ann(1) fun f(x: Int = compute())`` the *first* ``(`` in
+    the head belongs to the annotation, and reading it as the parameter
+    list would put the return-type span over the parameters — blanking
+    the default value's call (probe K11).
+    """
+    if fun_name is not None:
+        return head.find("(", fun_name[2])
+    pattern = _KOTLIN_CTOR_HEAD if ctor else _KOTLIN_ACCESSOR_HEAD
+    stripped = head.lstrip()
+    match = pattern.match(stripped)
+    if match is None:
+        return -1
+    return len(head) - len(stripped) + match.end() - 1
+
+
+def _kotlin_return_type_span(
+    head: str, open_paren: int, end: int | None
+) -> tuple[int, int] | None:
+    """Span between a parameter list's ``)`` and the declaration body.
+
+    A return type holds no call evidence, but it does hold ``IDENT {``
+    shapes that the trailing-lambda pass would read as a call
+    (``fun f(): (Int) -> Int {``).  *end* is the ``=`` that opens an
+    expression body, or ``None`` for a brace-opened head (the whole rest
+    of the head).  The parameter list itself is never included: a default
+    value there *is* a call (K11).
+    """
+    if open_paren < 0:
+        return None
+    depth = 0
+    for i in range(open_paren, len(head)):
+        ch = head[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                start = i + 1
+                stop = len(head) if end is None else end - 1
+                return (start, stop) if stop > start else None
+    return None
+
+
+def _kotlin_type_head(head: str) -> tuple[str, SymbolTuple | None] | None:
+    """``(container kind, symbol)`` for a type-declaration head, else ``None``.
+
+    ``typealias`` is reported as a statement-level symbol (it has no
+    body), while a companion object -- named or not -- is a **type**
+    container that contributes no symbol of its own (K3).
+    """
+    stripped = head.lstrip()
+    match = _KOTLIN_TYPE_DECL.match(stripped)
+    if match is None:
+        if _KOTLIN_UNNAMED_COMPANION.match(stripped) is not None:
+            return "type", None
+        return None
+    prefix = match.group("prefix")
+    words = prefix.split()
+    kind = match.group("kind")
+    name = match.group("name")
+    if "companion" in words:
+        return "type", None
+    if kind == "typealias":
+        return "stmt", (KIND_TYPE_ALIAS, name)
+    if "enum" in words:
+        return "type", (KIND_ENUM, name)
+    if "annotation" in words or kind == "interface":
+        return "type", (KIND_INTERFACE, name)
+    return "type", (KIND_CLASS, name)
+
+
+class _KotlinEvent(NamedTuple):
+    """One structural event from :func:`_kotlin_structure`.
+
+    ``event`` is ``"open"`` (a ``{``), ``"close"`` (a ``}``) or
+    ``"stmt"`` (a newline/semicolon statement boundary).
+    ``symbol_kind``/``name`` describe a symbol the parser would emit, or
+    are ``None``.  ``is_fn`` marks a body that owns calls; ``body_start``
+    is where that body begins (the ``{``, or the offset just after ``=``
+    for an expression body).  ``blanks`` are the spans removed before call
+    extraction — a whole *type* head, a ``fun``'s name token, and its
+    return-type tail (see :func:`_kotlin_return_type_span`).
+    """
+
+    event: str
+    symbol_kind: str | None
+    name: str | None
+    is_fn: bool
+    index: int
+    body_start: int | None
+    blanks: tuple[tuple[int, int], ...]
+
+
+def _kotlin_structure(src: str, raw: str) -> Iterator[_KotlinEvent]:
+    """Walk stripped Kotlin source, yielding structural events.
+
+    ``src`` is the stripped copy (offsets align with ``raw``), used for
+    the character walk so a brace inside a string never counts; ``raw``
+    decides statement continuation, so a blanked literal cannot look like
+    a dangling operator (see :func:`_kotlin_statement_continues`).
+    """
+    stack: list[tuple[str, str]] = []  # (container kind, type name)
+    stmt_start = 0
+    paren = 0
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch == "(":
+            paren += 1
+            i += 1
+            continue
+        if ch == ")":
+            paren = max(0, paren - 1)
+            i += 1
+            continue
+        if ch != "{" and ch != "}" and ch != "\n" and ch != ";":
+            i += 1
+            continue
+        # Braces are counted at *any* paren depth: Kotlin lambdas are
+        # arguments (``process(x, { … })``) and a secondary constructor's
+        # delegation holds one too (``: this({ … })``) — skipping those
+        # openers while still counting their closers would unbalance the
+        # stack and misplace every following member.
+        if ch == "{":
+            head = src[stmt_start:i]
+            innermost = stack[-1] if stack else None
+            at_type_level = innermost is None or innermost[0] == "type"
+            enclosing_name = (
+                innermost[1] if innermost and innermost[0] == "type" else ""
+            )
+            kind: str | None = None
+            name: str | None = None
+            is_fn = False
+            blanks: list[tuple[int, int]] = []
+            body_start: int | None = None
+            container = "block"
+            expression = _kotlin_expression_start(head)
+            type_head = _kotlin_type_head(head)
+            fun_name = None if type_head is not None else _kotlin_fun_name(head)
+            accessor = (
+                type_head is None
+                and fun_name is None
+                and _KOTLIN_ACCESSOR_HEAD.match(head.lstrip()) is not None
+            )
+            ctor = (
+                type_head is None
+                and fun_name is None
+                and not accessor
+                and _KOTLIN_CTOR_HEAD.match(head.lstrip()) is not None
+            )
+            if type_head is not None:
+                container, symbol = type_head
+                if symbol is not None and at_type_level:
+                    kind, name = symbol
+                blanks.append((stmt_start, i))
+            elif fun_name is not None or accessor or ctor:
+                is_fn = True
+                if ctor:
+                    if at_type_level and enclosing_name:
+                        kind, name = KIND_METHOD, enclosing_name
+                elif fun_name is not None and at_type_level:
+                    kind = KIND_FUNCTION if innermost is None else KIND_METHOD
+                    name = fun_name[0]
+                open_paren = _kotlin_param_open(head, fun_name, accessor, ctor)
+                if fun_name is not None:
+                    blanks.append((stmt_start + fun_name[1], stmt_start + fun_name[2]))
+                tail = _kotlin_return_type_span(
+                    head,
+                    open_paren,
+                    expression if expression is not None else len(head),
+                )
+                if tail is not None:
+                    blanks.append((stmt_start + tail[0], stmt_start + tail[1]))
+                if expression is not None:
+                    # ``fun f() = run { \u2026 }``: this brace opens the
+                    # *expression's* lambda, so the caller body starts at
+                    # the ``=`` \u2014 keeping the whole expression, lambda
+                    # included, inside the caller.
+                    body_start = stmt_start + expression
+                else:
+                    # The body starts at the parameter list: a parameter
+                    # default is a call that belongs to *this* function
+                    # (``fun f(x: Int = compute())``, probe K11), while the
+                    # name token before the ``(`` is already blanked.
+                    body_start = stmt_start + open_paren if open_paren >= 0 else i
+            elif _KOTLIN_FUNCTION_PROPERTY.match(head.lstrip() + "{") is not None:
+                # A function-valued property owns the calls in its lambda
+                # (probe K6); the brace is the value, so it is appended
+                # before matching.
+                is_fn = True
+                body_start = i
+            if at_type_level and container == "type":
+                stack.append(("type", name or enclosing_name))
+            else:
+                stack.append(("block", ""))
+            yield _KotlinEvent("open", kind, name, is_fn, i, body_start, tuple(blanks))
+            stmt_start = i + 1
+        elif ch == "}":
+            if stack:
+                stack.pop()
+            stmt_start = i + 1
+            yield _KotlinEvent("close", None, None, False, i, None, ())
+        else:  # a newline or semicolon at paren depth 0
+            head = src[stmt_start:i]
+            raw_head = raw[stmt_start:i]
+            if ch == "\n" and _kotlin_statement_continues(head, raw_head, paren):
+                i += 1
+                continue
+            kind = None
+            name = None
+            is_fn = False
+            body_start: int | None = None
+            blanks = []
+            innermost = stack[-1] if stack else None
+            at_type_level = innermost is None or innermost[0] == "type"
+            if head.strip():
+                type_head = _kotlin_type_head(head)
+                fun_name = None if type_head is not None else _kotlin_fun_name(head)
+                accessor = (
+                    type_head is None
+                    and fun_name is None
+                    and (_KOTLIN_ACCESSOR_HEAD.match(head.lstrip()) is not None)
+                )
+                ctor = (
+                    type_head is None
+                    and fun_name is None
+                    and not accessor
+                    and _KOTLIN_CTOR_HEAD.match(head.lstrip()) is not None
+                )
+                if type_head is not None:
+                    symbol = type_head[1]
+                    if symbol is not None and at_type_level:
+                        kind, name = symbol
+                    blanks.append((stmt_start, i))
+                elif fun_name is not None:
+                    if at_type_level:
+                        kind = KIND_FUNCTION if innermost is None else KIND_METHOD
+                        name = fun_name[0]
+                    blanks.append((stmt_start + fun_name[1], stmt_start + fun_name[2]))
+                # An expression body (``fun f() = expr`` / ``get() = expr``)
+                # owns calls from the ``=`` to the statement boundary.
+                equals = _kotlin_expression_start(head)
+                if equals is not None:
+                    is_fn = fun_name is not None or accessor
+                    body_start = stmt_start + equals
+                if fun_name is not None or accessor or ctor:
+                    open_paren = _kotlin_param_open(head, fun_name, accessor, ctor)
+                    tail = _kotlin_return_type_span(head, open_paren, equals)
+                    if tail is not None:
+                        blanks.append((stmt_start + tail[0], stmt_start + tail[1]))
+            yield _KotlinEvent("stmt", kind, name, is_fn, i, body_start, tuple(blanks))
+            stmt_start = i + 1
+        i += 1
+
+
+def _kotlin_expression_start(head: str) -> int | None:
+    """Offset just after the top-level ``=`` that opens an expression body.
+
+    ``None`` when the head has no such ``=`` — a brace-opened declaration,
+    or an ordinary statement.  ``==``/``!=``/``<=``/``>=`` and a ``->``
+    arrow never open a body, and neither does an ``=`` inside the
+    parameter list (``fun f(x: Int = 1) = 2`` picks the second one).
+    """
+    depth = 0
+    i = 0
+    while i < len(head):
+        ch = head[i]
+        if ch in "([<":
+            depth += 1
+        elif ch in ")]>":
+            depth = max(0, depth - 1)
+        elif ch == "=" and depth == 0:
+            prev = head[i - 1] if i else ""
+            nxt = head[i + 1] if i + 1 < len(head) else ""
+            if nxt == "=" or prev in "!=<>+-*/%&":
+                i += 1
+                continue
+            return i + 1
+        i += 1
+    return None
+
+
+def _blank_kotlin_decl_heads(source: str) -> str:
+    """Blank Kotlin spans that must never read as calls.
+
+    Two spans, for two different reasons: a **type** head (``class A :
+    Base()`` — a ``delegation_specifier`` is not a call, and a
+    primary-constructor default is class-level code that owns nothing,
+    K11) and a ``fun``'s **name token** only (so ``fun render() {`` does
+    not read as a call to ``render``).  A ``fun``'s parameter list is
+    deliberately left intact, because ``fun f(x: Int = compute())`` *is* a
+    call (K11) — the reason this cannot blank whole heads the way the Java
+    checker does.
+
+    Both the walk and the blanking run on the stripped copy, but statement
+    boundaries are decided on the *original* source (:func:`_kotlin_structure`
+    takes both) so a blanked literal can never shift a boundary.
+    """
+    src = _strip_kotlin(source)
+    spans = [span for ev in _kotlin_structure(src, source) for span in ev.blanks]
+    if not spans:
+        return src
+    chars = list(src)
+    for start, end in spans:
+        for i in range(start, end):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def _kotlin_call_mask(source: str) -> list[int]:
+    """Per-line caller-body mask for Kotlin (``fun``/ctor/accessor bodies).
+
+    Class-level property initialisers, ``init`` blocks and primary
+    constructor defaults own no calls (K11, the Java-family rule), so their
+    rows stay at ``-1``; a *nested* caller body's rows get column ``0``,
+    exactly as the Java mask does.
+    """
+    src = _strip_kotlin(source)
+    lines = src.splitlines()
+    mask = [-1] * len(lines)
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+    brace_stack: list[tuple[int, bool, int]] = []
+    regions: list[tuple[int, int, int]] = []
+    for ev in _kotlin_structure(src, source):
+        row = bisect_right(line_starts, ev.index) - 1
+        if ev.event == "open":
+            # An expression-bodied caller anchors at its ``=``, so the whole
+            # expression (lambda included) sits inside the caller body.
+            anchor = ev.body_start if ev.body_start is not None else ev.index
+            row = bisect_right(line_starts, anchor) - 1
+            brace_stack.append((row, ev.is_fn, anchor - line_starts[row]))
+        elif ev.event == "close":
+            if not brace_stack:
+                continue
+            open_row, open_is_fn, col = brace_stack.pop()
+            if open_is_fn:
+                regions.append((open_row, row, col))
+        elif ev.event == "stmt" and ev.is_fn and ev.body_start is not None:
+            start_row = bisect_right(line_starts, ev.body_start) - 1
+            regions.append((start_row, row, ev.body_start - line_starts[start_row]))
+    deltas = [0] * (len(lines) + 1)
+    opened_col: dict[int, int] = {}
+    for start, end, col in regions:
+        deltas[start] += 1
+        if end + 1 <= len(lines):
+            deltas[end + 1] -= 1
+        opened_col.setdefault(start, col)
+    running = 0
+    for row in range(len(lines)):
+        running += deltas[row]
+        if running > 1:
+            mask[row] = 0
+        elif running == 1:
+            mask[row] = opened_col.get(row, 0)
+    # A chained continuation (a row that opens with ``.``, ``?:`` or a
+    # boolean operator) belongs to the caller that owns the row above it:
+    # Kotlin writes
+    #     fun total() = items
+    #         .map { it.value }
+    #         .sum()
+    # and the parser attributes every one of those calls to ``total``.
+    for row in range(1, len(lines)):
+        if mask[row] >= 0 or mask[row - 1] < 0:
+            continue
+        opening = lines[row].lstrip()
+        if opening[:1] == "." or opening.startswith(("?:", "?.", "&&", "||")):
+            mask[row] = mask[row - 1] if mask[row - 1] > 0 else 0
+    return mask
+
+
 _MASKS: dict[str, object] = {
     "python": _py_call_mask,
     "javascript": _js_call_mask,
@@ -1296,6 +1916,7 @@ _MASKS: dict[str, object] = {
     "rust": _rust_call_mask,
     "go": _go_call_mask,
     "java": _java_call_mask,
+    "kotlin": _kotlin_call_mask,
 }
 
 
@@ -1441,6 +2062,71 @@ def _java_is_annotation(line: str, name_start: int) -> bool:
     return k >= 0 and line[k] == "@"
 
 
+def _kotlin_receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
+    """Kotlin receiver rule: a *call* receiver is excluded (probe K5).
+
+    The generic ``)``/``]`` rule plus one Kotlin-only shape: a trailing
+    lambda closes with ``}``, so ``items.map { \u2026 }.first()`` has a call
+    receiver the generic check cannot see.  An object-literal receiver is
+    always parenthesised (``(object : T {}).m()``), so this cannot swallow
+    a non-call receiver.
+    """
+    if _receiver_is_call(lines, i, name_start):
+        return True
+    if name_start < 1 or lines[i][name_start - 1] != ".":
+        return False
+    dot = name_start - 1
+    text = lines[i]
+    prev = text[dot - 1] if dot >= 1 else ""
+    if prev == "}":
+        return True
+    if (prev == "" or prev.isspace()) and not text[:dot].strip():
+        if i == 0:
+            return False
+        tail = lines[i - 1].rstrip()
+        return bool(tail) and tail[-1] == "}"
+    return False
+
+
+def _kotlin_trailing_lambda_names(lines: list[str], mask: list[int]) -> set[str]:
+    """Called names of Kotlin *trailing-lambda* calls (``foo { \u2026 }``).
+
+    ``list.forEach { \u2026 }`` is a ``call_expression`` whose argument is the
+    lambda, so the parser reports ``forEach`` even though no ``(`` follows
+    the name.  The trap is a supertype or delegation head — ``class A :
+    Runnable {``, ``class A(b: B) : B by b {`` — so a name preceded by
+    ``:``/``,``/``by`` is refused.
+    """
+    found: set[str] = set()
+    keywords = _KEYWORDS["kotlin"]
+    pattern = re.compile(rf"(?<![A-Za-z0-9_$])({_IDENT})\s*\{{")
+    for i, line in enumerate(lines):
+        body_start = mask[i]
+        if body_start < 0:
+            continue
+        for match in pattern.finditer(line):
+            if match.start() < body_start:
+                continue
+            name = match.group(1)
+            if name in keywords:
+                continue
+            if _java_is_annotation(line, match.start()):
+                continue
+            before = line[: match.start()].rstrip()
+            if before.endswith((":", ",")) or re.search(r"\bby\s*$", before):
+                continue
+            if _kotlin_receiver_is_call(lines, i, match.start()):
+                continue
+            if (
+                is_dunder_name(name)
+                and match.start() >= 1
+                and line[match.start() - 1] == "."
+            ):
+                continue
+            found.add(name)
+    return found
+
+
 def extract_called_names(lang: str, source: str) -> set[str]:
     """Return every distinct called name in *source*.
 
@@ -1467,6 +2153,12 @@ def extract_called_names(lang: str, source: str) -> set[str]:
         # A declaration head must never read as a call (``void render() {``,
         # ``enum Mode { FAST(1) {``).
         src = _blank_java_decl_heads(src)
+    elif lang == "kotlin":
+        # A *type* head must never read as a call (``class A : Base()`` is a
+        # delegation, a primary-constructor default is class-level code) and
+        # a ``fun``'s name token is not a call either — while its parameter
+        # defaults *are* (K11), which is why only the name token goes.
+        src = _blank_kotlin_decl_heads(source)
     keywords = _KEYWORDS[lang]
     names: set[str] = set()
     mask = _MASKS[lang](source)  # type: ignore[operator]
@@ -1488,6 +2180,15 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                 if _java_is_annotation(line, match.start()):
                     continue
                 if _java_receiver_is_call(lines, i, match.start()):
+                    continue
+            elif lang == "kotlin":
+                # ``@Suppress("x")`` owns no call (an annotation argument is
+                # not a ``call_expression``), and unlike Java a constructor
+                # receiver *is* a call — ``Foo().bar()`` is excluded just as
+                # ``f().bar()`` is.
+                if _java_is_annotation(line, match.start()):
+                    continue
+                if _kotlin_receiver_is_call(lines, i, match.start()):
                     continue
             elif _receiver_is_call(lines, i, match.start()):
                 continue
@@ -1526,6 +2227,10 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                 if depth == 0 and line[idx:].lstrip().startswith("=>"):
                     continue
             names.add(name)
+
+    if lang == "kotlin":
+        names |= _kotlin_trailing_lambda_names(lines, mask)
+        names |= _kotlin_interpolation_names(source.splitlines(), mask)
 
     return names
 
@@ -1888,6 +2593,33 @@ def extract_symbols_go(source: str) -> set[SymbolTuple]:
 # is a type body.
 #
 # Two Java-specific traps the classifier closes:
+# ---------------------------------------------------------------------------
+# Symbol extraction — Kotlin (structure walk, see ``_kotlin_structure``)
+# ---------------------------------------------------------------------------
+#
+# The parser collects a member only while the innermost open body is a
+# *type* body, so a local ``fun`` (inside a method) and an enum-entry body's
+# methods produce no symbols, while a nested class's members do (K1/K11).
+# A companion object is a type body with no symbol of its own — named or
+# not (K3) — and a secondary ``constructor`` is a method named after the
+# enclosing type, the Kotlin spelling of Java's constructor rule.
+def extract_symbols_kotlin(source: str) -> set[SymbolTuple]:
+    """Type declarations and their direct functions/methods/constructors.
+
+    Mirrors ``kotlin_scanner``: ``class``/``data class``/``sealed class``/
+    ``value class``/``object`` → class, ``interface``/``fun interface``/
+    ``annotation class`` → interface, ``enum class`` → enum, ``typealias``
+    → type_alias, a top-level ``fun`` → function and a type-body
+    ``fun``/``constructor`` → method.
+    """
+    src = _strip_kotlin(source)
+    symbols: set[SymbolTuple] = set()
+    for ev in _kotlin_structure(src, source):
+        if ev.symbol_kind is not None and ev.name:
+            symbols.add((ev.symbol_kind, ev.name))
+    return symbols
+
+
 def extract_symbols_java(source: str) -> set[SymbolTuple]:
     """Type declarations and their direct methods/constructors.
 
@@ -1917,6 +2649,7 @@ _SYMBOL_EXTRACTORS: dict[str, object] = {
     "rust": extract_symbols_rust,
     "go": extract_symbols_go,
     "java": extract_symbols_java,
+    "kotlin": extract_symbols_kotlin,
 }
 
 

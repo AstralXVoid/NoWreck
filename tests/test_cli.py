@@ -819,7 +819,9 @@ class TestFlagConflicts:
 #
 # ``parent_class`` is required for Java because Java has no top-level
 # functions — its callables are always methods of a type, so the
-# CHANGED_FUNCTION claim must name the owning class.
+# CHANGED_FUNCTION claim must name the owning class.  Kotlin *does* have
+# top-level functions (``app.kt`` below), so it uses ``None`` there;
+# ``TestE2EKotlinPipeline`` covers the method-inside-a-class spelling.
 _LANG_CASES = [
     (
         "python",
@@ -862,6 +864,13 @@ _LANG_CASES = [
         "class App { int greet() { return 1; } }\n",
         "class App { int greet() { return 2; } }\n",
         "App",
+    ),
+    (
+        "kotlin",
+        "app.kt",
+        'fun greet(): String { return "hi" }\n',
+        'fun greet(): String { return "hello" }\n',
+        None,
     ),
 ]
 
@@ -1340,6 +1349,291 @@ class TestE2EJavaPipeline:
             c["symbol_name"] == "greet" and c["parent_class"] == "App"
             for c in data["unexplained_changes"]
         )
+
+
+class TestE2EKotlinPipeline:
+    """Phase 3 gate 5: the real CLI pipeline over Kotlin sources.
+
+    Covers ``--pre/--post`` with all three output formats, ``--compare``
+    against a git repo, both non-CONFIRMED verdict paths, and the Kotlin
+    script (``.kts``) spelling, whose declarations are top-level.
+    """
+
+    # One-line class bodies holding members trigger a known grammar
+    # defect (the parser errors and the body collapses), so the fixture
+    # is written the way Kotlin is actually formatted.
+    _PRE = "class App {\n    fun greet(): Int {\n        return 1\n    }\n}\n"
+    _POST = "class App {\n    fun greet(): Int {\n        return 2\n    }\n}\n"
+
+    def _snapshots(self, tmpdir: str) -> tuple[Path, Path]:
+        pre = Path(tmpdir) / "pre"
+        post = Path(tmpdir) / "post"
+        pre.mkdir()
+        post.mkdir()
+        (pre / "App.kt").write_text(self._PRE, encoding="utf-8")
+        (post / "App.kt").write_text(self._POST, encoding="utf-8")
+        return pre, post
+
+    @pytest.mark.parametrize("fmt", ["json", "sarif", "junit"])
+    def test_kotlin_change_renders_every_format(
+        self, capsys: pytest.CaptureFixture, fmt: str
+    ) -> None:
+        """An unexplained Kotlin change renders through json/sarif/junit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    fmt,
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            # A CHANGED_FUNCTION with no claim is unexplained → exit 1.
+            assert rc == 1, out
+            if fmt == "json":
+                data = json.loads(out)
+                assert "version" in data and "results" in data
+                unexplained = data["unexplained_changes"]
+                assert any(
+                    c["symbol_name"] == "greet" and c["parent_class"] == "App"
+                    for c in unexplained
+                ), unexplained
+            elif fmt == "sarif":
+                data = json.loads(out)
+                assert data["version"] == "2.1.0"
+                assert "$schema" in data
+            else:
+                assert "testsuites" in out
+                assert "nowreck" in out
+
+    def test_kotlin_claim_confirmed_via_pre_post(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The honest claim set for a Kotlin body edit is CONFIRMED."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.kt",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_kotlin_hallucinated_claim_unverifiable(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A CHANGED_FUNCTION claim about a Kotlin method nobody touched is
+        UNVERIFIABLE (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            src = self._PRE
+            (pre / "App.kt").write_text(src, encoding="utf-8")
+            (post / "App.kt").write_text(src, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.kt",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "UNVERIFIABLE" in out
+
+    def test_kotlin_changed_claim_contradicted_by_removal(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Claiming CHANGED_FUNCTION for a Kotlin method that was actually
+        removed is CONTRADICTED (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "App.kt").write_text(
+                "class App {\n    fun gone(): Int {\n        return 1\n    }\n}\n",
+                encoding="utf-8",
+            )
+            (post / "App.kt").write_text("class App\n", encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="gone",
+                    file_path="App.kt",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "CONTRADICTED" in out
+
+    def test_kotlin_compare_mode_detects_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """``--compare HEAD~1`` picks up a Kotlin method-body edit from git."""
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "App.kt").write_text(self._PRE, encoding="utf-8")
+        env = {
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t.local",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t.local",
+        }
+
+        def git(*args: str) -> None:
+            assert (
+                subprocess.run(
+                    ["git", *args], cwd=repo, capture_output=True, text=True, env=env
+                ).returncode
+                == 0
+            ), args
+
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "init")
+        (repo / "App.kt").write_text(self._POST, encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "change")
+
+        from nowreck.cli import build_parser
+        from nowreck.main import handle_fix
+
+        monkeypatch.chdir(repo)
+        args = build_parser().parse_args(
+            ["fix", "--compare", "HEAD~1", "--format", "json"]
+        )
+        rc = handle_fix(args)
+        out, _ = capsys.readouterr()
+
+        assert rc == 1, out
+        data = json.loads(out)
+        assert any(
+            c["symbol_name"] == "greet" and c["parent_class"] == "App"
+            for c in data["unexplained_changes"]
+        )
+
+    def test_kts_script_top_level_function_confirmed(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A ``.kts`` script has top-level functions, so its CHANGED claim
+        needs no ``parent_class`` and still confirms end-to-end."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "build.kts").write_text(
+                'fun greet(): String { return "hi" }\n', encoding="utf-8"
+            )
+            (post / "build.kts").write_text(
+                'fun greet(): String { return "hello" }\n', encoding="utf-8"
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="build.kts",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
 
 
 class TestExternalDirsGetNoCache:

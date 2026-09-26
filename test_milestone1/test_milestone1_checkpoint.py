@@ -53,6 +53,7 @@ PURE_TSX_REPO = REPOS / "pure-tsx" / "src"
 PURE_RUST_REPO = REPOS / "pure-rust" / "src"
 PURE_GO_REPO = REPOS / "pure-go" / "src"
 PURE_JAVA_REPO = REPOS / "pure-java" / "src"
+PURE_KOTLIN_REPO = REPOS / "pure-kotlin" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3  # greeter.py, calculator.py, models.py
@@ -62,6 +63,7 @@ EXPECTED_TSX_FILES = 3  # greeter.tsx, calculator.tsx, models.tsx
 EXPECTED_RUST_FILES = 3  # greeter.rs, calculator.rs, models.rs
 EXPECTED_GO_FILES = 3  # greeter.go, calculator.go, models.go
 EXPECTED_JAVA_FILES = 3  # Greeter.java, Calculator.java, Models.java
+EXPECTED_KOTLIN_FILES = 3  # Greeter.kt, Calculator.kt, Models.kt
 EXPECTED_MIXED_PY = 2  # utils.py, main.py
 EXPECTED_MIXED_JS = 2  # utils.js, ui_handler.js
 
@@ -146,6 +148,11 @@ def pure_go_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_java_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_JAVA_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_kotlin_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_KOTLIN_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -1135,6 +1142,138 @@ class TestPureJavaRepo:
 
 # 7. Mixed Python + JavaScript repo
 # ---------------------------------------------------------------------------
+
+
+class TestPureKotlinRepo:
+    """3 Kotlin files with classes, objects, interfaces, enums, calls."""
+
+    def test_discovers_all_files(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan, _ = pure_kotlin_scan
+        assert scan.success_count == EXPECTED_KOTLIN_FILES
+        assert scan.failure_count == 0
+        assert len(scan.kotlin_files) == EXPECTED_KOTLIN_FILES
+        assert set(scan.kotlin_files) == {
+            Path("Greeter.kt"),
+            Path("Calculator.kt"),
+            Path("Models.kt"),
+        }
+
+    def test_top_level_functions_are_functions(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """Kotlin differs from Java here: a top-level ``fun`` is a FUNCTION
+        symbol with **no** ``parent_class``, not a METHOD on a synthetic type."""
+        _, idx = pure_kotlin_scan
+        for name in ("greet", "formatGreeting", "farewell"):
+            found = idx.by_name(name)
+            assert len(found) == 1, name
+            assert found[0].symbol_type is SymbolType.FUNCTION, name
+            assert found[0].parent_class is None, name
+
+    def test_calculator_has_class_and_methods(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_kotlin_scan
+        # The secondary constructor shares the class name — filter by type.
+        calc = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.CLASS
+        ]
+        assert len(calc) == 1
+        for name in ("add", "subtract", "multiply", "divide", "display"):
+            methods = [
+                s
+                for s in idx.by_name(name)
+                if s.parent_class == "Calculator" and s.symbol_type is SymbolType.METHOD
+            ]
+            assert len(methods) == 1, name
+
+    def test_secondary_constructor_is_a_method_named_after_the_class(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_kotlin_scan
+        ctor = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.METHOD
+        ]
+        assert len(ctor) == 1
+        assert ctor[0].parent_class == "Calculator"
+
+    def test_companion_method_attributes_to_the_outer_class(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """Probe K3: a companion is not a symbol of its own, and its members
+        belong to the class that owns the companion."""
+        _, idx = pure_kotlin_scan
+        average = idx.by_name("computeAverage")
+        assert len(average) == 1
+        assert average[0].symbol_type is SymbolType.METHOD
+        assert average[0].parent_class == "Calculator"
+        assert len(idx.by_name("Companion")) == 0
+
+    def test_models_has_types(self, pure_kotlin_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_kotlin_scan
+
+        def only(name: str, kind: SymbolType) -> list:
+            return [s for s in idx.by_name(name) if s.symbol_type is kind]
+
+        assert len(only("User", SymbolType.CLASS)) == 1  # data class → CLASS
+        assert len(only("AdminUser", SymbolType.CLASS)) == 1
+        assert len(only("Reader", SymbolType.INTERFACE)) == 1
+        assert len(only("Status", SymbolType.ENUM)) == 1
+        assert len(only("Registry", SymbolType.CLASS)) == 1  # object → CLASS
+        assert len(only("label", SymbolType.METHOD)) == 1
+        assert only("label", SymbolType.METHOD)[0].parent_class == "Status"
+
+    def test_symbol_index_has_kotlin_symbols(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_kotlin_scan
+        assert len(idx.functions) == 3  # greet, formatGreeting, farewell
+        assert len(idx.classes) >= 4  # Calculator, User, AdminUser, Registry
+        assert len(idx.interfaces) >= 1  # Reader
+        assert len(idx.enums) >= 1  # Status
+        assert len(idx.methods) >= 14
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_KOTLIN_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        # Greeter.greet -> formatGreeting, and formatGreeting -> trim
+        assert ("greet", "formatGreeting") in callers
+        assert ("formatGreeting", "trim") in callers
+        # AdminUser.display -> super.display()
+        assert ("display", "display") in callers
+        # Calculator.add -> history.add(result) — a member call on a property
+        assert ("add", "add") in callers
+        # Companion method -> stdlib extension on a list
+        assert ("computeAverage", "forEach") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_KOTLIN_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_KOTLIN_FILES
+        types = {c.change_type for c in changes}
+        assert ChangeType.ADD_FUNCTION in types
+        assert ChangeType.ADD_CLASS in types
+        assert ChangeType.ADD_INTERFACE in types
+        assert ChangeType.ADD_ENUM in types
+
+    def test_no_changes_when_identical(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan, idx = pure_kotlin_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(
+        self, pure_kotlin_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan1, idx1 = pure_kotlin_scan
+        scan2, idx2 = _scan_and_index(PURE_KOTLIN_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
 
 
 class TestMixedRepo:

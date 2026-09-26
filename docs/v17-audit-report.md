@@ -393,3 +393,171 @@ All shapes were already pinned in the Java corpus (`edge_lambdas`,
 | `basedpyright` | 0 errors, 0 warnings, 0 notes |
 | Production code touched | `java_scanner.py` (new), `_tree_sitter_helpers.py` (Java comment/string node types + `_METHOD_NODE_TYPES`), pipeline wiring (repository_scanner, symbol_index, change_detector, prompt_verifier, model prompts), `pyproject.toml` (dependency) |
 | API hygiene | `_class_shell_hash` → public `class_shell_hash` (shared cross-module, matching `structural_hash`) |
+
+---
+
+## 11. Phase 3 — Kotlin remediation — closed
+
+### Dependency floor (corrected, then verified empirically)
+
+The scope's `tree-sitter-kotlin>=0.22` **does not exist on PyPI**. The real
+package is `tree-sitter-kotlin 1.1.0` (the `tree-sitter-grammars/kotlin-ng`
+grammar), ABI 14, running on `tree-sitter` 0.26.0; the older `fwcd` grammar is
+not distributed on PyPI at all. The correction is recorded here, pinned in
+`pyproject.toml`, and enforced by `test_k12_dependency_floor_is_the_installed_grammar`
+(version ≥ 1.1 and ABI 14 — a grammar bump fails the probe instead of quietly
+changing scan results).
+
+### Fixture probes K1–K16 — resolved empirically, each pinned as a permanent test
+
+Every grammar shape the scanner depends on was probed before collector code was
+written and pinned in `tests/test_kotlin_probes.py` (**86 tests**). This is the
+most defect-dense grammar adopted so far: **seven confirmed misparses** on
+ordinary source, only three of which set `has_error`. Probes K13–K16 were added
+with the D7 fix (below); K1–K12 landed with the scanner.
+
+| # | Defect | Signal | Handling |
+|---|---|---|---|
+| D1 | One-line class-like body holding a member (`class A { fun f() {} }`) fails to parse; the body is mislabelled `enum_class_body` and the member sits in an `ERROR` | loud | accepted edge — the multi-line body every Kotlin style guide mandates is unaffected, and a newline or `;` before the brace avoids it; the class symbol is still emitted |
+| D2 | Annotated single-entry enum without a trailing comma loses the whole declaration (`annotated_expression → infix_expression(enum, class, call_expression)`) | silent | recovered by the blinded re-parse (D7) |
+| D3 | Annotated `annotation class` loses the whole declaration the same way | silent | recovered the same way, mapped to `INTERFACE` (Java `@interface` parity) |
+| D4 | A top-level `fun`/`object`/`enum class` whose annotation has a following sibling — a trailing comment counts — gets its annotation **detached** into a sibling `annotated_expression`, so the same source has two CST shapes | silent | annotations are hashed as a grouping-independent leaf-token signature, so attach/detach cannot differ |
+| D5 | A `fun` named after a type soft keyword (`dynamic`/`suspend`) loses its name (MISSING node in a type body, `anonymous_function` + `ERROR` at top level) | loud | name recovered from the swallowed token / `ERROR` text; a symbol or caller is **never** emitted empty |
+| D6 | The same two keywords in other identifier positions (`val dynamic = 1`, a bare `dynamic()`, a named argument, a lambda parameter) collapse the whole file into one `ERROR` | loud | accepted edge — and a loud one, so the family's parse warning fires. Every other soft keyword (`value`, `field`, `get`, `set`, `by`, `where`, `init`, `param`, …) is an ordinary identifier to this grammar (probe K12e) |
+| D7 | **Stacked annotations dissolve declarations** — see below | silent | blinded re-parse (`_prepare_source`) |
+
+### D7 — the silent data-loss family (found in adversarial review, fixed structurally)
+
+With **two or more stacked annotations**, a plain top-level `class` / `interface` /
+`annotation class` (also `sealed class` and `data object`, though not `data class`,
+`value class`, `enum class`, `fun interface` or `object`) is destroyed as soon as
+**any declaration follows**: it becomes an `annotated_expression` chain ending in
+an `infix_expression` where `class` is read as an infix operator, the name as its
+left operand and the body as a trailing lambda. `has_error` stays `False`, the
+symbol disappears, and a **bodyless** destroyed declaration keeps *absorbing* the
+next class-like declaration into the same chain — two declarations become one node
+(probes K13/K14 pin both shapes; a trailing comment does not trigger the damage,
+and the same stack nested in a class body is never damaged, so the shape is a
+property of the file rather than of the declaration). The same "a sibling follows"
+trigger detaches an argument-bearing `@Ann(1)` on a top-level `fun` into a sibling
+`annotated_expression` (probe K15).
+
+**Why not shape-by-shape recovery:** a single annotation stays attached; the same
+declaration last in a file stays attached; which heads survive is grammar luck.
+Recovery rules keyed on damage shapes would grow with the grammar and still miss
+the next variant. The fix therefore removes the grammar's vote entirely:
+
+1. collect every annotation span from the original parse (attached `annotation`
+   nodes *and* detached `annotated_expression` chains, arguments included);
+2. **blind** those spans in the source — replaced by spaces, newlines kept, so
+   every byte offset and line number survives;
+3. re-parse: the blinded file is ordinary, undamaged Kotlin, so declarations
+   come back intact;
+4. fold each annotation back into the declaration it owns via a **positional
+   ownership map** — *preceding* (the run sits directly before a symbol
+   declaration, with only whitespace/comments/other runs between) or *contained*
+   (the run sits inside a declaration in front of a non-symbol declaration — a
+   property, enum entry, parameter, type argument) → the enclosing declaration;
+   a run that does neither (a file annotation, a top-level property annotation)
+   owns nothing;
+5. fold each annotation's canonical leaf-token signature into that
+   declaration's hash — the same signature the attached spelling produces.
+
+Files with no annotations take the original path byte for byte (`_prepare_source`
+returns `None`), so the long-standing no-annotation behaviour is unchanged.
+
+**Dead code removed with the fix:** the blinded re-parse made the earlier
+shape-specific D2/D3 recovery (`_mangled_declaration`,
+`_mangled_annotation_units`, `_RecoveredDeclaration`, `_recover_destroyed`,
+`_leading_annotation_siblings`, ~170 lines) unreachable — a destroyed
+`annotated_expression` implies annotations, which implies the blinded path,
+which never produces that shape — so it was deleted rather than left to rot.
+The same pass deleted `_attached_annotations` and the `skipped_named_types` /
+`drop_if_empty_types` parameters added to the shared hash helpers for Kotlin:
+with the annotations blanked before hashing, those hooks can never match a
+node again. `basedpyright` and the full suite were re-run after each deletion.
+
+**The trap that cost a red test:** the `annotation` **keyword** of
+`annotation class` parses as a node of type `annotation` too — a childless leaf
+under `class_modifier` (probe K16). Blinding "every node of type `annotation`"
+would blank the keyword and the blinded parse would read `annotation class Ann`
+as a plain `class Ann`; `_is_annotation_node` therefore requires children.
+
+### Verification — D7
+
+| Check | Result |
+|---|---|
+| Spelling independence (7 pairs: destroyed-vs-comment-only control, same layout) | annotated declaration identical in name/kind/parent/**line**/`body_hash`, and callers/calls identical — **0 problems** |
+| Adversarial battery (28 sample + corpus files) | deterministic across repeat scans; no empty names; no empty caller/called names; every reported line inside the file |
+| Appending a sibling after a double-annotated class | `ADD_CLASS` on the sibling only — no phantom `CHANGED_CLASS`, no disappearing symbol, no call churn |
+| Annotation edit on a destroyed-shape class / second-stack-member edit | `CHANGED_CLASS` on the annotated class only |
+| Bodyless destroyed class + next class, edit the absorbed class | `CHANGED_CLASS` on the absorbed class |
+| Interplay with D2/D3 (annotated single-entry enum, annotated `annotation class`) | both recovered and stable across sibling appends |
+| Perf: 1000 double-annotated methods | 0.79 s annotated vs 0.49 s unannotated, 1001 symbols (the ownership map was sorted per run at first — replaced with a bisect lookup, 1.73 s → 0.79 s) |
+
+**Honest record — a D7 regression the sample suite caught:** the first folding
+pass took the symbol's reported line from its first owned annotation, which moved
+`fun tagged` to the line of a *local* `@Suppress` inside its own body. The
+`pure-kotlin` sample suite's line-number round (`test_kotlin_multiround.py`,
+round 5) failed on exactly that file, and the rule was corrected: only a
+**preceding** annotation shifts the reported line; a contained annotation is
+content, not a prefix. Regression-pinned in `tests/test_scanner.py`
+(preceding ⇒ annotation line for both spellings; contained ⇒ declaration's own
+line).
+
+### Scanner + pipeline integration
+
+`nowreck/scanner/kotlin_scanner.py` (new): symbols (`class`/`data class`/
+`sealed class`/`value class`/`object` → CLASS, `interface`/`fun interface` →
+INTERFACE, `enum class` → ENUM, `annotation class` → INTERFACE,
+`typealias` → TYPE_ALIAS named by the `type` field; class-body `fun` and
+`secondary_constructor` → METHOD with `parent_class`, top-level `fun` (extension
+functions included) → FUNCTION) and calls (`call_expression` with the JS/TS
+receiver rule — the last `navigation_expression` member; `Foo::bar` is a
+reference, never a call; trailing-lambda calls counted). Callers: named bodies,
+secondary constructors (named after the class) and property **accessors**
+(`get()`/`set()` named after the property); `init` blocks, property initialisers
+and bare lambdas own nothing. `companion object` is a type body with no symbol,
+so its members belong to the outer class; enum-entry bodies and local functions
+produce no symbols but are still callers. Wired through `repository_scanner`
+(`.kt`/`.kts` discovery, cache `language="kotlin"`, failure accounting),
+`symbol_index` merge, `change_detector._extract_calls`, `prompt_verifier`
+n_files counts, and the model/verifier prompt language lists.
+
+Hash model: CLASS/ENUM carry a class-shell hash with `function_declaration` and
+`secondary_constructor` excluded (companion/instance-method edits fire
+`CHANGED_FUNCTION` only); INTERFACE and TYPE_ALIAS carry no hash (no
+`CHANGED_INTERFACE`/`CHANGED_TYPE_ALIAS` in the claim taxonomy); Kotlin takes the
+JS/TS/Go ASI exclusion for `;` (the grammar drops optional semicolons and keeps
+only the enum-entry terminator); raw strings (`multiline_string_literal`) hash
+differently from quoted strings, unlike Java text blocks.
+
+Invariant: a symbol name and a caller name are **never empty** — every
+function-like declaration whose name cannot be recovered contributes nothing.
+
+### Differential audit (Kotlin corpus)
+
+15 Kotlin corpus files added (`basic`, `edge_calls`, `edge_control`,
+`edge_enums`, `edge_formatting`, `edge_generics`, `edge_inheritance`,
+`edge_interfaces`, `edge_lambdas`, `edge_members`, `edge_negatives`,
+`edge_nested`, `edge_objects`, `edge_realworld`, `edge_strings`), each probed
+against the regex checker through the real pipeline. Kotlin compares names **and kinds** per file.
+`EXPECTED_DIVERGENCES` stays **empty** — the checker bug tail (annotations,
+soft keywords, `.kts`, raw strings) was fixed in the checker, not papered over,
+and the map-hygiene test keeps it that way.
+
+### Phase 3 verification
+
+| Gate | Result |
+|---|---|
+| Differential audit | 94 passed (79 + 15 Kotlin corpus files), `EXPECTED_DIVERGENCES` empty |
+| Kotlin probe pins | 86 passed (`tests/test_kotlin_probes.py`, K1–K16) |
+| Detector matrix | `tests/test_change_detector.py`: 175 passed (incl. D2/D3/D4/D7 rows: stacked-annotation sibling append, destroyed-shape body/annotation edits, bodyless absorption, detached argument annotation with call preservation, local-annotation ownership) |
+| Scanner / index / hash / cache / CLI / dependency errors | 39 / 62 / 91 / 46 / 89 / 10 passed |
+| Full suite | 1364 passed |
+| Sample suites (`test_kotlin_samples/`) | `test_kotlin_types.py`, `test_kotlin_comprehensive.py`, `test_kotlin_multiround.py` all green (the multiround script's rounds 4–6 cover the real-world corpus, line numbers and the cross-language regression) |
+| Milestone repo | `pure-kotlin` checkpoint green (11 passed) |
+| `ruff check` / `ruff format --check` | All checks passed / 103 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| Production code touched | `kotlin_scanner.py` (new), `_tree_sitter_helpers.py` (`METHOD_NODE_TYPES` made public, Kotlin comment/string node types), pipeline wiring (repository_scanner, symbol_index, change_detector, prompt_verifier, model prompts), `pyproject.toml` (dependency) |
+| API hygiene | `_METHOD_NODE_TYPES` → public `METHOD_NODE_TYPES` (shared cross-module, matching `class_shell_hash`) |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 from tree_sitter import Node
@@ -22,11 +23,16 @@ logger = logging.getLogger(__name__)
 # ``character_literal`` is Java's ``'x'``.  Java text blocks are *not*
 # a separate node type — they parse as ``string_literal`` with a
 # three-character double-quote delimiter (Phase 2 probe J7), which
-# ``_strip_outer_quotes`` handles.
+# ``_strip_outer_quotes`` handles.  Kotlin raw strings *are* a separate
+# node type (``multiline_string_literal``, Phase 3 probe K7); they are
+# included so their whitespace — which is string *content*, not source
+# formatting — is preserved exactly instead of being collapsed by the
+# generic leaf rule.
 STRING_NODE_TYPES: frozenset[str] = frozenset(
     {
         "string",
         "string_literal",
+        "multiline_string_literal",
         "raw_string_literal",
         "char_literal",
         "character_literal",
@@ -88,8 +94,9 @@ def structural_hash(
         node: The CST node to hash.
         source_bytes: Source bytes the tree was parsed from.
         excluded_leaf_types: Leaf token types to omit entirely (e.g.
-            ``ASI_LEAF_EXCLUSIONS`` for JS/TS/Go, whose semicolons are
-            optional).  Rust passes nothing — its ``;`` is semantic.
+            ``ASI_LEAF_EXCLUSIONS`` for JS/TS/Go/Kotlin, whose
+            semicolons are optional).  Rust and Java pass nothing —
+            their ``;`` is semantic.
     """
     if node.type in COMMENT_NODE_TYPES:
         return ""
@@ -239,7 +246,7 @@ def _strip_outer_quotes(text: str) -> str:
 # JS/TS ``method_definition`` and Java ``method_declaration`` /
 # ``constructor_declaration`` / ``compact_constructor_declaration``
 # (a record's compact constructor is its own node type).
-_METHOD_NODE_TYPES: frozenset[str] = frozenset(
+METHOD_NODE_TYPES: frozenset[str] = frozenset(
     {
         "method_definition",
         "method_declaration",
@@ -254,18 +261,31 @@ def class_shell_hash(
     source_bytes: bytes,
     *,
     excluded_leaf_types: frozenset[str] = frozenset(),
+    method_node_types: frozenset[str] = METHOD_NODE_TYPES,
 ) -> str:
     """Structural hash of a class/record/enum *shell only*.
 
     Serialises the declaration subtree (modifiers, annotations, name,
     heritage, class body) while excluding every method-like subtree
-    (``_METHOD_NODE_TYPES``) — getter/setter/static/async modifiers, and
+    (*method_node_types*) — getter/setter/static/async modifiers, and
     Java modifiers/annotations, live *inside* the method subtree and go
     with it — and, for TypeScript, decorator siblings attached to a
     method.  A method edit therefore never fires ``CHANGED_CLASS``
     (disjoint-facts rule), at any nesting depth (e.g. methods of a class
     expression stored in a static field, or a Java nested class).
     Class-level decorators/annotations and fields remain in the shell.
+
+    Args:
+        class_node: The type declaration node whose shell is hashed.
+        source_bytes: Source bytes the tree was parsed from.
+        excluded_leaf_types: Leaf tokens omitted entirely (Kotlin passes
+            the ASI exclusion set).
+        method_node_types: The grammar's method-like node types.  Kotlin
+            adds ``function_declaration`` and ``secondary_constructor``
+            so a companion/instance method edit fires
+            ``CHANGED_FUNCTION`` only — never a coarse
+            ``CHANGED_CLASS`` (Phase 3 probe K3, generalising the v16
+            disjoint-facts rule).
     """
     parts: list[str] = [class_node.type]
     for child in class_node.children:
@@ -274,6 +294,7 @@ def class_shell_hash(
             source_bytes,
             skip_methods=True,
             excluded_leaf_types=excluded_leaf_types,
+            method_node_types=method_node_types,
         )
         if child_hash:
             parts.append(child_hash)
@@ -286,11 +307,12 @@ def _serialize_node(
     *,
     skip_methods: bool,
     excluded_leaf_types: frozenset[str] = frozenset(),
+    method_node_types: frozenset[str] = METHOD_NODE_TYPES,
 ) -> str:
     """Core CST serialisation shared by ``structural_hash`` and the class
     shell walk.
 
-    With *skip_methods* set, ``method_definition`` subtrees and the
+    With *skip_methods* set, *method_node_types* subtrees and the
     decorator siblings attached to them are omitted (class shell mode);
     otherwise the full structure is hashed.  Leaves in
     *excluded_leaf_types* are omitted entirely, and trailing commas are
@@ -300,7 +322,7 @@ def _serialize_node(
         return ""
     if node.type in excluded_leaf_types:
         return ""
-    if skip_methods and node.type in _METHOD_NODE_TYPES:
+    if skip_methods and node.type in method_node_types:
         return ""
     parts: list[str] = [node.type]
     if node.type in STRING_NODE_TYPES and node.type != "template_string":
@@ -322,6 +344,7 @@ def _serialize_node(
                 and _is_method_decorator(
                     children,
                     i,
+                    method_node_types,
                 )
             ):
                 continue
@@ -332,6 +355,7 @@ def _serialize_node(
                 source_bytes,
                 skip_methods=skip_methods,
                 excluded_leaf_types=excluded_leaf_types,
+                method_node_types=method_node_types,
             )
             if child_hash:
                 parts.append(child_hash)
@@ -353,19 +377,74 @@ def _is_trailing_comma(children: list[Node], index: int) -> bool:
     return False
 
 
-def _is_method_decorator(children: list[Node], index: int) -> bool:
+def _is_method_decorator(
+    children: list[Node],
+    index: int,
+    method_node_types: frozenset[str] = METHOD_NODE_TYPES,
+) -> bool:
     """Whether the decorator at *index* decorates a sibling method.
 
     The TypeScript grammar attaches method decorators as siblings
     *before* the ``method_definition`` in the class body.  A run of
-    decorators directly followed by a ``method_definition`` is excluded
-    from the class shell so method-decorator edits never fire
+    decorators directly followed by a method-like node is excluded from
+    the class shell so method-decorator edits never fire
     ``CHANGED_CLASS`` (Accepted Edges #1).
     """
     j = index + 1
     while j < len(children) and children[j].type == "decorator":
         j += 1
-    return j < len(children) and children[j].type in _METHOD_NODE_TYPES
+    return j < len(children) and children[j].type in method_node_types
+
+
+def _iter_leaf_tokens(node: Node) -> Iterator[Node]:
+    """Yield *node*'s leaves in source order.
+
+    String-literal nodes are terminal even when the grammar gives them
+    children (Kotlin/Java string literals carry ``string_content`` /
+    ``interpolation`` children), so their span is hashed as one token
+    exactly like a single-leaf literal.  ``template_string`` is the one
+    exception — its interpolations must be walked (JS/TS rule).
+    """
+    if node.type in STRING_NODE_TYPES and node.type != "template_string":
+        yield node
+        return
+    if node.child_count == 0:
+        yield node
+        return
+    for child in node.children:
+        yield from _iter_leaf_tokens(child)
+
+
+def leaf_token_signature(
+    node: Node,
+    source_bytes: bytes,
+    *,
+    excluded_leaf_types: frozenset[str] = frozenset(),
+) -> str:
+    """Normalised leaf-token sequence of *node*'s span.
+
+    Every leaf under *node* is normalised the way the structural hash
+    normalises a leaf — string literals are quote-stripped, every other
+    token has its whitespace runs collapsed, comments and
+    *excluded_leaf_types* are dropped — and the results are joined with
+    ``\x1f``.
+
+    This is deliberately **shape-independent**: the same tokens grouped
+    under different parents produce the same signature.  Kotlin needs
+    that because its grammar attaches an annotation either *inside* the
+    declaration (``modifiers`` → ``annotation``) or as a sibling
+    ``annotated_expression`` depending on what follows the declaration
+    (Phase 3 probe K8), and both spellings must hash identically.
+    """
+    tokens: list[str] = []
+    for leaf in _iter_leaf_tokens(node):
+        if leaf.type in COMMENT_NODE_TYPES or leaf.type in excluded_leaf_types:
+            continue
+        if leaf.type in STRING_NODE_TYPES and leaf.type != "template_string":
+            tokens.append(_string_text(leaf, source_bytes))
+        else:
+            tokens.append(" ".join(text_of(leaf, source_bytes).split()))
+    return "\x1f".join(tokens)
 
 
 def is_dunder_name(name: str) -> bool:

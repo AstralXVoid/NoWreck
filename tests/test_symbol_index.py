@@ -1066,3 +1066,71 @@ class TestSymbolIndexJava:
             SymbolType.FUNCTION,
             SymbolType.METHOD,
         }
+
+
+class TestSymbolIndexKotlin:
+    """build_symbol_index processes kotlin_files from ScanResult."""
+
+    def _index(self):
+        from pathlib import Path
+
+        from nowreck.scanner.kotlin_scanner import scan_kotlin_file
+
+        test_file = Path("test_kotlin_samples/basic.kt")
+        if not test_file.exists():
+            pytest.skip("test_kotlin_samples/basic.kt not found")
+
+        symbols = scan_kotlin_file(test_file, repo_root=Path("test_kotlin_samples"))
+        return build_symbol_index(ScanResult(kotlin_files={Path("basic.kt"): symbols}))
+
+    def test_build_with_kotlin_files(self) -> None:
+        idx = self._index()
+
+        assert idx.by_name("Person")[0].symbol_type is SymbolType.CLASS
+        assert idx.by_name("Greeter")[0].symbol_type is SymbolType.INTERFACE
+        assert idx.by_name("Color")[0].symbol_type is SymbolType.ENUM
+        # A Kotlin ``typealias`` is a symbol of its own.
+        assert idx.by_name("Handler")[0].symbol_type is SymbolType.TYPE_ALIAS
+
+    def test_kotlin_methods_have_parent_class(self) -> None:
+        idx = self._index()
+        birthday = idx.by_name("birthday")
+        assert len(birthday) == 1
+        assert birthday[0].symbol_type is SymbolType.METHOD
+        assert birthday[0].parent_class == "Person"
+        assert birthday[0].body_hash is not None
+
+    def test_kotlin_has_toplevel_functions(self) -> None:
+        """Unlike Java, a Kotlin file can hold free functions."""
+        idx = self._index()
+        top = idx.by_name("topLevel")
+        assert len(top) == 1
+        assert top[0].symbol_type is SymbolType.FUNCTION
+        assert top[0].parent_class is None
+        assert [s.name for s in idx.functions] == ["topLevel"]
+
+    def test_kotlin_merges_with_other_languages(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.kotlin_scanner import scan_kotlin_file
+
+        test_file = Path("test_kotlin_samples/basic.kt")
+        if not test_file.exists():
+            pytest.skip("test_kotlin_samples/basic.kt not found")
+
+        symbols = scan_kotlin_file(test_file, repo_root=Path("test_kotlin_samples"))
+        python_module = ast.parse("def greet():\n    return 1\n")
+        idx = build_symbol_index(
+            ScanResult(
+                modules={Path("app.py"): python_module},
+                kotlin_files={Path("basic.kt"): symbols},
+            )
+        )
+        # ``greet`` exists as a Python function and as a Kotlin interface
+        # method; both survive the merge as distinct symbols.
+        greet = idx.by_name("greet")
+        assert {s.symbol_type for s in greet} == {
+            SymbolType.FUNCTION,
+            SymbolType.METHOD,
+        }
+        assert all(s.parent_class == "Greeter" for s in greet if s.parent_class)

@@ -989,3 +989,282 @@ class TestJavaBodyHash:
         shell_after = self._one(after_src, "A", tmp_path, SymbolType.CLASS)
         assert ctor_before.body_hash != ctor_after.body_hash
         assert shell_before.body_hash == shell_after.body_hash
+
+
+class TestKotlinBodyHash:
+    """Kotlin body hashes (v0.17.0 Phase 3).
+
+    Kotlin has no header/impl split either, so a method hash covers the
+    whole declaration — annotations included, because probe K8 attaches
+    them to the declaration and the hash canonicalises them by their
+    leaf-token signature (that is what makes the grammar's *detached*
+    shape, defect D4, hash identically).  A type's shell hash excludes
+    every method-like subtree, ``function_declaration`` and
+    ``secondary_constructor`` included.
+    """
+
+    def _scan(self, code: str, tmp_path: Path) -> list[Symbol]:
+        from nowreck.scanner.kotlin_scanner import scan_kotlin_file
+
+        return _scan_source(scan_kotlin_file, ".kt", code, tmp_path)
+
+    def _one(
+        self,
+        code: str,
+        name: str,
+        tmp_path: Path,
+        kind: SymbolType | None = None,
+    ) -> Symbol:
+        """The single symbol named *name* (optionally of *kind*).
+
+        ``kind`` matters for Kotlin as it does for Java: a class and its
+        secondary constructor share a name, so ``class A { constructor() }``
+        yields two symbols named ``A``.
+        """
+        found = [
+            s
+            for s in self._scan(code, tmp_path)
+            if s.name == name and (kind is None or s.symbol_type is kind)
+        ]
+        assert len(found) == 1, f"expected one symbol named {name}, got {found}"
+        return found[0]
+
+    def test_method_body_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "class A {\n    fun m(): Int {\n        return 1\n    }\n}\n",
+            "m",
+            tmp_path,
+        )
+        after = self._one(
+            "class A {\n    fun m(): Int {\n        return 2\n    }\n}\n",
+            "m",
+            tmp_path,
+        )
+        assert before.body_hash != after.body_hash
+
+    def test_reformat_and_comments_do_not_change_hash(self, tmp_path: Path) -> None:
+        compact = self._one('class A {\n    fun m(): String = "hi"\n}\n', "m", tmp_path)
+        padded = self._one(
+            "// lead\n"
+            "class A {\n"
+            "    /* block */\n"
+            '    fun m(): String  =  "hi"   // trailing\n'
+            "}\n",
+            "m",
+            tmp_path,
+        )
+        assert compact.body_hash == padded.body_hash
+
+    def test_method_edit_does_not_change_class_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "class A {\n    val f = 1\n\n    fun m() {}\n}\n", "A", tmp_path
+        )
+        after = self._one(
+            "class A {\n    val f = 1\n\n    fun m() {\n        work()\n    }\n}\n",
+            "A",
+            tmp_path,
+        )
+        assert before.body_hash == after.body_hash
+
+    def test_property_edit_changes_class_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "class A {\n    val f = 1\n\n    fun m() {}\n}\n", "A", tmp_path
+        )
+        after = self._one(
+            "class A {\n    val f = 2\n\n    fun m() {}\n}\n", "A", tmp_path
+        )
+        assert before.body_hash != after.body_hash
+
+    def test_annotation_is_inside_the_method_hash(self, tmp_path: Path) -> None:
+        plain = self._one("class A {\n    fun m() {}\n}\n", "m", tmp_path)
+        annotated = self._one(
+            'class A {\n    @Deprecated("x")\n    fun m() {}\n}\n', "m", tmp_path
+        )
+        assert plain.body_hash != annotated.body_hash
+
+    def test_annotation_argument_edit_changes_hash(self, tmp_path: Path) -> None:
+        one = self._one(
+            'class A {\n    @Suppress("one")\n    fun m() {}\n}\n', "m", tmp_path
+        )
+        two = self._one(
+            'class A {\n    @Suppress("two")\n    fun m() {}\n}\n', "m", tmp_path
+        )
+        assert one.body_hash != two.body_hash
+
+    def test_attached_and_detached_annotation_hash_alike(self, tmp_path: Path) -> None:
+        """Defect D4 pin: the grammar *detaches* an annotation from a
+        declaration when a sibling — even a trailing comment — follows it,
+        producing two different CST shapes for the same source.  The hash
+        must be identical, so adding a comment can never register as a
+        change (and an annotated declaration is never lost).
+        """
+        attached = self._one(
+            'class A {\n    @Deprecated("x")\n    fun m() {}\n}\n', "m", tmp_path
+        )
+        detached = self._one(
+            'class A {\n    @Deprecated("x")\n    fun m() {}\n\n'
+            "    // a trailing comment detaches the annotation\n}\n",
+            "m",
+            tmp_path,
+        )
+        assert attached.body_hash == detached.body_hash
+
+    def test_string_content_edit_changes_hash(self, tmp_path: Path) -> None:
+        one = self._one(
+            'class A {\n    fun m(): String {\n        return "aa"\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        two = self._one(
+            'class A {\n    fun m(): String {\n        return "bb"\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        assert one.body_hash != two.body_hash
+
+    def test_escape_sequence_is_content(self, tmp_path: Path) -> None:
+        """Kotlin processes escapes in a quoted string, so ``\\n`` and
+        ``n`` are different values and must not collide.
+        """
+        escaped = self._one(
+            'class A {\n    fun m(): String {\n        return "\\n"\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        plain = self._one(
+            'class A {\n    fun m(): String {\n        return "n"\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        assert escaped.body_hash != plain.body_hash
+
+    def test_raw_string_is_not_a_quoted_string(self, tmp_path: Path) -> None:
+        """A Kotlin raw string is *semantically* different from a quoted
+        one — a three-quote raw string holding a backslash-n is two
+        characters, while a quoted backslash-n is a newline — so the
+        delimiter style is content, not formatting.  This is the one
+        place the family rule diverges from Java's text blocks, whose
+        delimiter shares one node type and *is* normalised away.
+        """
+        quoted = self._one(
+            'class A {\n    fun m(): String {\n        return "x"\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        raw = self._one(
+            'class A {\n    fun m(): String {\n        return """x"""\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        assert quoted.body_hash != raw.body_hash
+
+    def test_raw_string_whitespace_is_content(self, tmp_path: Path) -> None:
+        """Whitespace inside a raw string is string content, not source
+        formatting: re-indenting it must register as a change.
+        """
+        one = self._one(
+            'class A {\n    fun m(): String {\n        return """a b"""\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        two = self._one(
+            'class A {\n    fun m(): String {\n        return """a   b"""\n    }\n}\n',
+            "m",
+            tmp_path,
+        )
+        assert one.body_hash != two.body_hash
+
+    def test_semicolon_is_invisible(self, tmp_path: Path) -> None:
+        """Kotlin semicolons are optional syntax, so they are excluded
+        from the hash (the ASI rule JS/TS/Go share).
+        """
+        without = self._one(
+            "class A {\n    fun m() {\n        work()\n    }\n}\n", "m", tmp_path
+        )
+        with_semi = self._one(
+            "class A {\n    fun m() {\n        work();\n    }\n}\n", "m", tmp_path
+        )
+        assert without.body_hash == with_semi.body_hash
+
+    def test_enum_constant_edit_changes_enum_hash(self, tmp_path: Path) -> None:
+        before = self._one("enum class E {\n    A,\n    B\n}\n", "E", tmp_path)
+        after = self._one("enum class E {\n    A,\n    C\n}\n", "E", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_enum_entry_body_is_not_a_symbol(self, tmp_path: Path) -> None:
+        """An enum-entry body's methods are not symbols (probe K11), so
+        only the abstract declaration is indexed.
+        """
+        code = (
+            "enum class E {\n"
+            "    A {\n"
+            "        override fun label(): String {\n"
+            '            return "a"\n'
+            "        }\n"
+            "    };\n\n"
+            "    abstract fun label(): String\n"
+            "}\n"
+        )
+        assert [s.name for s in self._scan(code, tmp_path)] == ["E", "label"]
+
+    def test_companion_method_edit_leaves_the_outer_shell(self, tmp_path: Path) -> None:
+        """A companion object is a type body inside the class (probe K3):
+        its methods are the outer class's methods, so editing one fires
+        CHANGED_FUNCTION without dragging a coarse CHANGED_CLASS along.
+        """
+        before = (
+            "class A {\n"
+            "    val x = 1\n\n"
+            "    companion object {\n"
+            "        fun create(): A {\n"
+            "            return A()\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        after = (
+            "class A {\n"
+            "    val x = 1\n\n"
+            "    companion object {\n"
+            "        fun create(): A {\n"
+            "            val a = A()\n"
+            "            return a\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        shell_before = self._one(before, "A", tmp_path, SymbolType.CLASS)
+        shell_after = self._one(after, "A", tmp_path, SymbolType.CLASS)
+        method_before = self._one(before, "create", tmp_path)
+        method_after = self._one(after, "create", tmp_path)
+        assert method_before.parent_class == "A"
+        assert shell_before.body_hash == shell_after.body_hash
+        assert method_before.body_hash != method_after.body_hash
+
+    def test_secondary_constructor_edit_changes_its_own_hash_only(
+        self, tmp_path: Path
+    ) -> None:
+        before_src = (
+            "class A {\n"
+            "    var x = 0\n\n"
+            "    constructor(value: Int) {\n"
+            "        this.x = value\n"
+            "    }\n"
+            "}\n"
+        )
+        after_src = (
+            "class A {\n"
+            "    var x = 0\n\n"
+            "    constructor(value: Int) {\n"
+            "        this.x = value + 1\n"
+            "    }\n"
+            "}\n"
+        )
+        # A secondary constructor is a METHOD named after its class.
+        ctor_before = self._one(before_src, "A", tmp_path, SymbolType.METHOD)
+        ctor_after = self._one(after_src, "A", tmp_path, SymbolType.METHOD)
+        shell_before = self._one(before_src, "A", tmp_path, SymbolType.CLASS)
+        shell_after = self._one(after_src, "A", tmp_path, SymbolType.CLASS)
+        assert ctor_before.parent_class == "A"
+        assert ctor_before.body_hash != ctor_after.body_hash
+        assert shell_before.body_hash == shell_after.body_hash
