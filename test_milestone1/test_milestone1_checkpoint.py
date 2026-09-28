@@ -54,6 +54,7 @@ PURE_RUST_REPO = REPOS / "pure-rust" / "src"
 PURE_GO_REPO = REPOS / "pure-go" / "src"
 PURE_JAVA_REPO = REPOS / "pure-java" / "src"
 PURE_KOTLIN_REPO = REPOS / "pure-kotlin" / "src"
+PURE_PHP_REPO = REPOS / "pure-php" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3  # greeter.py, calculator.py, models.py
@@ -64,6 +65,7 @@ EXPECTED_RUST_FILES = 3  # greeter.rs, calculator.rs, models.rs
 EXPECTED_GO_FILES = 3  # greeter.go, calculator.go, models.go
 EXPECTED_JAVA_FILES = 3  # Greeter.java, Calculator.java, Models.java
 EXPECTED_KOTLIN_FILES = 3  # Greeter.kt, Calculator.kt, Models.kt
+EXPECTED_PHP_FILES = 3  # Greeter.php, Calculator.php, Models.php
 EXPECTED_MIXED_PY = 2  # utils.py, main.py
 EXPECTED_MIXED_JS = 2  # utils.js, ui_handler.js
 
@@ -153,6 +155,11 @@ def pure_java_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_kotlin_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_KOTLIN_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_php_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_PHP_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -1271,6 +1278,146 @@ class TestPureKotlinRepo:
     ) -> None:
         scan1, idx1 = pure_kotlin_scan
         scan2, idx2 = _scan_and_index(PURE_KOTLIN_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
+
+
+class TestPurePhpRepo:
+    """3 PHP files with top-level functions, a class, hierarchy, calls.
+
+    Every assertion below was verified against the real scanner first
+    (the scan dump is the empirical basis, not an assumption).
+    """
+
+    def test_discovers_all_files(self, pure_php_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_php_scan
+        assert scan.success_count == EXPECTED_PHP_FILES
+        assert scan.failure_count == 0
+        assert len(scan.php_files) == EXPECTED_PHP_FILES
+        assert set(scan.php_files) == {
+            Path("Greeter.php"),
+            Path("Calculator.php"),
+            Path("Models.php"),
+        }
+
+    def test_top_level_functions_are_functions(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """A namespaced top-level ``function`` is a FUNCTION with no
+        ``parent_class`` — the PHP spelling of the Kotlin rule."""
+        _, idx = pure_php_scan
+        for name in ("greet", "formatGreeting", "farewell"):
+            found = idx.by_name(name)
+            assert len(found) == 1, name
+            assert found[0].symbol_type is SymbolType.FUNCTION, name
+            assert found[0].parent_class is None, name
+
+    def test_calculator_has_class_and_methods(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_php_scan
+        calc = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.CLASS
+        ]
+        assert len(calc) == 1
+        for name in ("add", "subtract", "multiply", "divide", "display"):
+            methods = [
+                s
+                for s in idx.by_name(name)
+                if s.parent_class == "Calculator" and s.symbol_type is SymbolType.METHOD
+            ]
+            assert len(methods) == 1, name
+
+    def test_constructor_is_a_method_named_dunder_construct(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """PH12: PHP spells its constructor ``__construct``, so the METHOD
+        is named ``__construct`` (unlike Java/Kotlin, where it takes the
+        class name) and its ``parent_class`` is the class."""
+        _, idx = pure_php_scan
+        ctors = [
+            s for s in idx.by_name("__construct") if s.symbol_type is SymbolType.METHOD
+        ]
+        assert {s.parent_class for s in ctors} == {
+            "Calculator",
+            "User",
+            "AdminUser",
+        }
+
+    def test_models_has_types(self, pure_php_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_php_scan
+
+        def only(name: str, kind: SymbolType) -> list:
+            return [s for s in idx.by_name(name) if s.symbol_type is kind]
+
+        assert len(only("User", SymbolType.CLASS)) == 1
+        assert len(only("AdminUser", SymbolType.CLASS)) == 1
+        assert len(only("Reader", SymbolType.INTERFACE)) == 1
+        assert len(only("Status", SymbolType.ENUM)) == 1
+        # PH8: a trait maps to CLASS (the claim taxonomy has no trait type).
+        assert len(only("Registry", SymbolType.CLASS)) == 1
+        # The trait's methods carry the trait name as parent_class.
+        assert only("register", SymbolType.METHOD)[0].parent_class == "Registry"
+
+    def test_interface_method_is_declaration_only(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """PH9: an interface method has no body, so its ``body_hash`` is
+        ``None`` and it can never fire ``CHANGED_FUNCTION``."""
+        _, idx = pure_php_scan
+        reads = [s for s in idx.by_name("read") if s.symbol_type is SymbolType.METHOD]
+        assert len(reads) == 1
+        assert reads[0].parent_class == "Reader"
+        assert reads[0].body_hash is None
+
+    def test_symbol_index_has_php_symbols(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_php_scan
+        assert len(idx.functions) == 3  # greet, formatGreeting, farewell
+        assert len(idx.classes) >= 4  # Calculator, User, AdminUser, Registry(trait)
+        assert len(idx.interfaces) >= 1  # Reader
+        assert len(idx.enums) >= 1  # Status
+        assert len(idx.methods) >= 14
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_PHP_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        # Greeter.greet -> formatGreeting, and formatGreeting -> trim
+        assert ("greet", "formatGreeting") in callers
+        assert ("formatGreeting", "trim") in callers
+        # AdminUser.display -> parent::display()
+        assert ("display", "display") in callers
+        # Calculator.computeAverage -> array_sum()/count()
+        assert ("computeAverage", "array_sum") in callers
+        assert ("computeAverage", "count") in callers
+        # User.toDict -> json_encode()
+        assert ("toDict", "json_encode") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_PHP_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_PHP_FILES
+        types = {c.change_type for c in changes}
+        assert ChangeType.ADD_FUNCTION in types
+        assert ChangeType.ADD_CLASS in types
+        assert ChangeType.ADD_INTERFACE in types
+        assert ChangeType.ADD_ENUM in types
+
+    def test_no_changes_when_identical(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan, idx = pure_php_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(
+        self, pure_php_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan1, idx1 = pure_php_scan
+        scan2, idx2 = _scan_and_index(PURE_PHP_REPO)
         changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
         changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
         assert changes1 == changes2

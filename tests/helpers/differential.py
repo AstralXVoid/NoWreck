@@ -49,7 +49,16 @@ from typing import NamedTuple
 # Language registry
 # ---------------------------------------------------------------------------
 
-LANGS = ("python", "javascript", "typescript", "rust", "go", "java", "kotlin")
+LANGS = (
+    "python",
+    "javascript",
+    "typescript",
+    "rust",
+    "go",
+    "java",
+    "kotlin",
+    "php",
+)
 
 KIND_FUNCTION = "function"
 KIND_METHOD = "method"
@@ -367,6 +376,102 @@ def _kotlin_interpolation_names(raw_lines: list[str], mask: list[int]) -> set[st
     return names
 
 
+# PHP: a single left-to-right pass matches block comments, ``//`` and
+# ``#`` line comments, heredocs/nowdocs, double- and single-quoted
+# strings as alternatives (leftmost match wins, so a ``//`` inside a
+# string or a quote inside a comment can never be misattributed).  The
+# ``#`` alternative must not eat a PHP 8 attribute (``#[Route]``), hence
+# the negative lookahead; heredoc/nowdoc bodies end only at their own
+# identifier at line start (PHP 7.3 allows indentation).
+_PHP_TOKEN = re.compile(
+    r"(?P<block>/\*.*?\*/)"
+    r"|(?P<line>//[^\n]*|\#\[[^\[\]\n]*\]|\#[^\n]*)"
+    r"|(?P<nowdoc><<<'(?P<nowdoc_id>[A-Za-z_][A-Za-z0-9_]*)'"
+    r"[^\n]*\n.*?\n[ \t]*(?P=nowdoc_id)\b)"
+    r"|(?P<heredoc><<<(?P<heredoc_id>[A-Za-z_][A-Za-z0-9_]*)"
+    r"[^\n]*\n.*?\n[ \t]*(?P=heredoc_id)\b)"
+    r'|(?P<double>"(?:\\.|[^"\\])*")'
+    r"|(?P<single>'(?:\\.|[^'\\])*')",
+    re.DOTALL,
+)
+
+_PHP_OPEN_TAG = re.compile(r"<\?(?:php\b|=)")
+_PHP_CLOSE_TAG = re.compile(r"\?>")
+
+
+def _php_code_regions(masked: str) -> str:
+    """Blank everything outside ``<?php``/``<?=`` \u2026 ``?>`` regions.
+
+    Runs on the *already token-blanked* copy, so a ``?>`` inside a string
+    or comment cannot end a block early (its bytes are gone), and inline
+    HTML between blocks \u2014 which the grammar models as ``text`` and never
+    scans for calls \u2014 cannot produce phantom names.  The tag markers
+    themselves are blanked as well: ``<?php`` is a delimiter, not code,
+    and leaving it in would break every match anchored at a statement
+    start (``interface Foo`` on line 3 would read ``<?php\n\ninterface``).
+    """
+    chars = list(masked)
+    idx = 0
+    while True:
+        open_match = _PHP_OPEN_TAG.search(masked, idx)
+        if open_match is None:
+            break
+        code_start = open_match.end()
+        close_match = _PHP_CLOSE_TAG.search(masked, code_start)
+        code_end = close_match.start() if close_match is not None else len(masked)
+        for i in range(idx, code_start):
+            if chars[i] != "\n":
+                chars[i] = " "
+        if close_match is not None:
+            for i in range(code_end, close_match.end()):
+                if chars[i] != "\n":
+                    chars[i] = " "
+            idx = close_match.end()
+        else:
+            idx = len(masked)
+    for i in range(idx, len(chars)):
+        if chars[i] != "\n":
+            chars[i] = " "
+    return "".join(chars)
+
+
+def _strip_php(source: str) -> str:
+    """Blank comments, heredocs, strings and non-code regions in one pass."""
+    return _php_code_regions(_PHP_TOKEN.sub(_blank, source))
+
+
+# ``{$expr}`` / ``${expr}`` interpolation: the parser sees real calls in
+# here (probe PH11), so they are collected from the raw line \u2014 on rows
+# that already sit inside a caller body, which is where the parser
+# attributes them.  ``"$name"`` (bare variable interpolation) cannot hold
+# a call and is not matched.  Two documented limitations, both kept out
+# of the corpus: a multi-line interpolation, and a call-bearing
+# interpolation inside a *single-quoted* string or nowdoc \u2014 these scan
+# is quote-agnostic, while PHP only interpolates double-quoted strings
+# and heredocs.
+_PHP_INTERPOLATION = re.compile(r"\{\$[^{}]*\}|\$\{[^{}]*\}", re.DOTALL)
+
+
+def _php_interpolation_names(raw_lines: list[str], mask: list[int]) -> set[str]:
+    """Called names inside ``{$\u2026}`` / ``${...}`` interpolation (PH11)."""
+    keywords = _KEYWORDS["php"]
+    pattern = re.compile(rf"(?<![A-Za-z0-9_$])({_IDENT})\s*\(")
+    names: set[str] = set()
+    for i, line in enumerate(raw_lines):
+        body_start = mask[i]
+        if body_start < 0:
+            continue
+        for interpolation in _PHP_INTERPOLATION.finditer(line):
+            for match in pattern.finditer(
+                line, interpolation.start(), interpolation.end()
+            ):
+                if match.start() < body_start:
+                    continue
+                if _php_name_is_call(raw_lines, i, match, keywords):
+                    names.add(match.group(1))
+    return names
+
+
 _STRIPPERS = {
     "python": _strip_python,
     "javascript": _strip_javascript,
@@ -375,6 +480,7 @@ _STRIPPERS = {
     "go": _strip_go,
     "java": _strip_java,
     "kotlin": _strip_kotlin,
+    "php": _strip_php,
 }
 
 
@@ -708,6 +814,70 @@ _KEYWORDS: dict[str, frozenset[str]] = {
             # deliberately NOT listed (probe K12e).  Accessor heads are
             # blanked instead, and the D5/D6 soft-keyword defects live in
             # the grammar, not in the call-name extraction.
+        }
+    ),
+    "php": frozenset(
+        {
+            "if",
+            "else",
+            "elseif",
+            "for",
+            "foreach",
+            "while",
+            "do",
+            "switch",
+            "case",
+            "default",
+            "break",
+            "continue",
+            "return",
+            "throw",
+            "try",
+            "catch",
+            "finally",
+            "function",
+            "fn",
+            "use",
+            "namespace",
+            "class",
+            "interface",
+            "trait",
+            "enum",
+            "extends",
+            "implements",
+            "instanceof",
+            "clone",
+            "match",
+            "print",
+            "echo",
+            "include",
+            "include_once",
+            "require",
+            "require_once",
+            "list",
+            "array",
+            "unset",
+            "exit",
+            "declare",
+            "global",
+            "yield",
+            "as",
+            "insteadof",
+            "endif",
+            "endfor",
+            "endforeach",
+            "endwhile",
+            "endswitch",
+            "enddeclare",
+            "goto",
+            # NOTE: ``isset`` / ``empty`` / ``die`` / ``eval`` are NOT
+            # listed — the grammar parses them as real
+            # ``function_call_expression`` nodes (verified against the
+            # pinned grammar while writing the checker) and ``print_r``
+            # is an ordinary function.  A keyword excludes a name only
+            # when the occurrence is *bare*: ``list(…)`` is a construct,
+            # while ``$obj->list()`` is an ordinary method call (see
+            # :func:`_php_name_is_call`).
         }
     ),
 }
@@ -1909,6 +2079,352 @@ def _kotlin_call_mask(source: str) -> list[int]:
     return mask
 
 
+# ---------------------------------------------------------------------------
+# PHP
+# ---------------------------------------------------------------------------
+#
+# PHP is the only language here whose module scope is not the file root:
+# ``namespace App { … }`` and ``declare(…) { … }`` wrap their declarations
+# in a body the scanner descends into, so this walker tracks a container
+# stack of ``module`` / ``type`` / ``block`` and mirrors the scanner's
+# boundaries (probes PH1–PH12):
+#
+# * a declaration is a symbol only while the innermost container is
+#   ``module`` — or ``type`` for its direct methods; a function inside
+#   ``if (…) { … }`` (or ``if (…): … endif;``) is **not** a symbol, because
+#   the module walk never descends a control-flow block;
+# * a *named* function head always opens a caller body, wherever it sits:
+#   the call walker recurses through control flow, which is why a
+#   conditionally defined function contributes calls but no symbol.  Both
+#   facts are pinned by the corpus (``edge_control.php``);
+# * ``class``/``interface``/``enum``/``trait`` heads open a ``type``
+#   container (a trait maps to CLASS, PH8); an anonymous class
+#   (``new class …``) opens a ``block``, so its methods are callers with
+#   **no** symbols (PH5);
+# * a *named* function head — ``function foo(…)`` — is a declaration and
+#   its whole head is blanked before call extraction (a PHP header holds
+#   only modifiers, types and ``new``-in-initializer defaults, so no call
+#   is ever lost); an *anonymous* one is blanked the same way, but is a
+#   caller only when a plain ``$name =`` assignment owns it (PH6), which
+#   is also the only shape that becomes a FUNCTION symbol;
+# * an anonymous class head and a control-flow head are deliberately **not**
+#   blanked — ``new class(makeFoo()) {`` and ``if (check()) {`` hold real
+#   calls, exactly like Java's anonymous-class rule;
+# * property hooks (PHP 8.4) are named bodies owned by their property; the
+#   ``set (…) {``/``get {`` head is blanked so the keyword never reads as a
+#   call, and an arrow hook (``get => expr;``) owns from ``=>`` to ``;``.
+
+_PHP_TYPE_DECL = re.compile(
+    r"\s*(?:(?:final|abstract|readonly)\s+)*"
+    r"(?P<kind>class|interface|enum|trait)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+_PHP_ANON_CLASS = re.compile(r"\bnew\s+class\b")
+_PHP_MODULE_WRAPPER = re.compile(r"\s*(?:namespace|declare)\b")
+_PHP_FUNCTION_KEYWORD = re.compile(r"(?<![$\w])function\b\s*&?\s*")
+_PHP_FUNCTION_NAMED = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_PHP_FUNCTION_ANON = re.compile(r"\s*\(")
+_PHP_CLOSURE_ASSIGN_FUNCTION = re.compile(
+    r"\$\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:static\s+)?function\b\s*&?\s*\("
+)
+_PHP_CLOSURE_ASSIGN_ARROW = re.compile(
+    r"\$\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:static\s+)?fn\b\s*\("
+)
+_PHP_HOOK_HEAD = re.compile(r"\s*(?:get|set)\b")
+# PHP's alternative syntax (``if (…): … endif;``) opens the same ``block``
+# container as a brace, closed by the matching ``end*;`` statement.
+# ``elseif``/``else`` deliberately do **not** open one: they continue the
+# body the ``if`` already opened, and a stray container would hide every
+# following module-level declaration from the symbol walk.
+_PHP_COLON_OPEN = re.compile(r"^\s*(?:if|for|foreach|while|switch)\b")
+_PHP_COLON_CLOSE = re.compile(r"^\s*end(?:if|for|foreach|while|switch)\s*$")
+
+
+def _php_arrow_body(head: str, start: int) -> int | None:
+    """Offset just after the ``=>`` opening an arrow body, or ``None``.
+
+    Used for both ``fn (…) => …`` and arrow property hooks (``get => …``).
+    A parameter list (``fn (…)`` / ``set (string $v)``) is skipped first so
+    a ``=>`` inside a parameter default's array (``fn ($x = ['a' => 1])``)
+    can never be mistaken for the body arrow \u2014 while a ``=>`` that comes
+    *before* any paren is the body arrow itself (``get => expr``, whose
+    body may hold its own parens and ``match`` arrows).
+    """
+    arrow = head.find("=>", start)
+    if arrow < 0:
+        return None
+    open_paren = head.find("(", start)
+    if open_paren < 0 or open_paren > arrow:
+        return arrow + 2
+    idx = open_paren
+    depth = 0
+    while idx < len(head):
+        ch = head[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        idx += 1
+    arrow = head.find("=>", idx + 1)
+    return None if arrow < 0 else arrow + 2
+
+
+class _PhpEvent(NamedTuple):
+    """One structural event from :func:`_php_structure`.
+
+    ``event`` is ``"open"`` (a ``{``), ``"close"`` (a ``}``) or ``"semi"``
+    (a statement-level ``;``).  ``symbol_kind``/``name`` describe a symbol
+    the parser would emit, or are ``None``.  ``is_fn`` marks a body that
+    owns calls; ``body_start`` is where an *expression* body begins (the
+    offset just after ``=>``), ``None`` for brace bodies.  ``blanks`` are
+    the spans removed before call extraction (declaration and hook heads).
+    """
+
+    event: str
+    symbol_kind: str | None
+    name: str | None
+    is_fn: bool
+    index: int
+    body_start: int | None
+    blanks: tuple[tuple[int, int], ...]
+
+
+_SPAN = tuple[tuple[int, int], ...]
+
+
+def _php_function_head(
+    head: str, start: int, index: int, container: str
+) -> tuple[str | None, str | None, bool, _SPAN, str] | None:
+    """Classify a ``function`` head, or ``None`` when it is not one.
+
+    Returns ``(symbol kind, name, is_fn, blanks, container)``: a *named*
+    head is a function/method declaration and a caller; an *anonymous* one
+    is a caller only when a plain ``$name =`` assignment owns it (PH6) and
+    a symbol only at module scope.
+    """
+    keyword = _PHP_FUNCTION_KEYWORD.search(head)
+    if keyword is None:
+        return None
+    rest = head[keyword.end() :]
+    named = _PHP_FUNCTION_NAMED.match(rest)
+    if named is not None:
+        if container == "module":
+            kind = KIND_FUNCTION
+        elif container == "type":
+            kind = KIND_METHOD
+        else:
+            kind = None
+        return kind, named.group(1), True, ((start, index),), "block"
+    assign = _PHP_CLOSURE_ASSIGN_FUNCTION.match(head.lstrip())
+    if assign is not None:
+        kind = KIND_FUNCTION if container == "module" else None
+        return kind, assign.group("name"), True, ((start, index),), "block"
+    # An unnamed, unassigned closure (a call argument, an array value): a
+    # body, but not a caller — its calls belong to the nearest enclosing
+    # named caller (the Phase 1 G1/G2 rule the scanner implements).  Its
+    # head holds *real* calls (``array_map(function () {…}, $items)``),
+    # so nothing is blanked.
+    return None, None, False, (), "block"
+
+
+def _php_open_event(
+    head: str, start: int, index: int, container: str
+) -> tuple[str | None, str | None, bool, _SPAN, str]:
+    """Classify the head of an opening ``{``.
+
+    Returns the same tuple shape as :func:`_php_function_head`, plus the
+    container the brace pushes.  Order matters: an anonymous class is
+    checked before the type shape (``new class extends Foo {`` would
+    otherwise read ``extends`` as the class name).
+    """
+    if _PHP_ANON_CLASS.search(head) is not None:
+        return None, None, False, (), "block"
+    function = _php_function_head(head, start, index, container)
+    if function is not None:
+        return function
+    if _PHP_MODULE_WRAPPER.match(head) is not None:
+        return None, None, False, (), "module"
+    type_decl = _PHP_TYPE_DECL.match(head)
+    if type_decl is not None:
+        kind = type_decl.group("kind")
+        mapped = {
+            "class": KIND_CLASS,
+            "interface": KIND_INTERFACE,
+            "enum": KIND_ENUM,
+            # PH8: the claim taxonomy has no trait type — a trait is a
+            # class-like type whose methods still carry ``parent_class``.
+            "trait": KIND_CLASS,
+        }[kind]
+        emitted = mapped if container == "module" else None
+        return emitted, type_decl.group("name"), False, ((start, index),), "type"
+    if _PHP_HOOK_HEAD.match(head) is not None:
+        return None, None, True, ((start, index),), "block"
+    # Control flow, ``match`` bodies, array/property/hook-list braces: a
+    # plain block.  The head is left intact — ``if (check()) {`` holds a
+    # real call.
+    return None, None, False, (), "block"
+
+
+def _php_semi_event(
+    head: str, start: int, index: int, container: str
+) -> tuple[str | None, str | None, bool, int | None, _SPAN]:
+    """Classify a statement-level ``;`` for symbols and expression bodies.
+
+    Two shapes matter: a declaration-only ``function foo(…);`` (an
+    interface or abstract method, PH9) is a symbol with no body, and an
+    arrow closure / arrow hook (``$f = fn (…) => …;`` / ``get => …;``)
+    owns calls from ``=>`` to the ``;``.
+    """
+    function = _php_function_head(head, start, index, container)
+    if function is not None:
+        kind, name, _is_fn, blanks, _container = function
+        return kind, name, False, None, blanks
+    stripped = head.lstrip()
+    assign = _PHP_CLOSURE_ASSIGN_ARROW.match(stripped)
+    if assign is not None:
+        delta = len(head) - len(stripped)
+        body = _php_arrow_body(head, delta + assign.end() - 1)
+        kind = KIND_FUNCTION if container == "module" else None
+        body_start = None if body is None else start + body
+        return kind, assign.group("name"), True, body_start, ()
+    hook = _PHP_HOOK_HEAD.match(head)
+    if hook is not None:
+        body = _php_arrow_body(head, hook.end())
+        if body is not None:
+            return None, None, True, start + body, ((start, start + body),)
+    return None, None, False, None, ()
+
+
+def _php_structure(src: str) -> Iterator[_PhpEvent]:
+    """Walk stripped PHP source, yielding structural events.
+
+    ``src`` must be the stripped copy (``_strip_php``): every brace inside
+    a string, comment or heredoc has already been blanked, so the braces
+    counted here are real.  *src* must also be *blanking-complete*, since
+    the event offsets are used for the mask and the head blanks, both of
+    which index into the same copy.
+    """
+    stack: list[tuple[str, bool]] = []  # (container kind, colon form)
+    stmt_start = 0
+    paren = 0
+    for idx, ch in enumerate(src):
+        if ch == "(":
+            paren += 1
+            continue
+        if ch == ")":
+            paren = max(0, paren - 1)
+            continue
+        container = stack[-1][0] if stack else "module"
+        if ch == "{":
+            kind, name, is_fn, blanks, push = _php_open_event(
+                src[stmt_start:idx], stmt_start, idx, container
+            )
+            yield _PhpEvent("open", kind, name, is_fn, idx, None, blanks)
+            stack.append((push, False))
+            stmt_start = idx + 1
+        elif ch == "}":
+            if stack:
+                stack.pop()
+            stmt_start = idx + 1
+            yield _PhpEvent("close", None, None, False, idx, None, ())
+        elif ch == ":" and paren == 0:
+            # Alternative syntax: only a control-flow keyword opens one; a
+            # ternary, a ``case`` label, an enum backing type and a return
+            # type are ordinary statement text.
+            if _PHP_COLON_OPEN.match(src[stmt_start:idx]) is not None:
+                stack.append(("block", True))
+                stmt_start = idx + 1
+        elif ch == ";" and paren == 0:
+            head = src[stmt_start:idx]
+            kind, name, is_fn, body_start, blanks = _php_semi_event(
+                head, stmt_start, idx, container
+            )
+            if _PHP_COLON_CLOSE.match(head) is not None:
+                for pos in range(len(stack) - 1, -1, -1):
+                    if stack[pos][1]:
+                        del stack[pos]
+                        break
+            yield _PhpEvent("semi", kind, name, is_fn, idx, body_start, blanks)
+            stmt_start = idx + 1
+
+
+def _blank_php_decl_heads(src: str) -> str:
+    """Blank the declaration heads of stripped PHP source.
+
+    Call extraction must not read ``public function greet(): string {`` or
+    ``public function label(): string;`` as calls.  Head spans come from
+    the same :func:`_php_structure` walk that drives symbols and the
+    caller mask, so a head can never be blanked in one place and honoured
+    in another.  Control-flow heads and anonymous-class heads are left
+    intact — ``if (check()) {`` and ``new class(makeFoo()) {`` hold real
+    calls.  Whole-head blanking is sound for declarations: a valid PHP
+    header holds only modifiers, attributes, types and ``new``-in-
+    initializer defaults (``new`` is never captured), while parameter
+    defaults cannot call functions at all.
+    """
+    spans = [span for ev in _php_structure(src) for span in ev.blanks]
+    if not spans:
+        return src
+    chars = list(src)
+    for start, end in spans:
+        for i in range(start, end):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def _php_call_mask(source: str) -> list[int]:
+    """Per-line caller-body mask for PHP.
+
+    Only named bodies own calls: functions, methods, ``$name =`` closures
+    (brace or arrow) and property hooks.  ``module``/``type`` containers
+    themselves are not callers, so a class-level property default or an
+    anonymous class's own constructor arguments stay at ``-1``; a *nested*
+    body's rows get column ``0``, exactly as the Java mask does.
+    """
+    src = _strip_php(source)
+    lines = src.splitlines()
+    mask = [-1] * len(lines)
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+    brace_stack: list[tuple[int, bool, int]] = []
+    regions: list[tuple[int, int, int]] = []
+    for ev in _php_structure(src):
+        row = bisect_right(line_starts, ev.index) - 1
+        if ev.event == "open":
+            brace_stack.append((row, ev.is_fn, ev.index - line_starts[row]))
+        elif ev.event == "close":
+            if not brace_stack:
+                continue
+            open_row, open_is_fn, col = brace_stack.pop()
+            if open_is_fn:
+                regions.append((open_row, row, col))
+        elif ev.event == "semi" and ev.is_fn and ev.body_start is not None:
+            start_row = bisect_right(line_starts, ev.body_start) - 1
+            col = ev.body_start - line_starts[start_row]
+            regions.append((start_row, row, col))
+    deltas = [0] * (len(lines) + 1)
+    opened_col: dict[int, int] = {}
+    for start, end, col in regions:
+        deltas[start] += 1
+        if end + 1 <= len(lines):
+            deltas[end + 1] -= 1
+        opened_col.setdefault(start, col)
+    running = 0
+    for row in range(len(lines)):
+        running += deltas[row]
+        if running > 1:
+            mask[row] = 0
+        elif running == 1:
+            mask[row] = opened_col.get(row, 0)
+    return mask
+
+
 _MASKS: dict[str, object] = {
     "python": _py_call_mask,
     "javascript": _js_call_mask,
@@ -1917,6 +2433,7 @@ _MASKS: dict[str, object] = {
     "go": _go_call_mask,
     "java": _java_call_mask,
     "kotlin": _kotlin_call_mask,
+    "php": _php_call_mask,
 }
 
 
@@ -2127,6 +2644,119 @@ def _kotlin_trailing_lambda_names(lines: list[str], mask: list[int]) -> set[str]
     return found
 
 
+def _php_operator_before(line: str, name_start: int) -> tuple[str, int] | None:
+    """The ``->``/``?->``/``::`` immediately before *name_start*, if any.
+
+    ``?->`` is tested first: its last two characters are ``->``.  A
+    namespaced call (``ns\\func()``) has no operator and is a plain call.
+    """
+    idx = name_start
+    while idx > 0 and line[idx - 1].isspace():
+        idx -= 1
+    if idx >= 3 and line[idx - 3 : idx] == "?->":
+        return "?->", idx - 3
+    if idx >= 2 and line[idx - 2 : idx] == "->":
+        return "->", idx - 2
+    if idx >= 2 and line[idx - 2 : idx] == "::":
+        return "::", idx - 2
+    return None
+
+
+def _php_receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
+    """PHP receiver rule: a *call* receiver is excluded (``f()->m()``).
+
+    Only ``->``/``?->`` chains have receivers; a scoped call's scope is a
+    class name and never a call.  The generic ``)``/``]`` rule plus the
+    leading-operator continuation (``$this\n    ->m()``), which reads the
+    previous line's tail exactly as the Kotlin walker does.  Subscript
+    (``$rows[0]->m()``) and parenthesised (``(new Foo())->m()``)
+    receivers are captured — the parser sees neither as a call.
+    """
+    found = _php_operator_before(lines[i], name_start)
+    if found is None:
+        return False
+    op, op_start = found
+    if op == "::":
+        return False
+    if op_start > 0 and lines[i][op_start - 1] == ")":
+        return _paren_is_call(lines[i], op_start - 1)
+    if op_start == 0 or not lines[i][:op_start].strip():
+        if i == 0:
+            return False
+        tail = lines[i - 1].rstrip()
+        return (
+            bool(tail)
+            and tail[-1] == ")"
+            and _paren_is_call(lines[i - 1], len(tail) - 1)
+        )
+    return False
+
+
+def _php_is_magic_member(line: str, name: str, name_start: int) -> bool:
+    """Whether a member/scoped call is a PHP magic-method call (PH12).
+
+    PHP spells magic methods with a leading ``__`` and no trailing pair, so
+    ``$obj->__construct()`` / ``Foo::__toString()`` are not captured while
+    a *bare* ``__foo()`` call is — the shared dunder rule's PHP spelling
+    (the production scanner implements exactly this).
+    """
+    if not name.startswith("__"):
+        return False
+    return _php_operator_before(line, name_start) is not None
+
+
+def _php_first_class_callable(line: str, open_paren: int) -> bool:
+    """``strlen(...)`` / ``$obj->m(...)`` — a reference, not an invocation.
+
+    A spread call (``f(...$args)``) puts an identifier after the ``...``
+    and stays a call.
+    """
+    return re.match(r"\(\s*\.\.\.\s*\)", line[open_paren:]) is not None
+
+
+def _php_new_prefix(line: str, name_start: int) -> bool:
+    """``new Foo(…)`` — an ``object_creation_expression``, never a call.
+
+    The immediately preceding (possibly qualified) class name is stripped
+    first, so ``new \\App\\Logger(…)`` is excluded as well.  Only a
+    *namespace segment* is stripped (one ending in ``\\``): the class
+    name itself is the matched identifier and is already outside
+    ``line[:name_start]``, so stripping without that guard would consume
+    the ``new`` keyword itself (``(new Point(…)`` must not become ``(ne``).
+    """
+    before = re.sub(
+        r"(?<![A-Za-z0-9_$\\])\\?[A-Za-z_][A-Za-z0-9_$\\]*\\+\s*$",
+        "",
+        line[:name_start],
+    )
+    return re.search(r"\bnew\s+\\?\s*$", before) is not None
+
+
+def _php_name_is_call(
+    lines: list[str],
+    i: int,
+    match: re.Match[str],
+    keywords: frozenset[str],
+) -> bool:
+    """Whether a ``name(`` occurrence is a real PHP call.
+
+    A keyword excludes a name only when the occurrence is *bare*:
+    ``list(…)``/``array(…)`` are constructs, while ``$obj->list()`` is an
+    ordinary method call (the scanner captures it — PH1's node kinds, not
+    a keyword list, do the real work).
+    """
+    name = match.group(1)
+    if _php_operator_before(lines[i], match.start()) is None and name in keywords:
+        return False
+    if _php_first_class_callable(lines[i], match.end() - 1):
+        return False
+    if _php_receiver_is_call(lines, i, match.start()):
+        return False
+    if _php_is_magic_member(lines[i], name, match.start()):
+        return False
+    return not _php_new_prefix(lines[i], match.start())
+
+
 def extract_called_names(lang: str, source: str) -> set[str]:
     """Return every distinct called name in *source*.
 
@@ -2146,7 +2776,13 @@ def extract_called_names(lang: str, source: str) -> set[str]:
     - Rust macro invocations blanked (args are a flat ``token_tree``),
     - Java declaration heads blanked (``void render() {``), annotation
       argument parens excluded (``@Foo(1)`` is not a call), and
-      ``new Foo().bar()`` captured while ``f().bar()`` is excluded.
+      ``new Foo().bar()`` captured while ``f().bar()`` is excluded,
+    - PHP declaration and property-hook heads blanked, ``new Foo(…)``
+      excluded, keyword names excluded only when *bare* (``list(…)`` vs
+      ``$obj->list()``), magic-member calls excluded (``$o->__construct()``)
+      while a bare ``__foo()`` is captured, first-class callables
+      (``strlen(...)``) excluded, and calls inside ``{$…}`` interpolation
+      collected from the raw line (PH11).
     """
     src = _STRIPPERS[lang](source)
     if lang == "java":
@@ -2159,6 +2795,12 @@ def extract_called_names(lang: str, source: str) -> set[str]:
         # a ``fun``'s name token is not a call either — while its parameter
         # defaults *are* (K11), which is why only the name token goes.
         src = _blank_kotlin_decl_heads(source)
+    elif lang == "php":
+        # A declaration head must never read as a call (``public function
+        # greet(): string {``, ``public function label(): string;``) and a
+        # property-hook head must not read as one either (``set (string
+        # $v) {``).  Control-flow and anonymous-class heads stay intact.
+        src = _blank_php_decl_heads(src)
     keywords = _KEYWORDS[lang]
     names: set[str] = set()
     mask = _MASKS[lang](source)  # type: ignore[operator]
@@ -2174,7 +2816,12 @@ def extract_called_names(lang: str, source: str) -> set[str]:
             if match.start() < body_start:
                 continue
             name = match.group(1)
-            if name in keywords:
+            if lang == "php":
+                # The keyword rule is *bare-occurrence* only: ``list(…)``
+                # is a construct, ``$obj->list()`` a real method call.
+                if not _php_name_is_call(lines, i, match, keywords):
+                    continue
+            elif name in keywords:
                 continue
             if lang == "java":
                 if _java_is_annotation(line, match.start()):
@@ -2190,7 +2837,7 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                     continue
                 if _kotlin_receiver_is_call(lines, i, match.start()):
                     continue
-            elif _receiver_is_call(lines, i, match.start()):
+            elif lang != "php" and _receiver_is_call(lines, i, match.start()):
                 continue
             # Dunder *attributes* (``obj.__x__()``) are excluded by the
             # parsers; a bare ``__str__()`` call is not.
@@ -2231,6 +2878,8 @@ def extract_called_names(lang: str, source: str) -> set[str]:
     if lang == "kotlin":
         names |= _kotlin_trailing_lambda_names(lines, mask)
         names |= _kotlin_interpolation_names(source.splitlines(), mask)
+    elif lang == "php":
+        names |= _php_interpolation_names(source.splitlines(), mask)
 
     return names
 
@@ -2642,6 +3291,27 @@ def extract_symbols_java(source: str) -> set[SymbolTuple]:
 # Dispatch
 # ---------------------------------------------------------------------------
 
+
+def extract_symbols_php(source: str) -> set[SymbolTuple]:
+    """Type declarations, functions, methods and ``$name =`` closures.
+
+    Mirrors ``php_scanner``: ``class`` → class, ``interface`` → interface,
+    ``enum`` → enum, ``trait`` → class (PH8), a module-scope
+    ``function_name`` → function, a type-body ``function name`` → method
+    (with **no** symbol for an anonymous class's methods, PH5), and a
+    module-scope closure assignment → function (PH6).  ``namespace`` and
+    ``declare`` bodies are module scope; control-flow blocks are not.  All
+    of that — nesting, the alternative syntax and the anonymous-class
+    trap — is resolved by :func:`_php_structure`, so this is a pure
+    consumer, exactly like the Java extractor.
+    """
+    symbols: set[SymbolTuple] = set()
+    for ev in _php_structure(_strip_php(source)):
+        if ev.symbol_kind is not None and ev.name is not None:
+            symbols.add((ev.symbol_kind, ev.name))
+    return symbols
+
+
 _SYMBOL_EXTRACTORS: dict[str, object] = {
     "python": extract_symbols_python,
     "javascript": extract_symbols_javascript,
@@ -2650,6 +3320,7 @@ _SYMBOL_EXTRACTORS: dict[str, object] = {
     "go": extract_symbols_go,
     "java": extract_symbols_java,
     "kotlin": extract_symbols_kotlin,
+    "php": extract_symbols_php,
 }
 
 

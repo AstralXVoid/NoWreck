@@ -140,13 +140,12 @@ check(
     "identifier handler (onClick={onClick}) produces no call",
     ("Button", "onClick") not in calls and ("Button", "trackEvent") not in calls,
 )
-# this.toggle() is a member-expression call, ignored
+# this.toggle() is captured by final property name — the production
+# contract pinned in tests/test_change_detector.py::test_js_member_chains_captured
+# (obj.bar()→bar, this.x()→x) — so render→toggle is expected evidence here.
 check(
-    "member call this.toggle() NOT captured",
-    not any(
-        called == "toggle" and caller == "render"
-        for called, caller in {(c, r) for (r, c) in calls}
-    ),
+    "member call this.toggle() captured as render→toggle",
+    any(caller == "render" and called == "toggle" for caller, called in calls),
 )
 
 

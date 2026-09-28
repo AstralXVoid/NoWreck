@@ -991,6 +991,345 @@ class TestJavaBodyHash:
         assert shell_before.body_hash == shell_after.body_hash
 
 
+class TestPhpBodyHash:
+    """PHP body hashes (v0.17.0 Phase 4).
+
+    PHP is the one language whose quote style selects the escape rules, so
+    its strings go through a dedicated leaf normaliser (PH11): quote
+    style is neutral, escape *values* are not, and an interpolation is
+    marked so a literal backslash-dollar can never collide with an
+    interpolated variable.  A
+    type's shell hash excludes ``method_declaration`` subtrees (the
+    disjoint-facts rule), so properties, constants, enum cases and trait
+    uses are shell content while methods are not.  Semicolons are
+    required syntax and are hashed as content (PH10), and attributes are
+    *children* of their declaration (PH4), so they hash with it.
+    """
+
+    def _scan(self, code: str, tmp_path: Path) -> list[Symbol]:
+        from nowreck.scanner.php_scanner import scan_php_file
+
+        return _scan_source(scan_php_file, ".php", code, tmp_path)
+
+    def _one(
+        self,
+        code: str,
+        name: str,
+        tmp_path: Path,
+        kind: SymbolType | None = None,
+    ) -> Symbol:
+        """The single symbol named *name* (optionally of *kind*)."""
+        found = [
+            s
+            for s in self._scan(code, tmp_path)
+            if s.name == name and (kind is None or s.symbol_type is kind)
+        ]
+        assert len(found) == 1, f"expected one symbol named {name}, got {found}"
+        return found[0]
+
+    # -- disjoint facts ------------------------------------------------
+
+    def test_method_body_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\nclass A\n{\n    public function m(): int\n    {\n"
+            "        return 1;\n    }\n}\n",
+            "m",
+            tmp_path,
+        )
+        after = self._one(
+            "<?php\nclass A\n{\n    public function m(): int\n    {\n"
+            "        return 2;\n    }\n}\n",
+            "m",
+            tmp_path,
+        )
+        assert before.body_hash != after.body_hash
+
+    def test_method_edit_does_not_change_class_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\nclass A\n{\n    public $f = 1;\n\n"
+            "    public function m()\n    {\n    }\n}\n",
+            "A",
+            tmp_path,
+        )
+        after = self._one(
+            "<?php\nclass A\n{\n    public $f = 1;\n\n"
+            "    public function m()\n    {\n        work();\n    }\n}\n",
+            "A",
+            tmp_path,
+        )
+        assert before.body_hash == after.body_hash
+
+    def test_property_edit_changes_class_hash(self, tmp_path: Path) -> None:
+        before = self._one("<?php\nclass A { public $f = 1; }\n", "A", tmp_path)
+        after = self._one("<?php\nclass A { public $f = 2; }\n", "A", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_class_constant_edit_changes_class_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\nclass A { public const LIMIT = 1; }\n", "A", tmp_path
+        )
+        after = self._one("<?php\nclass A { public const LIMIT = 2; }\n", "A", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_reformat_and_comments_do_not_change_hash(self, tmp_path: Path) -> None:
+        compact = self._one(
+            "<?php\nclass A { public function m(): string { return 'hi'; } }\n",
+            "m",
+            tmp_path,
+        )
+        padded = self._one(
+            "<?php\n"
+            "// lead\n"
+            "# hash comment\n"
+            "class A\n"
+            "{\n"
+            "    /* block */\n"
+            "    public function m(): string  {  return  'hi';  } // trailing\n"
+            "}\n",
+            "m",
+            tmp_path,
+        )
+        assert compact.body_hash == padded.body_hash
+
+    # -- enum and trait shells (PH7 / PH8) -----------------------------
+
+    def test_enum_case_edit_changes_enum_hash(self, tmp_path: Path) -> None:
+        before = self._one("<?php\nenum E { case A; case B; }\n", "E", tmp_path)
+        after = self._one("<?php\nenum E { case A; case C; }\n", "E", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    def test_enum_method_edit_does_not_change_enum_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\nenum E\n{\n    case A;\n\n"
+            "    public function label(): string\n    {\n        return 'a';\n"
+            "    }\n}\n",
+            "E",
+            tmp_path,
+        )
+        after = self._one(
+            "<?php\nenum E\n{\n    case A;\n\n"
+            "    public function label(): string\n    {\n        return 'b';\n"
+            "    }\n}\n",
+            "E",
+            tmp_path,
+        )
+        assert before.body_hash == after.body_hash
+
+    def test_trait_method_edit_keeps_trait_shell(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\ntrait T\n{\n    public $f = 1;\n\n"
+            "    public function m()\n    {\n    }\n}\n",
+            "T",
+            tmp_path,
+        )
+        after = self._one(
+            "<?php\ntrait T\n{\n    public $f = 1;\n\n"
+            "    public function m()\n    {\n        work();\n    }\n}\n",
+            "T",
+            tmp_path,
+        )
+        assert before.body_hash == after.body_hash
+
+    def test_trait_property_edit_changes_trait_shell(self, tmp_path: Path) -> None:
+        before = self._one("<?php\ntrait T { public $f = 1; }\n", "T", tmp_path)
+        after = self._one("<?php\ntrait T { public $f = 2; }\n", "T", tmp_path)
+        assert before.body_hash != after.body_hash
+
+    # -- declaration-only members (PH9) --------------------------------
+
+    def test_interface_carries_no_hash(self, tmp_path: Path) -> None:
+        """There is no ``CHANGED_INTERFACE`` claim, so an interface's
+        ``body_hash`` is ``None``."""
+        iface = self._one(
+            "<?php\ninterface I { public function m(); }\n", "I", tmp_path
+        )
+        assert iface.body_hash is None
+
+    def test_declaration_only_method_has_no_hash(self, tmp_path: Path) -> None:
+        """PH9: a method with no body can never fire ``CHANGED_FUNCTION``."""
+        method = self._one(
+            "<?php\ninterface I { public function m(): int; }\n",
+            "m",
+            tmp_path,
+            SymbolType.METHOD,
+        )
+        assert method.body_hash is None
+
+    def test_an_abstract_method_has_no_hash(self, tmp_path: Path) -> None:
+        method = self._one(
+            "<?php\nabstract class A { abstract public function m(); }\n",
+            "m",
+            tmp_path,
+            SymbolType.METHOD,
+        )
+        assert method.body_hash is None
+
+    # -- string normalisation (PH11) ------------------------------------
+
+    def test_quote_swap_is_hash_neutral(self, tmp_path: Path) -> None:
+        single = self._one(
+            "<?php\nfunction f(): string\n{\n    return 'x';\n}\n", "f", tmp_path
+        )
+        double = self._one(
+            '<?php\nfunction f(): string\n{\n    return "x";\n}\n', "f", tmp_path
+        )
+        assert single.body_hash == double.body_hash
+
+    def test_single_quoted_newline_differs_from_double_quoted(
+        self, tmp_path: Path
+    ) -> None:
+        """``'\\n'`` is backslash-n (two characters) while ``"\\n"`` is a
+        real newline — PHP's quote style *selects* the escape rules, so
+        this swap must stay visible."""
+        literal = self._one(
+            "<?php\nfunction f(): string\n{\n    return '\\n';\n}\n", "f", tmp_path
+        )
+        newline = self._one(
+            '<?php\nfunction f(): string\n{\n    return "\\n";\n}\n', "f", tmp_path
+        )
+        assert literal.body_hash != newline.body_hash
+
+    def test_escaped_dollar_does_not_collide_with_interpolation(
+        self, tmp_path: Path
+    ) -> None:
+        literal = self._one(
+            '<?php\nfunction f(): string\n{\n    return "\\$x";\n}\n', "f", tmp_path
+        )
+        interpolated = self._one(
+            '<?php\nfunction f(): string\n{\n    return "$x";\n}\n', "f", tmp_path
+        )
+        assert literal.body_hash != interpolated.body_hash
+
+    def test_interpolation_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            '<?php\nfunction f(string $n): string\n{\n    return "Hi {$n}";\n}\n',
+            "f",
+            tmp_path,
+        )
+        after = self._one(
+            '<?php\nfunction f(string $n): string\n{\n    return "Hi {$n}!";\n}\n',
+            "f",
+            tmp_path,
+        )
+        assert before.body_hash != after.body_hash
+
+    def test_heredoc_nowdoc_and_quoted_stay_distinct(self, tmp_path: Path) -> None:
+        quoted = self._one(
+            "<?php\nfunction f(): string\n{\n    $x = 'text';\n    return $x;\n}\n",
+            "f",
+            tmp_path,
+        )
+        heredoc = self._one(
+            "<?php\nfunction f(): string\n{\n"
+            "    $x = <<<EOT\n    text\n    EOT;\n    return $x;\n}\n",
+            "f",
+            tmp_path,
+        )
+        nowdoc = self._one(
+            "<?php\nfunction f(): string\n{\n"
+            "    $x = <<<'EOT'\n    text\n    EOT;\n    return $x;\n}\n",
+            "f",
+            tmp_path,
+        )
+        # Raw vs interpolated is semantically significant (the Kotlin raw
+        # string rule): every pair differs, even with identical text.
+        assert quoted.body_hash != heredoc.body_hash
+        assert quoted.body_hash != nowdoc.body_hash
+        assert heredoc.body_hash != nowdoc.body_hash
+
+    def test_heredoc_marker_rename_is_neutral(self, tmp_path: Path) -> None:
+        one = self._one(
+            "<?php\nfunction f(): string\n{\n"
+            "    $x = <<<EOT\n    text\n    EOT;\n    return $x;\n}\n",
+            "f",
+            tmp_path,
+        )
+        two = self._one(
+            "<?php\nfunction f(): string\n{\n"
+            "    $x = <<<ZZZ\n    text\n    ZZZ;\n    return $x;\n}\n",
+            "f",
+            tmp_path,
+        )
+        assert one.body_hash == two.body_hash
+
+    # -- semicolons and attributes (PH10 / PH4) -------------------------
+
+    def test_semicolon_is_hashed_content(self, tmp_path: Path) -> None:
+        """PH10: PHP semicolons are required syntax, so they are *not* in
+        the ASI exclusion set — an extra ``;`` (a valid empty statement)
+        changes the hash."""
+        without = self._one(
+            "<?php\nfunction f(): int\n{\n    return 1;\n}\n", "f", tmp_path
+        )
+        with_empty = self._one(
+            "<?php\nfunction f(): int\n{\n    return 1;;\n}\n", "f", tmp_path
+        )
+        assert without.body_hash != with_empty.body_hash
+
+    def test_trailing_comma_is_invisible(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\nfunction f(): array\n{\n    return [1, 2];\n}\n", "f", tmp_path
+        )
+        after = self._one(
+            "<?php\nfunction f(): array\n{\n    return [1, 2,];\n}\n", "f", tmp_path
+        )
+        assert before.body_hash == after.body_hash
+
+    def test_attribute_is_inside_the_function_hash(self, tmp_path: Path) -> None:
+        """PH4: attributes are *children* of the declaration, so no folding
+        is needed — the attribute and its arguments hash with it."""
+        plain = self._one(
+            "<?php\nfunction f(): int\n{\n    return 1;\n}\n", "f", tmp_path
+        )
+        annotated = self._one(
+            "<?php\n#[Route('/home')]\nfunction f(): int\n{\n    return 1;\n}\n",
+            "f",
+            tmp_path,
+        )
+        assert plain.body_hash != annotated.body_hash
+
+        one = self._one(
+            "<?php\n#[Route('/one')]\nfunction f(): int\n{\n    return 1;\n}\n",
+            "f",
+            tmp_path,
+        )
+        two = self._one(
+            "<?php\n#[Route('/two')]\nfunction f(): int\n{\n    return 1;\n}\n",
+            "f",
+            tmp_path,
+        )
+        assert one.body_hash != two.body_hash
+
+    def test_attribute_is_inside_the_class_shell_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\n#[Attribute]\nclass A { public $f = 1; }\n", "A", tmp_path
+        )
+        after = self._one(
+            "<?php\n#[Attribute(Attribute::TARGET_CLASS)]\n"
+            "class A { public $f = 1; }\n",
+            "A",
+            tmp_path,
+        )
+        assert before.body_hash != after.body_hash
+
+    # -- closures (PH6) -------------------------------------------------
+
+    def test_closure_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one(
+            "<?php\n$f = function (): int\n{\n    return 1;\n};\n", "f", tmp_path
+        )
+        after = self._one(
+            "<?php\n$f = function (): int\n{\n    return 2;\n};\n", "f", tmp_path
+        )
+        assert before.body_hash is not None
+        assert before.body_hash != after.body_hash
+
+    def test_arrow_closure_edit_changes_hash(self, tmp_path: Path) -> None:
+        before = self._one("<?php\n$f = fn (): int => 1;\n", "f", tmp_path)
+        after = self._one("<?php\n$f = fn (): int => 2;\n", "f", tmp_path)
+        assert before.body_hash != after.body_hash
+
+
 class TestKotlinBodyHash:
     """Kotlin body hashes (v0.17.0 Phase 3).
 

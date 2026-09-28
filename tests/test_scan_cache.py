@@ -713,3 +713,99 @@ class TestKotlinCacheRoundTrip:
         cache_file = kotlin_repo / CACHE_DIR / CACHE_FILE
         assert json.loads(cache_file.read_text())["version"] == 2
         assert CACHE_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 4: PHP cache round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def php_repo(tmp_path: Path) -> Path:
+    """A repo with a PHP class file, a free function and a closure."""
+    (tmp_path / "Greeter.php").write_text(
+        "<?php\n\n"
+        "class Greeter\n"
+        "{\n"
+        "    private string $prefix;\n\n"
+        "    public function __construct(string $prefix)\n"
+        "    {\n"
+        "        $this->prefix = $prefix;\n"
+        "    }\n\n"
+        "    public function greet(string $name): string\n"
+        "    {\n"
+        "        return $this->prefix . $name;\n"
+        "    }\n"
+        "}\n"
+    )
+    (tmp_path / "helpers.php").write_text(
+        "<?php\n\n"
+        "function shout(string $text): string\n"
+        "{\n"
+        "    return strtoupper($text);\n"
+        "}\n\n"
+        "$loud = function (string $text): string\n"
+        "{\n"
+        "    return shout($text);\n"
+        "};\n"
+    )
+    return tmp_path
+
+
+class TestPhpCacheRoundTrip:
+    """PHP scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_php_symbols(self, php_repo: Path) -> None:
+        scanner = RepositoryScanner(php_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.php_files) == set(result_warm.php_files)
+        assert set(result_cold.php_files) == {Path("Greeter.php"), Path("helpers.php")}
+        for path in result_cold.php_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.php_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.php_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_php_body_hash(self, php_repo: Path) -> None:
+        scanner = RepositoryScanner(php_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.php_files[Path("Greeter.php")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+        # The class shell hash and every member hash must survive the
+        # cache round-trip distinctly (no collapsing to one value).
+        assert len({s.body_hash for s in symbols}) == len(symbols)
+
+    def test_cache_preserves_php_closure_symbols(self, php_repo: Path) -> None:
+        """PH6: a module-scope closure assignment survives the round-trip
+        as a FUNCTION named without the ``$``."""
+        RepositoryScanner(php_repo).scan()
+        warm = RepositoryScanner(php_repo).scan()
+
+        names = [s.name for s in warm.php_files[Path("helpers.php")]]
+        assert names == ["shout", "loud"]
+
+    def test_cache_file_records_php_language(self, php_repo: Path) -> None:
+        RepositoryScanner(php_repo).scan()
+        cache_file = php_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {
+            path: e for path, e in data["entries"].items() if e["language"] == "php"
+        }
+        assert set(entries) == {"Greeter.php", "helpers.php"}
+
+    def test_cache_schema_version_is_still_v2_for_php(self, php_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(php_repo).scan()
+        cache_file = php_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2

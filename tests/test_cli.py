@@ -872,6 +872,13 @@ _LANG_CASES = [
         'fun greet(): String { return "hello" }\n',
         None,
     ),
+    (
+        "php",
+        "app.php",
+        "<?php\n\nfunction greet(): string\n{\n    return 'hi';\n}\n",
+        "<?php\n\nfunction greet(): string\n{\n    return 'hello';\n}\n",
+        None,
+    ),
 ]
 
 
@@ -1634,6 +1641,389 @@ class TestE2EKotlinPipeline:
             assert rc == 0, out
             assert "CONFIRMED" in out
             assert "UNEXPLAINED" not in out
+
+
+class TestE2EPhpPipeline:
+    """Phase 4 gate 5: the real CLI pipeline over PHP sources.
+
+    Covers ``--pre/--post`` with all three output formats, ``--compare``
+    against a git repo, both non-CONFIRMED verdict paths, the top-level
+    (no ``parent_class``) function spelling, and the external-dirs
+    cache-free rule for ``.php`` snapshots.
+    """
+
+    _PRE = (
+        "<?php\n\nclass App\n{\n    public function greet(): int\n"
+        "    {\n        return 1;\n    }\n}\n"
+    )
+    _POST = (
+        "<?php\n\nclass App\n{\n    public function greet(): int\n"
+        "    {\n        return 2;\n    }\n}\n"
+    )
+
+    def _snapshots(self, tmpdir: str) -> tuple[Path, Path]:
+        pre = Path(tmpdir) / "pre"
+        post = Path(tmpdir) / "post"
+        pre.mkdir()
+        post.mkdir()
+        (pre / "App.php").write_text(self._PRE, encoding="utf-8")
+        (post / "App.php").write_text(self._POST, encoding="utf-8")
+        return pre, post
+
+    @pytest.mark.parametrize("fmt", ["json", "sarif", "junit"])
+    def test_php_change_renders_every_format(
+        self, capsys: pytest.CaptureFixture, fmt: str
+    ) -> None:
+        """An unexplained PHP change renders through json/sarif/junit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    fmt,
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            # A CHANGED_FUNCTION with no claim is unexplained → exit 1.
+            assert rc == 1, out
+            if fmt == "json":
+                data = json.loads(out)
+                assert "version" in data and "results" in data
+                unexplained = data["unexplained_changes"]
+                assert any(
+                    c["symbol_name"] == "greet" and c["parent_class"] == "App"
+                    for c in unexplained
+                ), unexplained
+            elif fmt == "sarif":
+                data = json.loads(out)
+                assert data["version"] == "2.1.0"
+                assert "$schema" in data
+            else:
+                assert "testsuites" in out
+                assert "nowreck" in out
+
+    def test_php_claim_confirmed_via_pre_post(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The honest claim set for a PHP body edit is CONFIRMED."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.php",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_php_top_level_function_confirmed(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A top-level PHP function needs no ``parent_class`` (like the
+        ``.kts`` spelling) and still confirms end-to-end."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "helpers.php").write_text(
+                "<?php\n\nfunction slugify(string $s): string\n{\n    return $s;\n}\n",
+                encoding="utf-8",
+            )
+            (post / "helpers.php").write_text(
+                "<?php\n\nfunction slugify(string $s): string\n"
+                "{\n    return trim($s);\n}\n",
+                encoding="utf-8",
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="slugify",
+                    file_path="helpers.php",
+                ),
+                _make_claim_dict(
+                    ClaimType.CALLS_FUNCTION,
+                    file_path="helpers.php",
+                    caller_name="slugify",
+                    called_name="trim",
+                ),
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_php_method_call_claim_confirmed(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A PHP method-call claim (``$this->validate()``) confirms through
+        the real pipeline: call capture + strict class matching."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "Calc.php").write_text(
+                "<?php\n\nclass Calc\n"
+                "{\n    public function process(int $x): int\n"
+                "    {\n        return $x;\n    }\n}\n",
+                encoding="utf-8",
+            )
+            (post / "Calc.php").write_text(
+                "<?php\n\n"
+                "class Calc\n"
+                "{\n"
+                "    public function process(int $x): int\n"
+                "    {\n"
+                "        return $this->validate($x);\n"
+                "    }\n\n"
+                "    private function validate(int $x): bool\n"
+                "    {\n"
+                "        return $x > 0;\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            # The honest claim set for this edit: the new method, the
+            # method-body change, and the new call.
+            claims = [
+                _make_claim_dict(
+                    ClaimType.ADD_FUNCTION,
+                    symbol_name="validate",
+                    file_path="Calc.php",
+                    parent_class="Calc",
+                ),
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="process",
+                    file_path="Calc.php",
+                    parent_class="Calc",
+                ),
+                _make_claim_dict(
+                    ClaimType.CALLS_FUNCTION,
+                    file_path="Calc.php",
+                    parent_class="Calc",
+                    caller_name="process",
+                    called_name="validate",
+                ),
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_php_hallucinated_claim_unverifiable(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A CHANGED_FUNCTION claim about a PHP method nobody touched is
+        UNVERIFIABLE (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+            (post / "App.php").write_text(self._PRE, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.php",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "UNVERIFIABLE" in out
+
+    def test_php_changed_claim_contradicted_by_removal(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Claiming CHANGED_FUNCTION for a PHP method that was actually
+        removed is CONTRADICTED (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+            (post / "App.php").write_text(
+                "<?php\n\nclass App\n{\n}\n", encoding="utf-8"
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.php",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "CONTRADICTED" in out
+
+    def test_php_compare_mode_detects_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """``--compare HEAD~1`` picks up a PHP method-body edit from git."""
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "App.php").write_text(self._PRE, encoding="utf-8")
+        env = {
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t.local",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t.local",
+        }
+
+        def git(*args: str) -> None:
+            assert (
+                subprocess.run(
+                    ["git", *args], cwd=repo, capture_output=True, text=True, env=env
+                ).returncode
+                == 0
+            ), args
+
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "init")
+        (repo / "App.php").write_text(self._POST, encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "change")
+
+        from nowreck.cli import build_parser
+        from nowreck.main import handle_fix
+
+        monkeypatch.chdir(repo)
+        args = build_parser().parse_args(
+            ["fix", "--compare", "HEAD~1", "--format", "json"]
+        )
+        rc = handle_fix(args)
+        out, _ = capsys.readouterr()
+
+        assert rc == 1, out
+        data = json.loads(out)
+        assert any(
+            c["symbol_name"] == "greet" and c["parent_class"] == "App"
+            for c in data["unexplained_changes"]
+        )
+
+    def test_php_pre_post_scan_writes_no_cache(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """P3 for PHP: external ``.php`` snapshot dirs get no ``.nowreck/``."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                ["fix", "--pre", str(pre), "--post", str(post)]
+            )
+            handle_fix(args)
+            capsys.readouterr()
+
+            assert not (pre / ".nowreck").exists()
+            assert not (post / ".nowreck").exists()
 
 
 class TestExternalDirsGetNoCache:

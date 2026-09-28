@@ -40,6 +40,9 @@ class ScanResult:
         kotlin_files: Mapping of file paths (relative to repo root) to
             the list of ``Symbol`` objects extracted from each
             successfully parsed Kotlin file (``.kt`` and ``.kts``).
+        php_files: Mapping of file paths (relative to repo root) to
+            the list of ``Symbol`` objects extracted from each
+            successfully parsed PHP file (``.php``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -51,6 +54,7 @@ class ScanResult:
     go_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     java_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     kotlin_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    php_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
     repo_root: Path | None = None
 
@@ -64,6 +68,7 @@ class ScanResult:
             + len(self.go_files)
             + len(self.java_files)
             + len(self.kotlin_files)
+            + len(self.php_files)
         )
 
     @property
@@ -73,7 +78,7 @@ class ScanResult:
 
 class RepositoryScanner:
     """Scans a repository for Python, JavaScript, TypeScript, Rust, Go,
-    Java, and Kotlin files and parses them into their respective
+    Java, Kotlin, and PHP files and parses them into their respective
     structural representations.
 
     This scanner discovers ``.py`` files recursively and parses each with
@@ -82,8 +87,9 @@ class RepositoryScanner:
     and parses each with the tree-sitter-based TypeScript scanner,
     discovers ``.rs`` files and parses each with the Rust scanner,
     discovers ``.go`` files and parses each with the Go scanner,
-    discovers ``.java`` files and parses each with the Java scanner, and
+    discovers ``.java`` files and parses each with the Java scanner,
     discovers ``.kt``/``.kts`` files and parses each with the Kotlin
+    scanner, and discovers ``.php`` files and parses each with the PHP
     scanner.  The results are collected into a :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
@@ -108,8 +114,8 @@ class RepositoryScanner:
 
     def scan(self) -> ScanResult:
         """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
-        ``.go``, ``.java``, and ``.kt``/``.kts`` files under the
-        repository root.
+        ``.go``, ``.java``, ``.kt``/``.kts``, and ``.php`` files under
+        the repository root.
 
         When the scan cache is enabled (the default), previously parsed
         files are cached on disk and reused if their mtime and size
@@ -118,8 +124,8 @@ class RepositoryScanner:
 
         Returns:
             A :class:`ScanResult` containing all successfully parsed
-            modules, JS/TS/Rust/Go/Java/Kotlin symbol lists, and any files
-            that failed to parse.
+            modules, JS/TS/Rust/Go/Java/Kotlin/PHP symbol lists, and any
+            files that failed to parse.
         """
         from nowreck.scanner.symbol_index import Symbol as SymbolClass  # noqa: PLC0415
 
@@ -132,6 +138,7 @@ class RepositoryScanner:
         go_files: dict[Path, list[Symbol]] = {}
         java_files: dict[Path, list[Symbol]] = {}
         kotlin_files: dict[Path, list[Symbol]] = {}
+        php_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         # --- Python files ---
@@ -416,6 +423,45 @@ class RepositoryScanner:
                 elif error is not None:
                     failed[relative] = error
 
+        # --- PHP files ---
+        for php_file in self._discover_files(".php"):
+            relative = php_file.relative_to(self._repo_path)
+            try:
+                stat = php_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
+
+            php_hash = file_content_hash(php_file)
+            cached = (
+                cache.get(relative, mtime, size, php_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                php_files[relative] = [SymbolClass.from_dict(s) for s in cached.symbols]
+            else:
+                symbols, error = self._parse_php_file(php_file)
+                if symbols is not None:
+                    php_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="php",
+                                content_hash=php_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
         # Persist cache at the end of a successful scan.
         if cache is not None:
             cache.save()
@@ -431,6 +477,7 @@ class RepositoryScanner:
             + len(go_files)
             + len(java_files)
             + len(kotlin_files)
+            + len(php_files)
             + len(failed)
         )
         success = total - len(failed)
@@ -452,6 +499,7 @@ class RepositoryScanner:
                         go_files,
                         java_files,
                         kotlin_files,
+                        php_files,
                     )
                 ),
             )
@@ -470,6 +518,7 @@ class RepositoryScanner:
             go_files=go_files,
             java_files=java_files,
             kotlin_files=kotlin_files,
+            php_files=php_files,
             failed_files=failed,
             repo_root=self._repo_path,
         )
@@ -835,6 +884,54 @@ class RepositoryScanner:
 
         try:
             symbols = scan_kotlin_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # PHP discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_php_files(self) -> list[Path]:
+        """Recursively discover ``.php`` files, skipping hidden dirs.
+
+        ``.php`` is the one standard PHP extension; ``.phtml`` and the
+        legacy ``.php3``–``.php5`` names are out of scope (documented in
+        the Phase 4 notes).  Hidden directories (names starting with
+        ``.``) are excluded by default to avoid scanning ``.git``,
+        ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
+        """
+        return self._discover_files(".php")
+
+    def _parse_php_file(
+        self,
+        file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single PHP file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        try:
+            from nowreck.scanner.php_scanner import scan_php_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for PHP scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-php"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+        try:
+            symbols = scan_php_file(file_path, repo_root=self._repo_path)
             return symbols, None
         except (FileNotFoundError, SyntaxError, OSError) as exc:
             exc_type = type(exc).__name__

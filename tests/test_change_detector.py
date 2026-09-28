@@ -2084,6 +2084,667 @@ class TestDetectKotlinChanges:
         ]
 
 
+class TestDetectPhpChanges:
+    """PHP detector matrix: symbols, shells, calls, disjoint facts.
+
+    Uses the real ``RepositoryScanner`` (tree-sitter PHP).  Every row of
+    the Phase 4 test matrix is pinned here — traits map to CLASS (PH8),
+    declaration-only methods can never fire CHANGED_FUNCTION (PH9),
+    anonymous classes produce no symbols (PH5), closures are indexed
+    (PH6), attributes are part of their declaration's hash (PH4) and
+    interpolation edits are real content (PH11).
+    """
+
+    _CLASS = (
+        "<?php\n\n"
+        "class A\n"
+        "{\n"
+        "    public $f = 1;\n\n"
+        "    public function m(): int\n"
+        "    {\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def _scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scan_result = RepositoryScanner(tmp_path).scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def _changes(
+        self,
+        tmp_path: Path,
+        pre: dict[str, str],
+        post: dict[str, str],
+    ) -> list[DetectedChange]:
+        pre_scan, pre_sym = self._scan(tmp_path / "pre", pre)
+        post_scan, post_sym = self._scan(tmp_path / "post", post)
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    # -- symbol add / remove -------------------------------------------
+
+    def test_php_method_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {
+                "A.php": (
+                    "<?php\n\n"
+                    "class A\n"
+                    "{\n"
+                    "    public $f = 1;\n\n"
+                    "    public function m(): int\n"
+                    "    {\n"
+                    "        return 1;\n"
+                    "    }\n\n"
+                    "    public function n(): int\n"
+                    "    {\n"
+                    "        return 2;\n"
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("n", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_php_method_removed(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {"A.php": "<?php\n\nclass A\n{\n    public $f = 1;\n}\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in removed] == [("m", "A")]
+
+    def test_php_top_level_function_added_has_no_parent(self, tmp_path: Path) -> None:
+        """PHP has top-level functions (like Kotlin, unlike Java), so the
+        claim carries no parent_class."""
+        changes = self._changes(
+            tmp_path,
+            {"app.php": "<?php\n\n$x = 1;\n"},
+            {
+                "app.php": (
+                    "<?php\n\n$x = 1;\n\nfunction hello(): int\n{\n    return 1;\n}\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("hello", None)]
+
+    def test_php_type_added(self, tmp_path: Path) -> None:
+        """class/trait → ADD_CLASS, interface → ADD_INTERFACE, enum →
+        ADD_ENUM: a trait maps to CLASS because the claim taxonomy has no
+        trait type (PH8)."""
+        changes = self._changes(
+            tmp_path,
+            {},
+            {
+                "Types.php": (
+                    "<?php\n\n"
+                    "class A {}\n"
+                    "interface I {}\n"
+                    "enum E { case One; }\n"
+                    "trait T {}\n"
+                )
+            },
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ] == ["A", "T"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_INTERFACE)
+        ] == ["I"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_ENUM)
+        ] == ["E"]
+
+    def test_php_constructor_added_is_add_function_with_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """``__construct`` is an ordinary METHOD named after its class, so
+        adding one fires ADD_FUNCTION with parent_class=Foo — no identity
+        collision with the CLASS Foo (kinds differ, PH12)."""
+        changes = self._changes(
+            tmp_path,
+            {"Foo.php": "<?php\n\nclass Foo {}\n"},
+            {
+                "Foo.php": (
+                    "<?php\n\n"
+                    "class Foo\n"
+                    "{\n"
+                    "    public function __construct(int $x)\n"
+                    "    {\n"
+                    "        $this->x = $x;\n"
+                    "    }\n"
+                    "}\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [
+            ("__construct", "Foo")
+        ]
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert not _changes_of_type(changes, ChangeType.REMOVE_CLASS)
+
+    def test_php_remove_and_recreate_is_remove_plus_add(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nclass A {\n    public function old() {}\n}\n"},
+            {"A.php": "<?php\n\nclass A {\n    public function fresh() {}\n}\n"},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        ] == ["old"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["fresh"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    # -- disjoint facts ------------------------------------------------
+
+    def test_php_method_body_edit_is_changed_function_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {"A.php": self._CLASS.replace("return 1;", "return 2;")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("m", "A")
+
+    def test_php_property_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {"A.php": self._CLASS.replace("public $f = 1;", "public $f = 2;")},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_php_class_base_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nclass A extends Base {}\n"},
+            {"A.php": "<?php\n\nclass A extends Other {}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_php_constant_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nclass A {\n    public const LIMIT = 1;\n}\n"},
+            {"A.php": "<?php\n\nclass A {\n    public const LIMIT = 2;\n}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "A"
+
+    def test_php_trait_body_edit_is_changed_class(self, tmp_path: Path) -> None:
+        """PH8: a trait maps to CLASS, so its shell content fires
+        CHANGED_CLASS on the trait."""
+        pre = "<?php\n\ntrait Loggable\n{\n    public $tag = 'x';\n}\n"
+        changes = self._changes(
+            tmp_path,
+            {"T.php": pre},
+            {"T.php": pre.replace("'x'", "'y'")},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "Loggable"
+
+    def test_php_trait_method_edit_is_changed_function_with_trait_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """The disjoint-facts rule holds for traits too: a method edit is
+        CHANGED_FUNCTION with parent_class = the trait name."""
+        pre = (
+            "<?php\n\n"
+            "trait Loggable\n"
+            "{\n"
+            "    public function log(): string\n"
+            "    {\n"
+            "        return 'a';\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"T.php": pre},
+            {"T.php": pre.replace("'a'", "'b'")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == (
+            "log",
+            "Loggable",
+        )
+
+    def test_php_enum_case_edit_is_changed_class(self, tmp_path: Path) -> None:
+        """Enum cases are class-shell content (PH7) → CHANGED_CLASS."""
+        changes = self._changes(
+            tmp_path,
+            {"E.php": "<?php\n\nenum E { case One; }\n"},
+            {"E.php": "<?php\n\nenum E { case One; case Two; }\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_CLASS]
+        assert changes[0].symbol_name == "E"
+
+    def test_php_enum_method_edit_is_changed_function(self, tmp_path: Path) -> None:
+        """Enum methods are METHOD symbols with parent_class = the enum."""
+        pre = (
+            "<?php\n\n"
+            "enum E\n"
+            "{\n"
+            "    case One;\n\n"
+            "    public function label(): string\n"
+            "    {\n"
+            "        return 'one';\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"E.php": pre},
+            {"E.php": pre.replace("'one'", "'1'")},
+        )
+        assert len(changes) == 1
+        assert changes[0].change_type is ChangeType.CHANGED_FUNCTION
+        assert (changes[0].symbol_name, changes[0].parent_class) == ("label", "E")
+
+    def test_php_interface_method_declaration_edit_is_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """PH9: an interface method is declaration-only, so it carries
+        ``body_hash=None`` — a signature edit can never fire
+        CHANGED_FUNCTION (and an INTERFACE has no hash at all)."""
+        changes = self._changes(
+            tmp_path,
+            {"I.php": "<?php\n\ninterface I {\n    public function m();\n}\n"},
+            {
+                "I.php": (
+                    "<?php\n\ninterface I\n{\n    public function m(string $name);\n}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_php_abstract_method_declaration_edit_is_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """PH9 applies to abstract methods as well — no body, no claim."""
+        changes = self._changes(
+            tmp_path,
+            {
+                "A.php": (
+                    "<?php\n\n"
+                    "abstract class A\n"
+                    "{\n"
+                    "    abstract public function m();\n"
+                    "}\n"
+                )
+            },
+            {
+                "A.php": (
+                    "<?php\n\n"
+                    "abstract class A\n"
+                    "{\n"
+                    "    abstract public function m(): int;\n"
+                    "}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_php_anonymous_class_body_edit_is_nothing(self, tmp_path: Path) -> None:
+        """PH5: ``new class { … }`` yields no symbols, so editing its body
+        fires nothing (it is not part of any enclosing symbol's hash —
+        the assignment below is at module scope)."""
+        pre = (
+            "<?php\n\n"
+            "$worker = new class {\n"
+            "    public function run(): int\n"
+            "    {\n"
+            "        return 1;\n"
+            "    }\n"
+            "};\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.php": pre},
+            {"A.php": pre.replace("return 1;", "return 2;")},
+        )
+        assert changes == []
+
+    def test_php_closure_assignment_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        """PH6: ``$f = function () {}`` at module scope is indexed as a
+        FUNCTION named without the ``$``, so its edit is CHANGED_FUNCTION
+        with no parent."""
+        pre = "<?php\n\n$double = function (int $n): int\n{\n    return $n * 2;\n};\n"
+        changes = self._changes(
+            tmp_path,
+            {"C.php": pre},
+            {"C.php": pre.replace("return $n * 2;", "return $n + $n;")},
+        )
+        assert [(c.change_type, c.symbol_name, c.parent_class) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "double", None)
+        ]
+
+    def test_php_arrow_closure_assignment_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        """PH6 covers arrow functions too: ``$f = fn () => …`` is the same
+        symbol."""
+        pre = "<?php\n\n$triple = fn (int $n): int => $n * 3;\n"
+        changes = self._changes(
+            tmp_path,
+            {"C.php": pre},
+            {"C.php": pre.replace("$n * 3", "$n + $n + $n")},
+        )
+        assert [(c.change_type, c.symbol_name, c.parent_class) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "triple", None)
+        ]
+
+    def test_php_closure_inside_a_method_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        """A closure *inside* a method is not a symbol — its edit lands on
+        the enclosing method (the local-declaration boundary every
+        language shares)."""
+        pre = (
+            "<?php\n\n"
+            "class A\n"
+            "{\n"
+            "    public function run(): void\n"
+            "    {\n"
+            "        $inner = function (): int {\n"
+            "            return 1;\n"
+            "        };\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.php": pre},
+            {"A.php": pre.replace("return 1;", "return 2;")},
+        )
+        assert [(c.change_type, c.symbol_name, c.parent_class) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "run", "A")
+        ]
+
+    def test_php_attribute_edit_is_changed_function(self, tmp_path: Path) -> None:
+        """PH4: attributes are *children* of the declaration, so an
+        attribute edit is part of that declaration's own hash."""
+        pre = (
+            "<?php\n\n"
+            "#[Route('/home')]\n"
+            "function home(): string\n"
+            "{\n"
+            "    return 'x';\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.php": pre},
+            {"A.php": pre.replace("'/home'", "'/landing'")},
+        )
+        assert [(c.change_type, c.symbol_name, c.parent_class) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "home", None)
+        ]
+
+    def test_php_class_attribute_edit_is_changed_class(self, tmp_path: Path) -> None:
+        pre = "<?php\n\n#[Attribute]\nclass A {}\n"
+        changes = self._changes(
+            tmp_path,
+            {"A.php": pre},
+            {"A.php": "<?php\n\n#[Attribute(Attribute::TARGET_CLASS)]\nclass A {}\n"},
+        )
+        assert [(c.change_type, c.symbol_name) for c in changes] == [
+            (ChangeType.CHANGED_CLASS, "A")
+        ]
+
+    def test_php_interpolation_edit_is_changed_function(self, tmp_path: Path) -> None:
+        """PH11: interpolation content is real content (like Kotlin's
+        string templates) — editing it is a body change."""
+        pre = (
+            "<?php\n\n"
+            "class A\n"
+            "{\n"
+            "    public function m(string $name): string\n"
+            "    {\n"
+            '        return "Hello {$name}";\n'
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(
+            tmp_path,
+            {"A.php": pre},
+            {"A.php": pre.replace("{$name}", "{$name}!")},
+        )
+        assert [(c.change_type, c.symbol_name, c.parent_class) for c in changes] == [
+            (ChangeType.CHANGED_FUNCTION, "m", "A")
+        ]
+
+    def test_php_quote_swap_is_no_change(self, tmp_path: Path) -> None:
+        """PH11: ``'x'`` and ``\"x\"`` select different escape rules in
+        PHP, but this swap changes neither value nor escapes — the leaf
+        normaliser makes it invisible."""
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nfunction f()\n{\n    return 'x';\n}\n"},
+            {"A.php": '<?php\n\nfunction f()\n{\n    return "x";\n}\n'},
+        )
+        assert changes == []
+
+    def test_php_escaped_quote_swap_stays_a_change(self, tmp_path: Path) -> None:
+        """PH11's other half: ``'\\n'`` (backslash-n) and ``\"\\n\"``
+        (newline) are different values, so swapping the quotes is a real
+        change."""
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nfunction f()\n{\n    return '\\n';\n}\n"},
+            {"A.php": '<?php\n\nfunction f()\n{\n    return "\\n";\n}\n'},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_FUNCTION]
+
+    def test_php_semicolon_is_hashed_as_content(self, tmp_path: Path) -> None:
+        """PH10: PHP semicolons are required syntax, so they are *not* in
+        the ASI exclusion set — an extra ``;`` (an empty statement, valid
+        PHP) is a real body change."""
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nfunction f(): int\n{\n    return 1;\n}\n"},
+            {"A.php": "<?php\n\nfunction f(): int\n{\n    return 1;;\n}\n"},
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_FUNCTION]
+
+    # -- normalisation -------------------------------------------------
+
+    def test_php_reformat_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {
+                "A.php": (
+                    "<?php\n\n"
+                    "class A {"
+                    "public $f = 1;"
+                    "public function m(): int {"
+                    "return 1;"
+                    "}}}\n"
+                )
+            },
+        )
+        assert changes == []
+
+    def test_php_comment_only_is_no_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": self._CLASS},
+            {
+                "A.php": self._CLASS.replace(
+                    "<?php\n",
+                    "<?php\n// leading\n# hash style\n/* block */\n",
+                )
+            },
+        )
+        assert changes == []
+
+    def test_php_heredoc_to_quoted_swap_stays_a_change(self, tmp_path: Path) -> None:
+        """PH11: heredoc keeps its own type token (raw vs interpolated is
+        semantically significant), so the swap is a change even when the
+        value matches."""
+        changes = self._changes(
+            tmp_path,
+            {
+                "A.php": (
+                    "<?php\n\nfunction f(): string\n{\n"
+                    "    $x = <<<EOT\n    text\n    EOT;\n"
+                    "    return $x;\n}\n"
+                )
+            },
+            {
+                "A.php": (
+                    "<?php\n\nfunction f(): string\n{\n"
+                    "    $x = 'text';\n"
+                    "    return $x;\n}\n"
+                )
+            },
+        )
+        assert [c.change_type for c in changes] == [ChangeType.CHANGED_FUNCTION]
+
+    # -- files ---------------------------------------------------------
+
+    def test_php_file_created_and_deleted(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"Old.php": "<?php\n\nclass Old {}\n"},
+            {"New.php": "<?php\n\nclass New {}\n"},
+        )
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_CREATED)
+        ] == ["New.php"]
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_DELETED)
+        ] == ["Old.php"]
+
+    # -- calls ---------------------------------------------------------
+
+    def test_php_calls_captured_and_excluded(self, tmp_path: Path) -> None:
+        """The full PH1/PH2/PH3/PH12 call matrix: plain, member, scoped,
+        qualified, nullsafe and spread calls are captured; a call receiver,
+        ``new``, a magic member and a first-class callable are not."""
+        source = (
+            "<?php\n\n"
+            "class Client\n"
+            "{\n"
+            "    public function run(): void\n"
+            "    {\n"
+            "        helper();\n"
+            "        $this->other();\n"
+            "        self::stat();\n"
+            "        static::stat();\n"
+            "        parent::boot();\n"
+            "        Lib\\util\\slugify('x');\n"
+            "        \\App\\Tools\\join_all([1]);\n"
+            "        $obj?->maybe();\n"
+            "        $chain = build()->run();\n"
+            "        new Thing();\n"
+            "        strlen(...);\n"
+            "        $obj->__construct();\n"
+            "        $obj->real();\n"
+            "    }\n"
+            "}\n\n"
+            "function top(): void\n"
+            "{\n"
+            "    helper_top();\n"
+            "}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"A.php": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        assert {c.called_name for c in run_calls} == {
+            "helper",
+            "other",
+            "stat",
+            "boot",
+            "slugify",
+            "join_all",
+            "maybe",
+            "build",
+            "real",
+        }
+        assert all(c.parent_class == "Client" for c in run_calls)
+        top_calls = [c for c in calls if c.caller_name == "top"]
+        assert [(c.called_name, c.parent_class) for c in top_calls] == [
+            ("helper_top", None)
+        ]
+
+    def test_php_property_hook_calls_are_attributed_to_the_property(
+        self, tmp_path: Path
+    ) -> None:
+        """A property hook is a named body owned by its property (the
+        Kotlin accessor rule): its calls carry caller_name = the property
+        name and the enclosing class as parent."""
+        source = (
+            "<?php\n\n"
+            "class Person\n"
+            "{\n"
+            "    public string $full_name {\n"
+            "        get => $this->compose();\n"
+            "        set (string $value) {\n"
+            "            $this->assign($value);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"A.php": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert {(c.caller_name, c.called_name, c.parent_class) for c in calls} == {
+            ("full_name", "compose", "Person"),
+            ("full_name", "assign", "Person"),
+        }
+
+    def test_php_closure_calls_are_attributed_to_the_closure(
+        self, tmp_path: Path
+    ) -> None:
+        """PH6 for callers: a named closure owns the calls in its body
+        (parent_class is ``None`` — a closure lives in no class)."""
+        source = "<?php\n\n$fn = function (): void\n{\n    work();\n};\n"
+        changes = self._changes(tmp_path, {}, {"A.php": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert [(c.caller_name, c.called_name, c.parent_class) for c in calls] == [
+            ("fn", "work", None)
+        ]
+
+    def test_php_removed_call_detected(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"A.php": "<?php\n\nfunction main()\n{\n    validate(1);\n}\n"},
+            {"A.php": "<?php\n\nfunction main()\n{\n    render(1);\n}\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        assert [(c.caller_name, c.called_name) for c in removed] == [
+            ("main", "validate")
+        ]
+
+
 class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""
 

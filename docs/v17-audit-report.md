@@ -561,3 +561,206 @@ and the map-hygiene test keeps it that way.
 | `basedpyright` | 0 errors, 0 warnings, 0 notes |
 | Production code touched | `kotlin_scanner.py` (new), `_tree_sitter_helpers.py` (`METHOD_NODE_TYPES` made public, Kotlin comment/string node types), pipeline wiring (repository_scanner, symbol_index, change_detector, prompt_verifier, model prompts), `pyproject.toml` (dependency) |
 | API hygiene | `_METHOD_NODE_TYPES` → public `METHOD_NODE_TYPES` (shared cross-module, matching `class_shell_hash`) |
+
+---
+
+## 12. Phase 4 — PHP remediation — closed (uncommitted, by instruction)
+
+> **Process note:** Phase 4 is finished and verified through all six gates, but
+> was **not committed** — the standing instruction for this session is to stop
+> at the verified state and report. The work sits in the working tree on
+> `main` (21 changed/new paths on top of `a77c10a`, the Phase 3 commit).
+
+### Dependency floor
+
+The scope's `tree-sitter-php>=0.23` resolves on PyPI only up to **0.24.1**, so
+the floor was raised to `tree-sitter-php>=0.24` in `pyproject.toml`; installed
+0.24.1 verified against `tree-sitter` 0.26.0. The grammar ships **two**
+languages; the scanner loads `language_php()` — the HTML-embedded one that
+matches the `.php` file format — because the pure-source `language_php_only()`
+hard-errors on an HTML template (probe-pinned). `.phtml`/`.php3` stay out of
+scope as documented.
+
+### Fixture probes PH1–PH12 — resolved empirically, each pinned as a permanent test
+
+Resolved **before** any collector code and pinned in
+`tests/test_php_probes.py` (**74 tests** — PH1–PH12 plus boundaries and the
+dependency-floor pin). Facts that changed the scope's assumptions or shaped
+the implementation:
+
+- **PH1/PH2**: a plain call's callee lives in the **`function` field** (not
+  `name`); member/nullsafe/scoped calls carry the method in `name` — and a
+  *dynamic* name puts a `variable_name`/`string` there instead of a `name`
+  node, which is exactly how "not a static target" is detected.
+- **PH4**: attributes are **children** of their declaration — an attribute
+  edit is part of that declaration's own hash; no sibling folding (the
+  opposite of the v16 TS decorator shape).
+- **PH6**: closure/arrow assignments are FUNCTION symbols named without the
+  `$` (the PHP spelling of the JS `const f = ...` rule); a closure inside a
+  function body is a caller, not a symbol.
+- **PH8/PH9**: traits → CLASS with trait-name `parent_class` on methods; a
+  declaration-only method (interface/abstract) carries `body_hash=None` and
+  can never fire `CHANGED_FUNCTION`.
+- **PH11**: `'x'`/`"x"` hash identically but `'\n'`/`"\n"` stay different —
+  PHP is the one language whose quote style selects the escape rules, so it
+  got a dedicated `php_string_leaf` normaliser (interpolation marked so a
+  literal `"\$x"` can never collide with `"$x"`; heredoc vs nowdoc distinct;
+  delimiter lines are formatting, not content).
+- **PH12 + empirical corrections**: `isset`/`empty`/`die`/`eval` **do** parse
+  as `function_call_expression` while `unset`/`exit`/`print`/`echo`/
+  `include`/`require`/`clone`/`list`/`array`/`match` do not — verified during
+  checker work and corrected in the notes (the older assumption lumped them).
+  First-class callable `strlen(...)` is a call node with a lone
+  `variadic_placeholder` (excluded); spread `f(...$args)` is a real call.
+- **Loud grammar lag**: asymmetric visibility in a *promoted constructor
+  parameter* is an `ERROR` node (`has_error` set, parse warning fires); the
+  same modifier on a standalone property parses cleanly.
+- **Property hooks (PHP 8.4)**: named bodies inside the property — the
+  property stays class-shell content while each hook owns its calls (the
+  Kotlin accessor rule), caller named after the property.
+
+### Scanner + pipeline integration
+
+`nowreck/scanner/php_scanner.py` (new): symbols (`class` → CLASS,
+`interface` → INTERFACE, `enum` → ENUM, `trait` → CLASS (PH8), top-level
+`function` (incl. inside `namespace`/`declare` bodies, both block and
+semicolon forms) → FUNCTION, class-body `method_declaration` → METHOD with
+`parent_class`, `__construct` an ordinary METHOD named `__construct` (PH12),
+closure/arrow assignments → FUNCTION (PH6)); anonymous classes produce no
+symbol (PH5); `TYPE_ALIAS` never fires. Callers: named bodies own their
+calls — methods, functions, named closures, property hooks (named after the
+property); unnamed bodies (bare lambdas, call arguments) own nothing, so
+their calls stay with the nearest enclosing named caller (the G1/G2 rule);
+an anonymous-class method is a caller with no class attribution. Wired
+through `repository_scanner` (`.php` discovery, cache `language="php"`,
+`ScanResult.php_files`, failure accounting), `symbol_index` merge,
+`change_detector._extract_calls` PHP arm, `prompt_verifier` n_files counts,
+and both prompt language lists (prompts.py:31/33 and 111/113 — the stale-text
+rule from Section 6 applied).
+
+Hash model: CLASS/ENUM/trait carry the class-shell hash with
+`method_declaration` subtrees excluded (disjoint facts); INTERFACE carries no
+hash; declaration-only methods carry `body_hash=None` (PH9); PHP semicolons
+are required syntax and hashed as content (PH10 — *not* in the ASI
+exclusion, unlike Kotlin); trailing commas stay hash-invisible (shared
+rule).
+
+### Differential audit (PHP corpus)
+
+18 PHP corpus files added (`basic`, `edge_calls`, `edge_control`,
+`edge_enums`, `edge_formatting`, `edge_inheritance`, `edge_interfaces`,
+`edge_lambdas`, `edge_members`, `edge_negatives`, `edge_nested`,
+`edge_objects`, `edge_realworld`, `edge_strings`, `edge_traits`,
+`edge_attributes`, `edge_namespace`, `edge_template`) — 86 parser symbols /
+101 calls across the corpus. The checker gained the PHP stripper (single
+left-to-right alternation: block comment / `//` + `#[Attr]` + `#` line
+comment / heredoc / nowdoc / double / single), the `<?php`/`?>` tag blanking,
+the PH11 interpolation handling (calls inside `{$…}` are real calls), the
+alt-syntax colon keywords, the caller-scope mask and the symbol extractor;
+`LANGS` is now 8 languages. `EXPECTED_DIVERGENCES` stays **empty**.
+
+Checker defects found and fixed during the PHP work (same discipline as
+Section 5 — the parser was ground truth throughout):
+
+1. **Left-in `<?php` broke head-anchored matches** — the first declaration
+   in a file read `<?php\n\ninterface`, so statement-start-anchored symbol
+   regexes missed it. Tag markers are now blanked like comments.
+2. **`_php_new_prefix` swallowed the `new` keyword** — `new Foo()` blanked
+   the wrong span; fixed to strip only a namespace segment ending in `\`
+   (lookbehind prevents consuming `new`).
+3. **Anonymous-closure heads blanked preceding real calls** — blanks now
+   emit `()` so a preceding call's `(`…`)` pairing survives.
+4. **`_php_arrow_body` param-list mis-pairing** — prefers the pre-paren
+   `=>` (for `get =>` forms), else skips the parameter list.
+5. **`#[Attr]` attribute regex** — the `#` line-comment alternative was
+   eating declaration heads after an attribute; narrowed to
+   `#\[[^\[\]\n]*\]` so only bracketed attributes are protected.
+
+### Per-suite verification
+
+| Gate | Result |
+|---|---|
+| Fixture probes | 74 passed (`tests/test_php_probes.py`, PH1–PH12 + boundaries + dependency floor) |
+| Differential audit | 112 passed (79 Java-era + 15 Kotlin + 18 PHP corpus files; combined run), `EXPECTED_DIVERGENCES` empty and hygiene-enforced |
+| Detector matrix | `tests/test_change_detector.py`: 210 passed (`TestDetectPhpChanges`, 34 PHP tests: add/remove/changed per symbol kind, trait→CLASS rows, PH9 declaration-only → nothing, PH5 anonymous → nothing, closures, attribute/interpolation/quote/semicolon/reformat/heredoc rows, the full PH1/2/3/12 call matrix with exclusions, property-hook caller attribution, CALL_REMOVED) |
+| Scanner / index / hash / cache / dependency errors | 49 / 67 / 115 / 51 / 12 passed |
+| CLI E2E | `tests/test_cli.py`: 100 passed — `TestE2EPhpPipeline` (json/sarif/junit render, honest-claim CONFIRMED, top-level function spelling, method-call claim, UNVERIFIABLE, CONTRADICTED, `--compare` from git, P3 no-cache) + the `_LANG_CASES` PHP row |
+| Full suite | **1545 passed** in 83.63 s (Phase 3 baseline 1364 + PHP additions) |
+| Sample suites (`test_php_samples/`) | `test_php_types.py` 216, `test_php_comprehensive.py` 53, `test_php_multiround.py` 46 — all green (multiround covers repeatability, 20×50 stress, path variants, real-world, line numbers, 8-language cross regression, 60 truncations) |
+| Milestone repo | `pure-php` checkpoint green (11 passed in the checkpoint module: discovery, kinds, `__construct` naming, trait mapping, PH9 declaration-only, call detection, determinism) |
+| Helper self-checks | `/tmp/php_checker_smoke.py` 0 diverged (16 snippets); `/tmp/php_hash_check.py` 20/20 hash semantics OK |
+| `ruff check` / `ruff format --check` | All checks passed / 108 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| Production code touched | `php_scanner.py` (new), `_tree_sitter_helpers.py` (StringNormaliser hook, `encapsed_string`/`heredoc`/`nowdoc` string node types), pipeline wiring (repository_scanner, symbol_index, change_detector, prompt_verifier, model prompts), `pyproject.toml` (dependency) |
+
+### Call-edge pins — placement decision
+
+`tests/test_call_edges.py` pins the Phase 1 boundaries (JS/TS/Rust/Go/Python
+— it predates Java). Java (Phase 2), Kotlin (Phase 3) and PHP (Phase 4) pin
+their full call matrices in `tests/test_change_detector.py` instead
+(`test_java_calls_captured_and_excluded`, `test_kotlin_calls_captured_and_excluded`,
+`test_php_calls_captured_and_excluded`), because those matrices are
+detector-level (caller attribution + `parent_class` through the real
+pipeline) rather than single-scanner edges. No new file was created for PHP;
+the boundary is documented here and pinned where its siblings are.
+
+## 13. Full-repo checkup (post-Phase 4) — three defects found and fixed
+
+A verification sweep across every suite, all 8 languages, lint, typecheck and
+the installed CLI binary found three issues. None was introduced by the PHP
+diff's call-capture paths; one is a genuine Rust scanner defect that predates
+Phase 4, the other two are sample-suite defects.
+
+### 13.1 Rust `impl Trait for Type` attributed methods to the trait (fixed)
+
+`_impl_struct_name` in `nowreck/scanner/rust_scanner.py` returned the first
+`type_identifier` before the impl body. For a trait impl that is the *trait*
+name, so `impl Summary for Article { fn summarize ... }` produced
+`parent_class="Summary"` instead of `"Article"` — contradicting the helper's
+own docstring ("Type name an ``impl`` block targets"). Calls inside such
+methods were mis-attributed to the trait. Found by the deterministic failure
+of `test_rust_samples/test_rust_types.py::summarize parent_class is Article`
+(4/4 runs); the main suite never pinned the trait-impl case, so pytest could
+not catch it.
+
+Fix: read the grammar's `type` field (the implementing type) first, falling
+back to the old scan only for malformed parses; generic targets keep the head
+identifier (`Wrapper<T>` → `Wrapper`). Verified: `summarize`→Article,
+`to_json`/`from_json`→Article, `fmt`/`debug`→Point; all three Rust sample
+suites green (153 + 68 + 36), `SymbolIndex` collision grouping unaffected.
+
+### 13.2 TSX sample test contradicted the member-call contract (fixed)
+
+`test_ts_samples/test_phase1_comprehensive_tsx.py` asserted that
+`this.toggle()` inside a JSX-attribute arrow is *not* captured. The production
+contract, pinned in `tests/test_change_detector.py::test_js_member_chains_captured`
+(`obj.bar()`→`bar`, `this.x()`→`x`), is that member calls are captured by final
+property name — so `render→toggle` is correct evidence. The sample test was
+wrong, deterministic (4/4). Its assertion now matches the contract
+(58/58 green). No production change.
+
+### 13.3 Wall-clock "stress scan is fast" budget (stabilised)
+
+The `< 5.0 s` smoke bound on the ~2,000-line generated stress file in
+`test_kotlin_multiround.py` flaked under parallel suite load (5.58 s / 8.13 s
+observed, quiet runs ~2–4 s). The check guards against gross regressions, not
+benchmarking. Budget raised to `< 30.0 s` with an intent comment, in all three
+sibling suites (`test_kotlin/java/php_multiround.py`) for consistency.
+
+### 13.4 Checkup verification table
+
+| Area | Result |
+| --- | --- |
+| Full pytest | **1545 passed** (67.09 s), 1 pre-existing DeprecationWarning |
+| Milestone checkpoint | 116 passed (incl. `TestPurePhpRepo`) |
+| Differential audit + PHP probes | 186 passed |
+| Rust samples | types 153, comprehensive 68, multiround 36 — green after 13.1 fix |
+| TS samples | types, comprehensive, multiround, multiround_tsx green; comprehensive_tsx 58/58 after 13.2 fix |
+| Kotlin / Java / PHP samples | all green (multiround budgets per 13.3) |
+| CLI binary smoke (`nowreck fix --pre/--post`) | PHP project: JSON (7 unexplained changes enumerated with correct types/parents/lines), SARIF 2.1.0 (7 results, NW001–NW006), JUnit (true `ADD_FUNCTION reset` claim → `tests="1" failures="0"`) |
+| `ruff check` / `ruff format --check` | All checks passed / 108 files formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| TODO/FIXME/XXX/HACK in `nowreck/` | none |
+| Attribution ban | clean (grep over diff + new files) |
+| Dependency floors (`pyproject.toml`) | all 8 grammar pins present, incl. `tree-sitter-php>=0.24` (installed 0.24.1) |
+| Dead code | one unused `source_bytes` parameter removed from `_closure_assignment` (`php_scanner.py`, Phase 4 new code); `scan_cache.put` unused-by-design `mtime`/`size` documented as API contract, pre-existing |

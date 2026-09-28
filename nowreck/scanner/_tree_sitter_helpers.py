@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from tree_sitter import Node
@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 # node type (``multiline_string_literal``, Phase 3 probe K7); they are
 # included so their whitespace — which is string *content*, not source
 # formatting — is preserved exactly instead of being collapsed by the
-# generic leaf rule.
+# generic leaf rule.  PHP strings are ``string`` (single-quoted) and
+# ``encapsed_string`` (double-quoted); heredocs and nowdocs are distinct
+# node types (Phase 4 probe PH11), so raw vs interpolated cannot collide.
 STRING_NODE_TYPES: frozenset[str] = frozenset(
     {
         "string",
@@ -39,8 +41,22 @@ STRING_NODE_TYPES: frozenset[str] = frozenset(
         "interpreted_string_literal",
         "rune_literal",
         "template_string",
+        "encapsed_string",
+        "heredoc",
+        "nowdoc",
     }
 )
+
+# Optional per-grammar string normaliser.  A grammar whose literal forms
+# can spell the *same value* through different node types with different
+# escape rules (PHP: ``'x'``/``"x"``, where the quote style selects both
+# the node type and the escape semantics) supplies one; for every node in
+# ``STRING_NODE_TYPES`` it returns the canonical ``(type token, value)``
+# pair used in place of ``(node.type, stripped text)``.  Canonicalising
+# the type token is what lets two node types that mean the same thing
+# hash equally.  ``None`` keeps the long-standing JS-style behaviour
+# byte for byte.
+StringNormaliser = Callable[[Node, bytes], tuple[str, str]]
 
 # Comment nodes never affect the structural hash (grammar-specific names).
 COMMENT_NODE_TYPES: frozenset[str] = frozenset(
@@ -79,6 +95,7 @@ def structural_hash(
     source_bytes: bytes,
     *,
     excluded_leaf_types: frozenset[str] = frozenset(),
+    string_normaliser: StringNormaliser | None = None,
 ) -> str:
     """Compute a formatting-insensitive structural hash for *node*.
 
@@ -97,6 +114,10 @@ def structural_hash(
             ``ASI_LEAF_EXCLUSIONS`` for JS/TS/Go/Kotlin, whose
             semicolons are optional).  Rust and Java pass nothing —
             their ``;`` is semantic.
+        string_normaliser: Optional per-grammar normaliser for
+            ``STRING_NODE_TYPES`` leaves, returning the canonical
+            ``(type token, value)`` pair (PHP passes one — see
+            :data:`StringNormaliser`).
     """
     if node.type in COMMENT_NODE_TYPES:
         return ""
@@ -105,6 +126,7 @@ def structural_hash(
         source_bytes,
         skip_methods=False,
         excluded_leaf_types=excluded_leaf_types,
+        string_normaliser=string_normaliser,
     )
 
 
@@ -262,6 +284,7 @@ def class_shell_hash(
     *,
     excluded_leaf_types: frozenset[str] = frozenset(),
     method_node_types: frozenset[str] = METHOD_NODE_TYPES,
+    string_normaliser: StringNormaliser | None = None,
 ) -> str:
     """Structural hash of a class/record/enum *shell only*.
 
@@ -286,6 +309,8 @@ def class_shell_hash(
             ``CHANGED_FUNCTION`` only — never a coarse
             ``CHANGED_CLASS`` (Phase 3 probe K3, generalising the v16
             disjoint-facts rule).
+        string_normaliser: Forwarded to :func:`_serialize_node`
+            (PHP passes one).
     """
     parts: list[str] = [class_node.type]
     for child in class_node.children:
@@ -295,6 +320,7 @@ def class_shell_hash(
             skip_methods=True,
             excluded_leaf_types=excluded_leaf_types,
             method_node_types=method_node_types,
+            string_normaliser=string_normaliser,
         )
         if child_hash:
             parts.append(child_hash)
@@ -308,6 +334,7 @@ def _serialize_node(
     skip_methods: bool,
     excluded_leaf_types: frozenset[str] = frozenset(),
     method_node_types: frozenset[str] = METHOD_NODE_TYPES,
+    string_normaliser: StringNormaliser | None = None,
 ) -> str:
     """Core CST serialisation shared by ``structural_hash`` and the class
     shell walk.
@@ -331,8 +358,15 @@ def _serialize_node(
         # hash the quote-stripped text so ``"x"`` and ``'x'`` are equal
         # (JS/TS also unescape, so embedded-quote styles collide too).
         # Template strings are excluded: interpolated ones must recurse
-        # so ``${expr}`` edits affect the hash.
-        parts.append(_string_text(node, source_bytes))
+        # so ``${expr}`` edits affect the hash.  A grammar with its own
+        # string semantics supplies *string_normaliser*, whose canonical
+        # type token replaces ``node.type`` (PHP: the two quoted node
+        # types are one family) and whose value replaces the text.
+        if string_normaliser is not None:
+            canonical_type, canonical_value = string_normaliser(node, source_bytes)
+            parts = [canonical_type, canonical_value]
+        else:
+            parts.append(_string_text(node, source_bytes))
     elif node.child_count == 0:
         parts.append(" ".join(text_of(node, source_bytes).split()))
     else:
@@ -356,6 +390,7 @@ def _serialize_node(
                 skip_methods=skip_methods,
                 excluded_leaf_types=excluded_leaf_types,
                 method_node_types=method_node_types,
+                string_normaliser=string_normaliser,
             )
             if child_hash:
                 parts.append(child_hash)

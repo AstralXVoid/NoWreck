@@ -192,10 +192,24 @@ def _impl_struct_name(
     Handles both simple ``impl Foo { ... }`` and generic
     ``impl<T> Foo<T> { ... }`` forms.  Returns ``None`` when the block
     has no target type (e.g. a bare ``impl`` for a primitive).
+
+    For a trait impl (``impl Trait for Type``) the grammar's ``type``
+    field names the *implementing* type, so methods land under the
+    concrete type rather than the trait.  The ``trait`` field is only
+    a fallback for malformed parses.
     """
     body_node = impl_node.child_by_field_name("body")
     if body_node is None:
         return None
+
+    type_node = impl_node.child_by_field_name("type")
+    if type_node is not None:
+        # Generic target: ``Wrapper<T>`` — keep the head identifier.
+        if type_node.type == "generic_type":
+            name_node = type_node.child_by_field_name("type")
+            if name_node is not None:
+                return _text_of(name_node, source_bytes)
+        return _text_of(type_node, source_bytes)
 
     for m in impl_node.children:
         if m == body_node:

@@ -1134,3 +1134,80 @@ class TestSymbolIndexKotlin:
             SymbolType.METHOD,
         }
         assert all(s.parent_class == "Greeter" for s in greet if s.parent_class)
+
+
+class TestSymbolIndexPhp:
+    """build_symbol_index processes php_files from ScanResult (Phase 4)."""
+
+    def _index(self):
+        from pathlib import Path
+
+        from nowreck.scanner.php_scanner import scan_php_file
+
+        test_file = Path("test_php_samples/basic.php")
+        if not test_file.exists():
+            pytest.skip("test_php_samples/basic.php not found")
+
+        symbols = scan_php_file(test_file, repo_root=Path("test_php_samples"))
+        return build_symbol_index(ScanResult(php_files={Path("basic.php"): symbols}))
+
+    def test_build_with_php_files(self) -> None:
+        idx = self._index()
+
+        assert idx.by_name("Person")[0].symbol_type is SymbolType.CLASS
+        assert idx.by_name("Greeter")[0].symbol_type is SymbolType.INTERFACE
+        assert idx.by_name("Color")[0].symbol_type is SymbolType.ENUM
+        # PH8: PHP has no type-alias construct *and* no trait claim type —
+        # a trait indexes as CLASS.
+        assert idx.by_name("Loggable")[0].symbol_type is SymbolType.CLASS
+
+    def test_php_methods_have_parent_class(self) -> None:
+        idx = self._index()
+        log = idx.by_name("log")
+        assert len(log) == 1
+        assert log[0].symbol_type is SymbolType.METHOD
+        assert log[0].parent_class == "Loggable"
+        assert log[0].body_hash is not None
+
+    def test_php_has_toplevel_functions_and_closures(self) -> None:
+        """PHP holds free functions (PH6: a module-scope closure assignment
+        is indexed as one too)."""
+        idx = self._index()
+        assert sorted(s.name for s in idx.functions) == ["double", "topLevel"]
+        assert all(s.parent_class is None for s in idx.functions)
+
+    def test_php_declaration_only_method_has_no_hash(self) -> None:
+        """PH9: the interface's method carries ``body_hash=None`` while the
+        implementing class method does not."""
+        idx = self._index()
+        greet = idx.by_name("greet")
+        assert len(greet) == 2
+        by_parent = {s.parent_class: s for s in greet}
+        assert by_parent["Greeter"].body_hash is None
+        assert by_parent["Person"].body_hash is not None
+
+    def test_php_merges_with_other_languages(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.php_scanner import scan_php_file
+
+        test_file = Path("test_php_samples/basic.php")
+        if not test_file.exists():
+            pytest.skip("test_php_samples/basic.php not found")
+
+        symbols = scan_php_file(test_file, repo_root=Path("test_php_samples"))
+        python_module = ast.parse("def greet():\n    return 1\n")
+        idx = build_symbol_index(
+            ScanResult(
+                modules={Path("app.py"): python_module},
+                php_files={Path("basic.php"): symbols},
+            )
+        )
+        # ``greet`` exists as a Python function and as a PHP method in two
+        # different parents; all three survive the merge.
+        greet = idx.by_name("greet")
+        assert {s.symbol_type for s in greet} == {
+            SymbolType.FUNCTION,
+            SymbolType.METHOD,
+        }
+        assert {s.parent_class for s in greet} == {None, "Greeter", "Person"}

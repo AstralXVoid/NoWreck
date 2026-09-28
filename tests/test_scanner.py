@@ -409,8 +409,25 @@ def kotlin_only_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def php_only_repo(tmp_path: Path) -> Path:
+    """A repo with PHP files only.
+
+    PHP has top-level functions (like Kotlin), so one file exercises the
+    FUNCTION path and the other the CLASS/METHOD path.
+    """
+    (tmp_path / "Main.php").write_text(
+        "<?php\n\nclass Main\n{\n    public function greet(): string\n"
+        "    {\n        return 'hello';\n    }\n}\n",
+    )
+    (tmp_path / "Utils.php").write_text(
+        "<?php\n\nfunction helper(): int\n{\n    return 42;\n}\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
 def multi_lang_repo(tmp_path: Path) -> Path:
-    """A repo with Python, JS, TS, Rust, Go, Java, and Kotlin files."""
+    """A repo with Python, JS, TS, Rust, Go, Java, Kotlin, and PHP files."""
     (tmp_path / "app.py").write_text("def run(): ...\n")
     (tmp_path / "util.js").write_text("function greet() {}\n")
     (tmp_path / "mod.ts").write_text("function hello(): void {}\n")
@@ -423,6 +440,9 @@ def multi_lang_repo(tmp_path: Path) -> Path:
     )
     (tmp_path / "App.kt").write_text(
         "class App {\n  fun boot() {}\n}\n",
+    )
+    (tmp_path / "Index.php").write_text(
+        "<?php\n\nfunction index(): void\n{\n}\n",
     )
     return tmp_path
 
@@ -696,14 +716,141 @@ class TestRepositoryScannerKotlin:
         assert [s.name for s in result.kotlin_files[Path("build.kts")]] == ["build"]
 
 
+class TestRepositoryScannerPhp:
+    """PHP file discovery and parsing (v0.17.0 Phase 4)."""
+
+    def test_scan_finds_php_files(self, php_only_repo: Path) -> None:
+        scanner = RepositoryScanner(php_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("Main.php") in result.php_files
+        assert Path("Utils.php") in result.php_files
+
+        main_syms = result.php_files[Path("Main.php")]
+        assert [(s.name, s.symbol_type.name) for s in main_syms] == [
+            ("Main", "CLASS"),
+            ("greet", "METHOD"),
+        ]
+        assert main_syms[1].parent_class == "Main"
+
+        # PHP has top-level functions (like Kotlin, unlike Java).
+        util_syms = result.php_files[Path("Utils.php")]
+        assert [(s.name, s.symbol_type.name) for s in util_syms] == [
+            ("helper", "FUNCTION"),
+        ]
+        assert util_syms[0].parent_class is None
+
+    def test_scan_php_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "Visible.php").write_text("<?php\nclass Visible {}\n")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "Ignored.php").write_text("<?php\nclass Ignored {}\n")
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("Visible.php") in result.php_files
+        assert Path("Ignored.php") not in result.php_files
+
+    def test_scan_php_deterministic(self, php_only_repo: Path) -> None:
+        scanner = RepositoryScanner(php_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.php_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.php_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.php_files[path]]
+            assert syms1 == syms2
+
+    def test_scan_php_counts_in_success_total(self, php_only_repo: Path) -> None:
+        result = RepositoryScanner(php_only_repo).scan()
+        assert result.success_count == len(result.php_files)
+
+    def test_scan_php_only_extension(self, tmp_path: Path) -> None:
+        """``.php`` is the one supported extension — ``.phtml`` and the
+        legacy ``.php3`` are out of scope (documented)."""
+        (tmp_path / "Page.phtml").write_text("<?php echo 1;\n")
+        (tmp_path / "Legacy.php3").write_text("<?php echo 1;\n")
+        (tmp_path / "Real.php").write_text("<?php\nfunction real() {}\n")
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert set(result.php_files) == {Path("Real.php")}
+
+    def test_scan_php_file_without_open_tag_has_no_symbols(
+        self, tmp_path: Path
+    ) -> None:
+        """A ``.php`` template that never opens ``<?php`` parses as one
+        ``text`` node: PHP would emit those bytes, so "no symbols" is the
+        correct answer rather than a silent gap."""
+        (tmp_path / "Template.php").write_text("<html><body>hi</body></html>\n")
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert result.failure_count == 0
+        assert result.php_files[Path("Template.php")] == []
+
+    def test_scan_php_declaration_only_method_has_no_body_hash(
+        self, tmp_path: Path
+    ) -> None:
+        """PH9: an interface method ends with ``;`` instead of a body, so
+        it carries ``body_hash=None`` and can never fire CHANGED_FUNCTION."""
+        (tmp_path / "I.php").write_text(
+            "<?php\n\ninterface I\n{\n    public function m(string $name);\n}\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        methods = [
+            s for s in result.php_files[Path("I.php")] if s.symbol_type.name == "METHOD"
+        ]
+        assert [s.name for s in methods] == ["m"]
+        assert methods[0].body_hash is None
+
+    def test_scan_php_trait_and_enum_symbols(self, tmp_path: Path) -> None:
+        """PH7/PH8: ``trait`` maps to CLASS (no TRAIT claim type) and
+        ``enum`` maps to ENUM, both with their own shell hash."""
+        (tmp_path / "Types.php").write_text(
+            "<?php\n\n"
+            "trait Loggable\n"
+            "{\n"
+            "    public function log(): void\n"
+            "    {\n"
+            "    }\n"
+            "}\n\n"
+            "enum Status: string\n"
+            "{\n"
+            "    case On = 'on';\n"
+            "}\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        symbols = result.php_files[Path("Types.php")]
+        assert [(s.name, s.symbol_type.name) for s in symbols] == [
+            ("Loggable", "CLASS"),
+            ("log", "METHOD"),
+            ("Status", "ENUM"),
+        ]
+        by_name = {s.name: s for s in symbols}
+        assert by_name["Loggable"].body_hash is not None
+        assert by_name["Status"].body_hash is not None
+        assert by_name["log"].parent_class == "Loggable"
+
+
 class TestRepositoryScannerMultiLang:
-    """Multi-language repo with all 7 families."""
+    """Multi-language repo with all 8 families."""
 
     def test_scan_discovers_all_languages(self, multi_lang_repo: Path) -> None:
         scanner = RepositoryScanner(multi_lang_repo)
         result = scanner.scan()
 
-        assert result.success_count == 7
+        assert result.success_count == 8
         assert Path("app.py") in result.modules
         assert Path("util.js") in result.js_files
         assert Path("mod.ts") in result.ts_files
@@ -711,6 +858,7 @@ class TestRepositoryScannerMultiLang:
         assert Path("srv.go") in result.go_files
         assert Path("App.java") in result.java_files
         assert Path("App.kt") in result.kotlin_files
+        assert Path("Index.php") in result.php_files
 
     def test_scan_success_count_includes_all(
         self,
@@ -726,5 +874,6 @@ class TestRepositoryScannerMultiLang:
             + len(result.go_files)
             + len(result.java_files)
             + len(result.kotlin_files)
+            + len(result.php_files)
         )
         assert result.success_count == expected

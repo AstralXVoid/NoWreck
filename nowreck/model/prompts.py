@@ -28,9 +28,9 @@ Valid claim types:
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
 - ADD_INTERFACE    — An interface was added to a file
-                     (TypeScript/TSX/Rust/Go/Java/Kotlin).
+                     (TypeScript/TSX/Rust/Go/Java/Kotlin/PHP).
 - REMOVE_INTERFACE — An interface was removed from a file.
-- ADD_ENUM         — An enum was added to a file (TypeScript/TSX/Rust/Java/Kotlin).
+- ADD_ENUM         — An enum was added to a file (TypeScript/TSX/Rust/Java/Kotlin/PHP).
 - REMOVE_ENUM      — An enum was removed from a file.
 - ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX/Rust/Go).
 - REMOVE_TYPE_ALIAS — A type alias was removed from a file.
@@ -108,9 +108,9 @@ Valid claim types:
 - REMOVE_FUNCTION  — A function was removed from a file.
 - ADD_CLASS        — A class was added to a file.
 - REMOVE_CLASS     — A class was removed from a file.
-- ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go/Java/Kotlin).
+- ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go/Java/Kotlin/PHP).
 - REMOVE_INTERFACE — An interface was removed.
-- ADD_ENUM         — An enum was added (TS/TSX/Rust/Java/Kotlin).
+- ADD_ENUM         — An enum was added (TS/TSX/Rust/Java/Kotlin/PHP).
 - REMOVE_ENUM      — An enum was removed.
 - ADD_TYPE_ALIAS   — A type alias was added (TS/TSX/Rust/Go).
 - REMOVE_TYPE_ALIAS — A type alias was removed.

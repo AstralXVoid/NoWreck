@@ -312,6 +312,7 @@ class ChangeDetector:
             | set(pre.go_files)
             | set(pre.java_files)
             | set(pre.kotlin_files)
+            | set(pre.php_files)
             | set(pre.failed_files)
         )
         post_files: set[Path] = (
@@ -322,6 +323,7 @@ class ChangeDetector:
             | set(post.go_files)
             | set(post.java_files)
             | set(post.kotlin_files)
+            | set(post.php_files)
             | set(post.failed_files)
         )
 
@@ -472,8 +474,8 @@ class ChangeDetector:
     ) -> set[CallEvidence]:
         """Extract all :class:`CallEvidence` objects from a scan result.
 
-        Handles Python, JavaScript, TypeScript, Rust, Go, Java, and Kotlin
-        source
+        Handles Python, JavaScript, TypeScript, Rust, Go, Java, Kotlin,
+        and PHP source
         files:
 
         **Python:** walks every function/method body looking for
@@ -481,11 +483,12 @@ class ChangeDetector:
         ``ast.Attribute`` chain (``self.foo()``, ``a.b.c()``) function
         expression, carrying the enclosing class name.
 
-        **JavaScript/TypeScript/Rust/Go/Java/Kotlin:** re-parses each file
-        listed in ``scan.js_files``, ``scan.ts_files``,
-        ``scan.rust_files``, ``scan.go_files``, ``scan.java_files``, or
-        ``scan.kotlin_files`` using the respective tree-sitter scanner
-        and extracts a ``call_expression`` (Java: ``method_invocation``)
+        **JavaScript/TypeScript/Rust/Go/Java/Kotlin/PHP:** re-parses each
+        file listed in ``scan.js_files``, ``scan.ts_files``,
+        ``scan.rust_files``, ``scan.go_files``, ``scan.java_files``,
+        ``scan.kotlin_files``, or ``scan.php_files`` using the respective
+        tree-sitter scanner and extracts a ``call_expression`` (Java:
+        ``method_invocation``, PHP: ``function_call_expression`` etc.)
         whose target is a simple ``identifier``, a member/field/selector
         chain, or — for Java — the invocation's own ``name``.
 
@@ -618,6 +621,23 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read Kotlin file for call detection: %s — %s",
+                    abs_path,
+                    exc,
+                )
+
+        # --- PHP calls ---
+        from nowreck.scanner.php_scanner import scan_php_calls  # noqa: PLC0415
+
+        for file_path in scan.php_files:
+            abs_path = ChangeDetector._resolve_call_file(repo_root, file_path)
+            if abs_path is None:
+                continue
+            try:
+                php_calls = scan_php_calls(abs_path, repo_root=repo_root)
+                calls.update(php_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read PHP file for call detection: %s — %s",
                     abs_path,
                     exc,
                 )

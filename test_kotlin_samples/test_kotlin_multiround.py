@@ -131,9 +131,11 @@ check(
     f"got {len(big_syms)}",
 )
 check("stress call count", len(big_calls) == 20 * 50, f"got {len(big_calls)}")
+# Smoke bound, not a benchmark: generous headroom so the check stays
+# stable on a loaded machine while still catching gross perf regressions.
 check(
     "stress scan is fast",
-    elapsed < 5.0,
+    elapsed < 30.0,
     f"took {elapsed:.2f}s for {len(large.splitlines())} lines",
 )
 check("stress re-scan identical", rescan_identical)
