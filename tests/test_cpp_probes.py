@@ -945,3 +945,199 @@ void f() {
         call = _by_text(root, "call_expression", self.SOURCE, "arr[0]()")
         target = call.child_by_field_name("function")
         assert target is not None and target.type == "subscript_expression"
+
+
+# ---------------------------------------------------------------------------
+# E18 — the Phase 5 review shape set: wrapped types and declarator wrappers
+# ---------------------------------------------------------------------------
+
+
+class TestE18WrappedTypeDeclarations:
+    """E18: a type specifier can hide inside a declaration node.
+
+    A *tagged* declaration (``struct Foo { ... } obj;``), a nested type
+    member (``struct B { ... };`` in a class body) and a braced ``typedef
+    struct { ... } T;`` all wrap their ``struct_specifier``/``enum_specifier``
+    as a child of a ``declaration``/``field_declaration``/``type_definition``
+    (never as the declaration node itself), so a scope walk that does not
+    descend into those nodes loses the type *and* its members.  A bodyless
+    ``struct Foo;`` is a bare specifier with no body.
+    """
+
+    def test_tagged_declaration_wraps_the_specifier(self) -> None:
+        source = "struct Foo { int x; } obj;\n"
+        root = _parse(source)
+        declaration = _only(root, "declaration")
+        specifier = declaration.child_by_field_name("type")
+        assert specifier is not None and specifier.type == "struct_specifier"
+        assert declaration.child_by_field_name("declarator") is not None
+        body = specifier.child_by_field_name("body")
+        assert body is not None and body.type == "field_declaration_list"
+
+    @pytest.mark.parametrize(
+        ("source", "node_type"),
+        [
+            ("enum Color { RED } c;\n", "enum_specifier"),
+            ("class W { int x; } w;\n", "class_specifier"),
+        ],
+    )
+    def test_tagged_enum_and_class_share_the_shape(
+        self, source: str, node_type: str
+    ) -> None:
+        root = _parse(source)
+        specifier = _only(root, node_type)
+        assert specifier.parent is not None
+        assert specifier.parent.type == "declaration"
+        assert specifier.parent.child_by_field_name("type") == specifier
+
+    def test_nested_type_member_lives_in_a_field_declaration(self) -> None:
+        source = "struct A { struct B { void m() {} }; };\n"
+        root = _parse(source)
+        nested = _by_text(root, "struct_specifier", source, "struct B { void m() {} }")
+        assert nested.parent is not None and nested.parent.type == "field_declaration"
+        assert nested.parent.child_by_field_name("type") == nested
+
+    def test_typedef_wraps_the_specifier_and_the_alias(self) -> None:
+        source = "typedef struct Foo { int x; } FooT;\n"
+        root = _parse(source)
+        definition = _only(root, "type_definition")
+        specifier = definition.child_by_field_name("type")
+        assert specifier is not None and specifier.type == "struct_specifier"
+        tag = specifier.child_by_field_name("name")
+        assert tag is not None and _text(tag, source) == "Foo"
+        declarator = definition.child_by_field_name("declarator")
+        assert declarator is not None and _text(declarator, source) == "FooT"
+
+    def test_a_bodyless_specifier_is_a_forward_declaration(self) -> None:
+        source = "struct Foo;\n"
+        root = _parse(source)
+        specifier = _only(root, "struct_specifier")
+        assert specifier.child_by_field_name("body") is None
+        assert specifier.parent is not None
+        assert specifier.parent.type == "translation_unit"
+
+
+class TestE18ModuleWrapperSingleDeclaration:
+    """E18: the single-declaration ``extern "C"`` form has no body list.
+
+    ``extern "C" { ... }`` puts a ``declaration_list`` in the ``body`` field,
+    while ``extern "C" int f() { ... }`` puts the *declaration itself* there —
+    so a scope walk that unconditionally recurses into ``body`` visits the
+    declarator and the body as if they were declarations and drops the
+    symbol.
+    """
+
+    def test_block_form_has_a_declaration_list(self) -> None:
+        root = _parse('extern "C" { int f() { return 1; } }\n')
+        linkage = _only(root, "linkage_specification")
+        body = linkage.child_by_field_name("body")
+        assert body is not None and body.type == "declaration_list"
+
+    def test_single_definition_form_puts_the_definition_in_body(self) -> None:
+        root = _parse('extern "C" int f() { return 1; }\n')
+        linkage = _only(root, "linkage_specification")
+        body = linkage.child_by_field_name("body")
+        assert body is not None and body.type == "function_definition"
+
+    def test_single_declaration_form_puts_the_declaration_in_body(self) -> None:
+        root = _parse('extern "C" int f();\n')
+        linkage = _only(root, "linkage_specification")
+        body = linkage.child_by_field_name("body")
+        assert body is not None and body.type == "declaration"
+
+
+class TestE18DeclaratorWrappers:
+    """E18: declarator shapes the name walk must reach through."""
+
+    def test_reference_declarator_has_no_declarator_field(self) -> None:
+        source = "struct A { A& get(); };\n"
+        root = _parse(source)
+        reference = _only(root, "reference_declarator")
+        assert reference.child_by_field_name("declarator") is None
+        assert _named_types(reference) == ["function_declarator"]
+
+    def test_declaration_only_operator_uses_the_same_wrapper(self) -> None:
+        source = "struct A { A& operator+=(int x); };\n"
+        root = _parse(source)
+        reference = _only(root, "reference_declarator")
+        assert reference.child_by_field_name("declarator") is None
+        operator = _by_text(root, "operator_name", source, "operator+=")
+        assert operator.parent is not None
+        assert operator.parent.type == "function_declarator"
+
+    def test_conversion_operator_is_an_operator_cast(self) -> None:
+        source = "struct B { operator bool() const { return true; } };\n"
+        root = _parse(source)
+        definition = _only(root, "function_definition")
+        declarator = definition.child_by_field_name("declarator")
+        assert declarator is not None and declarator.type == "operator_cast"
+        assert _text(declarator, source) == "operator bool() const"
+        assert declarator.children[-1].type == "abstract_function_declarator"
+        assert _named_types(declarator)[0] == "primitive_type"
+
+    def test_specialisation_name_is_a_template_function(self) -> None:
+        source = "template <> void f<int>() {}\n"
+        root = _parse(source)
+        declarator = _only(root, "function_declarator")
+        inner = declarator.child_by_field_name("declarator")
+        assert inner is not None and inner.type == "template_function"
+        name = inner.child_by_field_name("name")
+        assert name is not None and _text(name, source) == "f"
+
+    def test_member_template_call_field_is_a_template_method(self) -> None:
+        source = "void f() { box.put<int>(v); }\n"
+        root = _parse(source)
+        field = _by_text(root, "field_expression", source, "box.put<int>")
+        member = field.child_by_field_name("field")
+        assert member is not None and member.type == "template_method"
+        name = member.child_by_field_name("name")
+        assert name is not None and _text(name, source) == "put"
+
+
+class TestE18ClassFieldLambda:
+    """E18: a class-field lambda has no ``init_declarator`` wrapper.
+
+    At module scope ``auto f = [](){};`` is ``declaration`` →
+    ``init_declarator`` → ``lambda_expression``; in a class body the grammar
+    drops the ``init_declarator`` and puts a bare ``field_identifier`` before
+    the lambda, so the field name comes from the lambda's previous sibling
+    (a caller, never a symbol — the JS class-field arrow rule).
+    """
+
+    SOURCE = "struct W { auto f = []() { return g(); }; };\n"
+
+    def test_field_lambda_is_not_an_init_declarator(self) -> None:
+        root = _parse(self.SOURCE)
+        field = _only(root, "field_declaration")
+        assert _all(field, "init_declarator") == []
+
+    def test_field_name_precedes_the_lambda(self) -> None:
+        root = _parse(self.SOURCE)
+        lambda_node = _only(root, "lambda_expression")
+        previous = lambda_node.prev_named_sibling
+        assert previous is not None and previous.type == "field_identifier"
+        assert _text(previous, self.SOURCE) == "f"
+
+    def test_module_scope_lambda_still_uses_init_declarator(self) -> None:
+        root = _parse("auto f = []() { return g(); };\n")
+        declarator = _only(root, "init_declarator")
+        assert declarator.child_by_field_name("value") is not None
+
+
+class TestE18GrammarErrorRecovery:
+    """E18: the explicit operator-call syntax is a grammar error.
+
+    ``b.operator bool()`` and ``a.operator+=(b)`` are valid C++ but the
+    pinned grammar recovers with an ``ERROR`` node, leaving a stray
+    identifier in call position — which the scanner must refuse to name.
+    """
+
+    def test_explicit_conversion_call_has_an_error_node(self) -> None:
+        root = _parse_tolerantly("void f() { b.operator bool(); }\n")
+        assert root.has_error
+        assert _all(root, "ERROR")
+
+    def test_explicit_operator_call_has_an_error_node(self) -> None:
+        root = _parse_tolerantly("void f() { a.operator+=(b); }\n")
+        assert root.has_error
+        assert _all(root, "ERROR")

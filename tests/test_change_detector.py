@@ -3209,6 +3209,188 @@ class TestDetectCppChanges:
             ("main_fn", "validate")
         ]
 
+    # -- wrapped declarations and declarators (Phase 5 review, E18) -----
+
+    def test_cpp_tagged_declaration_indexes_the_type_and_members(
+        self, tmp_path: Path
+    ) -> None:
+        """E18: ``struct Foo { ... } obj;`` declares the *type* and its
+        members; the tagged variable's name is not class-shell content."""
+        source = "struct Foo {\n  int x;\n  void m() { return; }\n} obj;\n"
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ] == ["Foo"]
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == [("m", "Foo")]
+
+        edited = self._changes(
+            tmp_path,
+            {"a.cpp": source},
+            {"a.cpp": source.replace("int x;", "double x;")},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(edited, ChangeType.CHANGED_CLASS)
+        ] == ["Foo"]
+
+        renamed = self._changes(
+            tmp_path,
+            {"a.cpp": source},
+            {"a.cpp": source.replace("} obj;", "} other;")},
+        )
+        assert renamed == []
+
+    def test_cpp_nested_type_is_a_class_and_its_method_fires(
+        self, tmp_path: Path
+    ) -> None:
+        """E18: a nested type member is a CLASS symbol, and its methods are
+        METHODS of the nested type; a nested method body edit fires
+        CHANGED_FUNCTION only."""
+        pre = "struct A {\n  struct B {\n    void m() { return; }\n  };\n};\n"
+        added = self._changes(tmp_path, {}, {"a.cpp": pre})
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(added, ChangeType.ADD_CLASS)
+        ] == [("A", None), ("B", None)]
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(added, ChangeType.ADD_FUNCTION)
+        ] == [("m", "B")]
+
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": pre},
+            {"a.cpp": pre.replace("return;", "poke(); return;")},
+        )
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == [("m", "B")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_cpp_local_type_members_are_not_symbols(self, tmp_path: Path) -> None:
+        """E18: a type declared inside a function body is a local — it and
+        its members are not symbols, but its calls still get a caller."""
+        source = "void f() {\n  struct L {\n    void m() { hidden(); }\n  };\n}\n"
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        assert not _changes_of_type(changes, ChangeType.ADD_CLASS)
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["f"]
+        assert [
+            (c.caller_name, c.called_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        ] == [("m", "hidden", "L")]
+
+    def test_cpp_forward_declaration_and_braced_typedef(self, tmp_path: Path) -> None:
+        """E18: a bodyless ``struct Foo;`` is a CLASS fact, and a braced
+        ``typedef struct Bar { ... } BarT;`` declares the tag and alias."""
+        changes = self._changes(
+            tmp_path,
+            {},
+            {"a.cpp": "struct Foo;\n\ntypedef struct Bar {\n  int x;\n} BarT;\n"},
+        )
+        assert sorted(
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ) == ["Bar", "Foo"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_TYPE_ALIAS)
+        ] == ["BarT"]
+
+    def test_cpp_extern_c_single_form_body_edit_fires(self, tmp_path: Path) -> None:
+        """E18: the single-declaration ``extern "C"`` form's definition is
+        a FUNCTION symbol like any other."""
+        pre = 'extern "C" int f() { return 1; }\n'
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": pre},
+            {"a.cpp": pre.replace("return 1", "return 2")},
+        )
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == [("f", None)]
+
+    def test_cpp_reference_declaration_only_member_mirrors_e9(
+        self, tmp_path: Path
+    ) -> None:
+        """E18: ``A& get();`` is a declaration-only member in a
+        ``reference_declarator`` — it carries no hash, so a ``.cpp`` body
+        edit fires only on the ``.cpp`` side (the E9 rule)."""
+        header = "struct A {\n  A& get();\n};\n"
+        changes = self._changes(
+            tmp_path,
+            {"w.h": header, "w.cpp": "A& A::get() { return *this; }\n"},
+            {"w.h": header, "w.cpp": "A& A::get() { return *other; }\n"},
+        )
+        assert [
+            (c.symbol_name, str(c.file_path))
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == [("get", "w.cpp")]
+
+    def test_cpp_conversion_operator_body_edit_fires(self, tmp_path: Path) -> None:
+        """E18: a conversion operator (``operator_cast``) is a METHOD whose
+        body edits surface as CHANGED_FUNCTION."""
+        pre = "struct B {\n public:\n  operator bool() const { return true; }\n};\n"
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": pre},
+            {"a.cpp": pre.replace("return true;", "return flag();")},
+        )
+        assert [
+            (c.symbol_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        ] == [("operatorbool", "B")]
+
+    def test_cpp_class_field_lambda_owns_its_calls(self, tmp_path: Path) -> None:
+        """E18: a class-field lambda is a caller named after the field — the
+        JS class-field arrow rule — and never a symbol."""
+        source = "struct Hooks {\n  auto on_ready = []() { return notify(); };\n};\n"
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [
+            (c.caller_name, c.called_name, c.parent_class)
+            for c in _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        ] == [("on_ready", "notify", "Hooks")]
+
+    def test_cpp_member_template_and_destructor_calls(self, tmp_path: Path) -> None:
+        """E18: ``box.put<int>(v)`` (a ``template_method`` field) and
+        ``this->~A()`` are calls under their final names."""
+        changes = self._changes(
+            tmp_path,
+            {},
+            {"a.cpp": "void f() { box.put<int>(v); this->~A(); }\n"},
+        )
+        assert sorted(
+            c.called_name for c in _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        ) == ["put", "~A"]
+
+    def test_cpp_template_specialisation_is_a_function(self, tmp_path: Path) -> None:
+        """E18: ``template <> int identity<int>(...)`` is the FUNCTION
+        ``identity`` — its explicit template arguments are not its name."""
+        source = (
+            "template <>\nint identity<int>(int value) {\n  return spec(value);\n}\n"
+        )
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["identity"]
+        assert [
+            c.called_name for c in _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        ] == ["spec"]
+
+    def test_cpp_grammar_error_operator_call_is_not_named(self, tmp_path: Path) -> None:
+        """E18: explicit operator-call syntax is a grammar error — error
+        recovery must not invent a call from the leftover identifier."""
+        changes = self._changes(
+            tmp_path,
+            {},
+            {"a.cpp": "void f() { b.operator bool(); }\n"},
+        )
+        assert not _changes_of_type(changes, ChangeType.CALL_DETECTED)
+
 
 class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""

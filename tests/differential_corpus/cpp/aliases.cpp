@@ -21,3 +21,15 @@ Callback make()
 {
     return nullptr;
 }
+
+// A braced ``typedef struct`` declares both the tag (when named) and the
+// alias; an anonymous tag declares only the alias.
+typedef struct Node
+{
+    int value;
+} NodeT;
+
+typedef struct
+{
+    int raw;
+} AnonymousT;

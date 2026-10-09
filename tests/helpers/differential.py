@@ -17,18 +17,27 @@ The checker is a *completeness audit*, not a second parser:
 
 The C++ checker mirrors the scanner's probe-pinned model
 (``tests/test_cpp_probes.py``): a ``template <...>`` wrapper is unwrapped
-before the declaration inside it is classified (E5); a class-body member,
-any name at module scope or a *qualified* out-of-line definition is a
-FUNCTION/METHOD while a qualified **call statement** inside a body
-(``Service::flush();``) is not a declaration at all; ``typedef`` names —
-including a function-pointer ``(*Fn)`` — are type aliases; a leading
-access specifier is stripped from a member head; and a templated call
+before the declaration inside it is classified (E5); a class-body member —
+including one of a *nested* type — any name at module scope or a
+*qualified* out-of-line definition is a FUNCTION/METHOD, while a qualified
+**call statement** inside a body (``Service::flush();``) is not a
+declaration at all, and a type declared inside a function body is a local
+whose members are not symbols; ``typedef`` names — including a
+function-pointer ``(*Fn)`` and the alias of a braced ``typedef struct Foo
+{ ... } FooT;`` — are type aliases, and a *named* tag in that typedef is a
+class/enum symbol too; a leading access specifier is stripped from a
+member head; a ``friend`` head yields no symbol (its body is still a
+caller); a bodyless type declaration at module scope (``struct Foo;``) is
+a class/enum symbol; a specialisation's explicit template arguments are
+dropped from the name (``f<int>`` → ``f``); and a templated call
 (``f<int>(x)``) is matched by a second pattern because its name ends at a
-``>``.  Documented checker limitations, all kept out of the corpus: a
-call-bearing default argument (the scanner attributes it to the function,
-while the per-line mask opens at the body brace), a call-bearing
-``friend`` *definition*, template arguments nested deeper than one level,
-and a ``<``/``>`` comparison in call position.
+``>``.  Documented checker limitations, all kept out of the corpus: a call
+in a declaration *head* — a default argument, a constructor
+member-initialiser list or a ``noexcept(...)`` operand, which the scanner
+attributes to the function because it walks the whole declaration subtree
+while the per-line mask opens at the body brace — template arguments
+nested deeper than one level, and a ``<``/``>`` comparison in call
+position.
 
 Every divergence between checker and parser is either fixed (parser bug)
 or mapped in ``EXPECTED_DIVERGENCES`` with a written justification.
@@ -2626,18 +2635,48 @@ _CPP_TYPEDEF_FN_PTR = re.compile(
     r"^typedef\b[^;{}\n]*?\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)"
 )
 
+# ``typedef struct Foo { ... } FooT;`` — the braced form, which the
+# ``;``-event classifier cannot see across.  Both names it declares are
+# symbols when the tag is present (the tag is a class/enum definition),
+# and the alias is always one; anonymous tags declare only the alias.
+# The alias may be followed by more declarators (``FooT, *FooPtr``), of
+# which the scanner indexes only the first.
+_CPP_TYPEDEF_BRACED = re.compile(
+    r"\btypedef\s+(?P<kind>class|struct|union|enum(?:\s+class)?)\s*"
+    r"(?P<tag>[A-Za-z_]\w*)?\s*\{(?:[^{}]|\{[^{}]*\})*\}\s*"
+    r"(?P<alias>[A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*[,;]",
+    re.DOTALL,
+)
+
+# ``typedef struct Foo {`` — the head of a braced typedef type.  The tag
+# (and alias) symbols come from ``_CPP_TYPEDEF_BRACED``; this only marks
+# the body as a *type* container so its members are methods (E18).
+_CPP_TYPEDEF_TYPE_HEAD = re.compile(
+    r"^\s*typedef\s+(?:class|struct|union|enum(?:\s+class)?)\b"
+)
+
 # A declaration name: an operator, a destructor, or a possibly-qualified
 # identifier (the qualifier disappears from the symbol name — the scanner
 # keeps only the last segment, mirroring the header/impl split).  Each
 # form takes the same optional ``::`` qualifier, so an out-of-line
-# ``Vec::operator*`` is read as qualified (and thus a METHOD).
+# ``Vec::operator*`` is read as qualified (and thus a METHOD).  The last
+# alternative of the operator form is a *conversion operator*'s type
+# (``operator bool``, ``operator const char*``); its whole text is the
+# symbol name once whitespace is collapsed, exactly as the scanner slices
+# an ``operator_cast`` node (E18).
 _CPP_OPERATOR_NAME = (
-    r"operator\s*(?:\(\)|\[\]|(?:new|delete)(?:\[\])?|[^\s\w(]{1,3}|[A-Za-z_]\w*)"
+    r"operator\s*(?:\(\)|\[\]|(?:new|delete)(?:\[\])?|[^\s\w(]{1,3}"
+    r"|[A-Za-z_][\w:]*\s*(?:<[^<>;{}()]*>\s*)?(?:[\s*&]+[A-Za-z_][\w:]*)*[\s*&]*)"
 )
+# A declarator may carry explicit template arguments (``void f<int>()``,
+# a specialisation, probe E18); the arguments are dropped from the symbol
+# name, as the scanner's ``template_function`` handling does.  One nesting
+# level is modelled; deeper nesting is a documented checker limitation.
+_CPP_DECL_TEMPLATE_ARGS = r"(?:\s*<[^<>;{}()]*(?:<[^<>;{}()]*>[^<>;{}()]*)*>)?"
 _CPP_NAME = (
     r"(?:(?:[A-Za-z_]\w*::)*(?:" + _CPP_OPERATOR_NAME + r")"
     r"|(?:[A-Za-z_]\w*::)*~[A-Za-z_]\w*"
-    r"|(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)"
+    r"|(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*" + _CPP_DECL_TEMPLATE_ARGS + r")"
 )
 _CPP_FUNC_TOKEN = re.compile(rf"(?P<name>{_CPP_NAME})\s*\(")
 
@@ -2646,7 +2685,7 @@ _CPP_FUNC_TOKEN = re.compile(rf"(?P<name>{_CPP_NAME})\s*\(")
 # return type, a member-initialiser list, or ``= default|delete|0``.
 _CPP_DECL_TAIL = re.compile(
     r"^\s*(?:(?:const|volatile|override|final|mutable|constexpr|consteval|"
-    r"&|&&|noexcept(?:\s*\([^()]*\))?)\s*)*"
+    r"&|&&|noexcept(?:\s*\([^()]*(?:\([^()]*\)[^()]*)*\))?)\s*)*"
     r"(?:(?:->)\s*[\w:<>,*&\[\]\s]+)?"
     r"(?:=\s*(?:default|delete|0)\s*)?"
     r"(?::[^\n]*)?\s*$",
@@ -2754,6 +2793,10 @@ def _cpp_function_name(head: str) -> tuple[str, bool] | None:
         last = raw.rsplit("::", 1)[-1]
         if last.startswith("operator"):
             last = "".join(last.split())
+        else:
+            # A specialisation's explicit template arguments are not part
+            # of the name (``f<int>`` → ``f``), matching the scanner.
+            last = last.split("<", 1)[0].strip()
         return last, "::" in raw
     return None
 
@@ -2782,10 +2825,15 @@ def _cpp_open_event(
 
     Returns ``(symbol kind, name, is_fn, pushed container)``.  Order
     matters: a lambda is tested before a function (its head also ends in
-    ``)``), and control flow before a function (``if (ready())`` would
-    otherwise read ``ready`` as the declarator).
+    ``)``), control flow before a function (``if (ready())`` would
+    otherwise read ``ready`` as the declarator), and a ``friend`` head
+    before everything (it declares a non-member).
     """
     stripped = _cpp_strip_template_prefix(head)
+    if _CPP_FRIEND.match(stripped) is not None:
+        # ``friend void f() { ... }`` defines a non-member: no symbol, but
+        # its body still owns calls (the scanner keeps it as a caller).
+        return None, None, True, "block"
     if _CPP_LAMBDA_HEAD.search(stripped) is not None:
         name: str | None = None
         if container == "module":
@@ -2797,11 +2845,21 @@ def _cpp_open_event(
         return None, None, False, "block"
     if _CPP_NAMESPACE.match(stripped.strip()) is not None:
         return None, None, False, "module"
+    if _CPP_TYPEDEF_TYPE_HEAD.match(stripped) is not None:
+        # A braced ``typedef struct`` body is still a type container (its
+        # members are methods); the tag and alias symbols come from
+        # ``_CPP_TYPEDEF_BRACED``, which can see across the braces (E18).
+        return None, None, False, "type"
     type_decl = _CPP_TYPE_DECL.match(stripped)
     if type_decl is not None:
         kind = KIND_ENUM if type_decl.group("kind").startswith("enum") else KIND_CLASS
-        emitted = kind if container == "module" else None
-        return emitted, type_decl.group("name"), False, "type"
+        # Nested types are symbols too (like Java's nested classes); a type
+        # declared inside a function body is a *local* — not a symbol, and
+        # neither are its members, so it pushes ``block`` instead of
+        # ``type`` (``local_struct``, E18).
+        if container == "block":
+            return None, None, False, "block"
+        return kind, type_decl.group("name"), False, "type"
     function = _cpp_function_name(stripped)
     if function is not None:
         name, qualified = function
@@ -2815,6 +2873,10 @@ def _cpp_open_event(
 # the previous one).
 _CPP_ACCESS_SPECIFIER = re.compile(r"^\s*(?:public|private|protected)\s*:\s*")
 
+# A ``friend`` head: a declaration *or* definition of a non-member, which
+# the scanner never indexes as a symbol (a definition still owns calls).
+_CPP_FRIEND = re.compile(r"^\s*friend\b")
+
 
 def _cpp_semi_event(head: str, container: str) -> tuple[str | None, str | None]:
     """Classify a statement-level ``;`` for symbols with no body.
@@ -2823,7 +2885,9 @@ def _cpp_semi_event(head: str, container: str) -> tuple[str | None, str | None]:
     declaration-only function (``void draw();``, ``int add(int, int);``)
     is a symbol with no hash — the header side of the split.  A ``friend``
     declaration yields nothing: it declares a non-member, which the
-    scanner does not index.
+    scanner does not index.  A bodyless type declaration at module scope
+    (``struct Foo;``) is a CLASS/ENUM symbol, exactly as the scanner
+    indexes a direct ``struct_specifier`` child (E18).
     """
     stripped = _CPP_ACCESS_SPECIFIER.sub("", head).strip()
     if not stripped or stripped.startswith("friend"):
@@ -2838,6 +2902,13 @@ def _cpp_semi_event(head: str, container: str) -> tuple[str | None, str | None]:
     typedef = _CPP_TYPEDEF.match(body)
     if typedef is not None:
         return KIND_TYPE_ALIAS, typedef.group("name")
+    if container == "module":
+        type_decl = _CPP_TYPE_DECL.match(body)
+        if type_decl is not None:
+            kind = (
+                KIND_ENUM if type_decl.group("kind").startswith("enum") else KIND_CLASS
+            )
+            return kind, type_decl.group("name")
     function = _cpp_function_name(head)
     if function is not None:
         name, qualified = function
@@ -3354,6 +3425,18 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                 # none of them a call (probes E1/E4).
                 if not _cpp_name_is_call(lines, i, match, keywords):
                     continue
+                tilde = match.start() - 1
+                if tilde >= 0 and line[tilde] == "~":
+                    # A ``~`` with a ``.``/``->`` receiver is a destructor
+                    # call and keeps its ``~`` name (``this->~A()``); a
+                    # definition head (``~A() {`` / ``= delete``) is not a
+                    # call at all; anything else is a unary complement, so
+                    # the inner call ``NAME(...)`` is what the scanner sees.
+                    op = _cpp_operator_before(line, tilde)
+                    if op is not None and op[0] in (".", "->"):
+                        name = "~" + name
+                    elif _cpp_tilde_heads_a_definition(line, match):
+                        continue
             elif lang != "php" and _receiver_is_call(lines, i, match.start()):
                 continue
             # Dunder *attributes* (``obj.__x__()``) are excluded by the
@@ -3882,6 +3965,30 @@ def _cpp_receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
     return False
 
 
+def _cpp_tilde_heads_a_definition(line: str, match: re.Match[str]) -> bool:
+    """``~A() {`` / ``~A() = delete;`` — a destructor head, not a call.
+
+    The match is an ``NAME(`` occurrence whose name is immediately preceded
+    by ``~``.  A destructor *definition* closes its parameter list on a
+    body brace (or a ``= default|delete|0`` clause); a unary complement
+    (``~mask(f)``) is followed by an expression operator instead, and the
+    call the scanner sees there is the inner ``mask(...)``.
+    """
+    close = _cpp_matching_paren(line, match.end() - 1)
+    if close is None:
+        return False
+    tail = line[close + 1 :]
+    return (
+        re.match(
+            r"\s*(?:(?:const|volatile|override|final|mutable|noexcept"
+            r"(?:\s*\([^()]*(?:\([^()]*\)[^()]*)*\))?)\s*)*"
+            r"(?:\{|=\s*(?:default|delete|0)\b)",
+            tail,
+        )
+        is not None
+    )
+
+
 def _cpp_new_prefix(line: str, name_start: int) -> bool:
     """``new Foo(...)`` — a ``new_expression``, never a call (probe E4).
 
@@ -4002,13 +4109,21 @@ def extract_symbols_cpp(source: str) -> set[SymbolTuple]:
     body, or any qualified ``A::f`` name \u2014 the header/impl split), and an
     ``auto f = [](...) {`` assignment \u2192 function (the JS arrow rule).
     Namespaces, ``extern "C"`` and control-flow/initialiser braces change
-    no symbol.  Conversion operators (``operator T()``) are not modelled \u2014
-    the corpus keeps to the operator forms the scanner pins.
+    no symbol.  A named/braced ``typedef struct`` declares both the tag
+    (class/enum) and the alias \u2014 ``_CPP_TYPEDEF_BRACED`` reaches across
+    the braces the ``;``-event classifier cannot see across \u2014 while a
+    ``friend`` still yields nothing.
     """
     symbols: set[SymbolTuple] = set()
-    for ev in _cpp_structure(_strip_cpp(source)):
+    src = _strip_cpp(source)
+    for ev in _cpp_structure(src):
         if ev.symbol_kind is not None and ev.name is not None:
             symbols.add((ev.symbol_kind, ev.name))
+    for match in _CPP_TYPEDEF_BRACED.finditer(src):
+        if match.group("tag"):
+            kind = KIND_ENUM if match.group("kind").startswith("enum") else KIND_CLASS
+            symbols.add((kind, match.group("tag")))
+        symbols.add((KIND_TYPE_ALIAS, match.group("alias")))
     return symbols
 
 

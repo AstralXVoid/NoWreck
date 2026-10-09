@@ -27,3 +27,13 @@ int total_widgets()
 {
     return count_widgets();
 }
+
+extern "C" int legacy_total()
+{
+    return compute_total();
+}
+
+Widget& active_widget()
+{
+    return pick_widget();
+}

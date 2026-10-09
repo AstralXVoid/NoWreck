@@ -28,4 +28,23 @@ struct Worker
     }
 
     void tick() {}
+
+    void reset()
+    {
+        // An explicit destructor call keeps its ``~`` name.
+        this->~Worker();
+    }
+
+    template <typename T>
+    T take()
+    {
+        return fetch();
+    }
 };
+
+void template_site()
+{
+    Box<int> box;
+    // A member-template call: the field node is a ``template_method``.
+    box.put<int>(7);
+}

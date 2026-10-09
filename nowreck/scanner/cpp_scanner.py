@@ -9,8 +9,8 @@ discovered.
 
 Every grammar shape this file depends on was resolved empirically
 **before** any collector code was written and is pinned in
-``tests/test_cpp_probes.py`` (probes E1–E14 plus the extra boundaries
-listed there).  The facts that shape the code:
+``tests/test_cpp_probes.py`` (probes E1–E14, the E17 type/wrapper probes
+and the E18 review set).  The facts that shape the code:
 
 - ``a.b()`` and ``a->b()`` share one ``field_expression`` shape: the
   member name is the ``field`` field and the receiver the ``argument``
@@ -34,6 +34,22 @@ listed there).  The facts that shape the code:
   template-parameter edit is visible (E5).
 - ``#ifdef`` regions are embedded in the enclosing body, so a conditional
   edit is part of that function's span (E6).
+- A type specifier can hide *inside* a declaration node: a tagged
+  declaration (``struct Foo { ... } obj;``), a nested type member
+  (``struct B { ... };``) and ``typedef struct Foo { ... } FooT;`` wrap
+  their ``struct_specifier`` under a ``declaration``/``field_declaration``/
+  ``type_definition``, so every such declaration first emits its
+  **body-carrying** type children (a bare ``struct Foo x;`` is an
+  elaborated-type use, not a definition) (E18).
+- ``extern "C"`` has two forms: the ``declaration_list`` body descends like
+  a namespace, while the single-declaration form (``extern "C" int f() {}
+  ``) puts the declaration itself in ``body`` and is emitted directly —
+  walking its children would drop the symbol (E18).
+- Declarator wrappers hide names: a ``reference_declarator`` exposes no
+  ``declarator`` field (``A& get();`` needs the first named child), and a
+  declaration-only conversion operator (``operator bool() const;``) has no
+  ``function_declarator`` at all — the ``operator_cast`` *is* the
+  declarator (E18).
 
 Symbol model: ``class_specifier``/``struct_specifier``/``union_specifier`` →
 CLASS (a union is a class-like type declaration),
@@ -42,13 +58,22 @@ CLASS (a union is a class-like type declaration),
 (``typedef``) → TYPE_ALIAS, a ``function_definition`` → FUNCTION at
 module/namespace scope or METHOD when it sits in a class body or its
 declarator is qualified, a declaration-only member → FUNCTION/METHOD with
-``body_hash=None`` (E9), and a named lambda assignment (``auto f = [](){};
-``) → FUNCTION (E12, the JS ``const f = () => {}`` rule).  ``INTERFACE``
+``body_hash=None`` (E9), a conversion operator (``operator bool()``) →
+METHOD named by its type text (``operatorbool``), and a named lambda
+assignment (``auto f = [](){};``) → FUNCTION (E12, the JS ``const f = ()
+=> {}`` rule).  A *class-field* lambda (``auto on_ready = []() { ... };``)
+is the one lambda that is a **caller, never a symbol**: its name is the
+preceding ``field_identifier`` and the field itself is class-shell
+content — the JS class-field arrow rule (G3) (E18).  ``INTERFACE``
 never fires — C++ has no interface keyword (the accepted edge Phase 7
 documents, like Go enums).  ``namespace_definition`` and
-``linkage_specification`` (``extern "C" { ... }``) descend — they are not
-symbols, like Python modules.  ``friend`` declarations declare a
-non-member and yield no symbol; a data field is class-shell content.
+``linkage_specification`` (both ``extern "C"`` forms) descend — they are
+not symbols, like Python modules.  ``friend`` declarations declare a
+non-member and yield no symbol; a data field is class-shell content.  A
+type declared *inside a function body* is a local: neither it nor its
+members are symbols (its calls still get that member as caller), and a
+nested type at class scope is a file-level CLASS fact with no
+``parent_class`` — the Java nested-class rule.
 
 **Header/impl split (E9).**  A method declared in ``foo.h`` and defined in
 ``foo.cpp`` is two independent per-file symbols; there is no ``#include``
@@ -96,7 +121,10 @@ partial symbols are still extracted; function-pointer declarations
 (``int (*fp)(int);``) are not functions and yield no symbol; and a
 reserved cast/query keyword the grammar models as *call-shaped*
 (``static_cast<int>(x)``, ``typeid(x)``, ``noexcept(x)``) is never
-captured — a keyword can never name a user function.
+captured — a keyword can never name a user function, and an explicit
+operator-call syntax (``b.operator bool()``) is a *grammar error*, so a
+call subtree carrying a parse error is skipped rather than guessed from
+its leftovers (E18).
 """
 
 from __future__ import annotations
@@ -196,7 +224,9 @@ _RESERVED_CALL_KEYWORDS: frozenset[str] = frozenset(
 )
 
 # Node types that can carry a declaration's name, either directly or under
-# a declarator chain (E3/E14).
+# a declarator chain (E3/E14).  ``operator_cast`` is a conversion operator
+# (``operator bool``) — the grammar models it apart from ``operator_name``
+# (E18) because the declarator is a *type*, not an operator token.
 _NAME_NODE_TYPES: frozenset[str] = frozenset(
     {
         "identifier",
@@ -204,6 +234,7 @@ _NAME_NODE_TYPES: frozenset[str] = frozenset(
         "qualified_identifier",
         "destructor_name",
         "operator_name",
+        "operator_cast",
     }
 )
 
@@ -260,6 +291,18 @@ def _resolve_declarator(
         return text_of(node, source_bytes) or None, None
     if node_type in ("destructor_name", "operator_name"):
         return _collapse_operator_name(text_of(node, source_bytes)) or None, None
+    if node_type == "operator_cast":
+        # A conversion operator (``operator bool``) is named by its type
+        # text alone — the node also carries the parameter list and trailing
+        # qualifiers (``operator bool() const``), which are sliced off at the
+        # declarator child (E18) and the rest collapsed like any operator.
+        end_byte = node.end_byte
+        for child in node.children:
+            if child.type in ("abstract_function_declarator", "function_declarator"):
+                end_byte = child.start_byte
+                break
+        text = source_bytes[node.start_byte : end_byte].decode("utf-8", "replace")
+        return _collapse_operator_name(text) or None, None
     if node_type == "qualified_identifier":
         scope = node.child_by_field_name("scope")
         name_node = node.child_by_field_name("name")
@@ -334,11 +377,27 @@ def _function_declarator_name(
     (``int (*fp)(int);``), whose ``function_declarator`` wraps a
     ``parenthesized_declarator`` — it is not a function definition and
     yields no symbol.
+
+    A ``reference_declarator`` does **not** expose its inner declarator
+    through a field (E18), so the walk falls back to its first named child;
+    without that, every declaration-only member with a reference return
+    type (``A& get();``, ``A& operator+=(int);``) is dropped.  A
+    declaration-only *conversion operator* (``operator bool() const;``) has
+    no ``function_declarator`` at all — the ``operator_cast`` is itself the
+    declarator (E18).
     """
     node = declarator
     while node is not None and node.type in _OUTER_DECLARATOR_WRAPPERS:
-        node = node.child_by_field_name("declarator")
-    if node is None or node.type != "function_declarator":
+        inner = node.child_by_field_name("declarator")
+        if inner is None:
+            inner = _first_declarator_child(node)
+        node = inner
+    if node is None:
+        return None
+    if node.type == "operator_cast":
+        name, qualifier = _resolve_declarator(node, source_bytes)
+        return (name, qualifier) if name is not None else None
+    if node.type != "function_declarator":
         return None
     inner = node.child_by_field_name("declarator")
     if inner is None or inner.type not in _NAME_NODE_TYPES:
@@ -358,21 +417,38 @@ def _type_name(node: Node, source_bytes: bytes) -> str | None:
 
 
 def _named_lambda_name(node: Node, source_bytes: bytes) -> str | None:
-    """The symbol name of a named lambda, or ``None`` (E12).
+    """The *caller* name of a named lambda, or ``None`` (E12).
 
     A lambda is a symbol only when it is the ``value`` of an
     ``init_declarator`` whose ``declarator`` is a plain identifier
     (``auto f = [](){};``) — the C++ spelling of the JS
     ``const f = () => {}`` rule.  Any other lambda is an unnamed body
     whose calls belong to the nearest enclosing named caller.
+
+    A class-field lambda (``auto f = []() { ... };`` inside a class body)
+    is the one shape that is a *caller* but never a symbol: the grammar
+    gives the field no ``init_declarator``, so its name is the
+    ``field_identifier`` preceding the lambda (E18).  That mirrors the JS
+    class-field arrow rule (G3) — calls belong to the field, while the
+    field itself is class-shell content.
     """
     parent = node.parent
-    if parent is None or parent.type != "init_declarator":
+    if parent is None:
         return None
-    declarator = parent.child_by_field_name("declarator")
-    if declarator is None or declarator.type not in ("identifier", "field_identifier"):
-        return None
-    return text_of(declarator, source_bytes) or None
+    if parent.type == "init_declarator":
+        declarator = parent.child_by_field_name("declarator")
+        if declarator is None or declarator.type not in (
+            "identifier",
+            "field_identifier",
+        ):
+            return None
+        return text_of(declarator, source_bytes) or None
+    if parent.type == "field_declaration":
+        previous = node.prev_named_sibling
+        if previous is None or previous.type not in ("field_identifier", "identifier"):
+            return None
+        return text_of(previous, source_bytes) or None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +581,25 @@ def _walk_scope(
             continue
         if child.type in _MODULE_WRAPPERS:
             body = child.child_by_field_name("body")
-            if body is not None:
+            if body is None:
+                continue
+            if body.type == "declaration_list":
                 _walk_scope(
                     body, source_bytes, file_path, symbols, class_name=class_name
+                )
+            else:
+                # The single-declaration ``extern "C"`` form (``extern "C"
+                # int f() { ... }``) puts the declaration itself in the
+                # ``body`` field instead of a ``declaration_list`` (E18).
+                # Walking its children would visit the declarator and the
+                # body as if they were declarations and drop the symbol.
+                _emit_declaration(
+                    body,
+                    hash_node=None,
+                    source_bytes=source_bytes,
+                    file_path=file_path,
+                    symbols=symbols,
+                    class_name=class_name,
                 )
             continue
         if child.type == "template_declaration":
@@ -577,6 +669,13 @@ def _emit_declaration(
             symbols=symbols,
         )
     elif node.type in _TYPE_ALIAS_KINDS:
+        _collect_nested_type_specifiers(
+            node,
+            hash_node=hash_node,
+            source_bytes=source_bytes,
+            file_path=file_path,
+            symbols=symbols,
+        )
         _collect_type_alias(
             node, source_bytes=source_bytes, file_path=file_path, symbols=symbols
         )
@@ -590,12 +689,55 @@ def _emit_declaration(
             class_name=class_name,
         )
     elif node.type in ("declaration", "field_declaration"):
+        _collect_nested_type_specifiers(
+            node,
+            hash_node=hash_node,
+            source_bytes=source_bytes,
+            file_path=file_path,
+            symbols=symbols,
+        )
         _collect_declaration(
             node,
             source_bytes=source_bytes,
             file_path=file_path,
             symbols=symbols,
             class_name=class_name,
+        )
+
+
+def _collect_nested_type_specifiers(
+    node: Node,
+    *,
+    hash_node: Node | None,
+    source_bytes: bytes,
+    file_path: Path,
+    symbols: list[Symbol],
+) -> None:
+    """Emit every type *defined* inside a variable/typedef declaration.
+
+    A tagged declaration (``struct Foo { ... } obj;``), a nested type member
+    (``struct B { ... };`` in a class body) and a ``typedef struct Foo { ...
+    } FooT;`` wrap their ``struct_specifier``/``enum_specifier`` as a child
+    of a ``declaration``/``field_declaration``/``type_definition`` rather
+    than being the declaration node itself (E18), so the scope walk would
+    never reach the type — and would lose its members with it.  Only a
+    specifier **with a body** is a symbol: ``struct Foo x;`` names a use of
+    an elaborated type, not a definition.
+
+    The type is emitted with no ``parent_class`` (like a Java nested class,
+    the type name is a file-level fact); its own members are walked with
+    the type as their parent by :func:`_collect_type_declaration`.
+    """
+    for child in node.named_children:
+        if child.type not in _TYPE_KINDS or _type_body(child) is None:
+            continue
+        _emit_declaration(
+            child,
+            hash_node=hash_node,
+            source_bytes=source_bytes,
+            file_path=file_path,
+            symbols=symbols,
+            class_name=None,
         )
 
 
@@ -871,15 +1013,18 @@ def _cpp_called_name(node: Node, source_bytes: bytes) -> str | None:
     Only grammar-exposed call targets yield a name: a bare ``identifier``,
     a ``field_expression`` member (``a.b()``/``a->b()``), a
     ``qualified_identifier`` (``ns::f()``/``Class::static()``) or a
-    ``template_function`` head (``f<int>()``).  A receiver that is itself
-    a call (``f().bar()``) has no static target and is excluded, matching
+    ``template_function``/``template_method`` head (``f<int>()``,
+    ``box.put<int>(v)``).  A receiver that is itself a call
+    (``f().bar()``) has no static target and is excluded, matching
     JS/TS/PHP.  A dunder-style final name is never captured (the shared
     rule), and neither is a reserved keyword the grammar happens to expose
     in call position (``static_cast``, ``typeid``, ...) — it can never
-    name a user function.
+    name a user function.  A call whose subtree carries a grammar error is
+    skipped rather than guessed at: error recovery would otherwise invent
+    a call from the leftover identifier (E18).
     """
     target = node.child_by_field_name("function")
-    if target is None:
+    if target is None or node.has_error or target.has_error:
         return None
     name = _call_target_name(target, source_bytes)
     if name is None or is_dunder_name(name) or name in _RESERVED_CALL_KEYWORDS:
@@ -902,7 +1047,7 @@ def _call_target_name(node: Node, source_bytes: bytes) -> str | None:
         return _final_name(field, source_bytes)
     if node_type == "qualified_identifier":
         return _qualified_final_name(node, source_bytes)
-    if node_type == "template_function":
+    if node_type in ("template_function", "template_method"):
         return _final_name(node.child_by_field_name("name"), source_bytes)
     return None
 
@@ -917,7 +1062,7 @@ def _final_name(node: Node | None, source_bytes: bytes) -> str | None:
         return _collapse_operator_name(text_of(node, source_bytes)) or None
     if node.type == "qualified_identifier":
         return _qualified_final_name(node, source_bytes)
-    if node.type == "template_function":
+    if node.type in ("template_function", "template_method"):
         return _final_name(node.child_by_field_name("name"), source_bytes)
     return None
 

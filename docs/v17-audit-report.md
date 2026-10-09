@@ -979,3 +979,112 @@ position, and conversion operators (`operator T()`) not modelled.
   (`1"_km"` pinned as the lag example).
 - Constructor invocations are captured only in the forms the grammar exposes
   as calls (E4 policy — `new Foo()`/`Foo obj(3)` excluded).
+
+## 15. Phase 5 adversarial review — 19 defects found and fixed (committed as `5ccb289`+review)
+
+A second-pass review swept the C++ surface with a 54-case divergence probe
+(scanner output vs. the differential checker, symbol sets **and** called-name
+sets) and a CST dump of every ambiguous shape. **21 divergences** surfaced in
+the first sweep; all were classified root-cause-first, fixed, and pinned.
+Final state: **0 unexpected divergences** over the 54 cases (1 expected — see
+§15.4).
+
+### 15.1 Scanner defects (production code — `nowreck/scanner/cpp_scanner.py`)
+
+1. **Tagged declarations dropped the type** — `struct Foo { ... } obj;`,
+   `enum Color { RED } c;` and `class W { ... } w;` put the specifier inside
+   a `declaration`/`field_declaration`, so the scope walk never reached it
+   (losing its members too). New `_collect_nested_type_specifiers` emits
+   every **body-carrying** type child of a declaration first; a bare
+   `struct Foo x;` (elaborated-type use, no body) correctly stays a non-symbol.
+2. **Nested type members dropped** — a nested `struct B { void m(); };` in a
+   class body had the same shape problem; it is now a file-level CLASS fact
+   (no `parent_class` — the Java nested-class rule) with its members parented
+   to `B`. A type declared *inside a function body* stays a local: neither it
+   nor its members are symbols (its calls still get that member as caller).
+3. **`typedef struct Foo { ... } FooT;` dropped the tag** — `type_definition`
+   now goes through the same nested-specifier collector before aliasing.
+4. **`extern "C"` single-declaration form dropped the symbol** — `extern "C"
+   int f() { ... }` puts the declaration itself in `body` (not a
+   `declaration_list`); walking its children visited the declarator and body
+   as pseudo-declarations and lost the symbol. Both forms now descend
+   correctly.
+5. **Reference declarators dropped declaration-only members** —
+   `reference_declarator` exposes no `declarator` field, so `A& get();` and
+   `A& operator+=(int);` were invisible. The wrapper walk now falls back to
+   the first named child.
+6. **Conversion operators dropped** — a declaration-only `operator bool
+   const;` has no `function_declarator`; the `operator_cast` node *is* the
+   declarator (and its text includes the parameter list — sliced off at the
+   declarator child). `operator_cast` added to the name-node set; conversion
+   operators are now METHODs named `operatorbool`.
+7. **Class-field lambda: symbol/caller parity with JS (G3)** —
+   `auto on_ready = []() { ... };` in a class body has no `init_declarator`
+   wrapper, so the lambda looked unnamed: its calls were misattributed to
+   the class. It is now a **caller named after the field** (preceding
+   `field_identifier`), never a symbol — the JS class-field arrow rule.
+8. **Member-template call targets dropped** — `box.put<int>(v)` has a
+   `template_method` head (not `template_function`); `put` was invisible.
+9. **Grammar-error recovery invented calls** — `b.operator bool()` is a
+   grammar error; the leftover identifier could read as a call. A call
+   subtree carrying `has_error` is now skipped rather than guessed.
+
+### 15.2 Checker (oracle) defects — `tests/helpers/differential.py`
+
+The checker is the completeness oracle; every fix was validated against the
+tree-sitter parse (parser = ground truth):
+
+1. **Conversion-operator symbol names** — `_CPP_OPERATOR_NAME` gained the
+   conversion form (`operator bool`, `operator const char*`) with the
+   qualifier rule (`Vec::operator*`), matching the scanner's `operator_cast`
+   slicing.
+2. **Specialisation template arguments dropped from names** —
+   `template <> int identity<int>(...)` read the head as `identity<int>`;
+   `_CPP_DECL_TEMPLATE_ARGS` now strips one nesting level (deeper nesting
+   stays a documented limitation).
+3. **Braced typedef / nested type heads** — `_CPP_TYPEDEF_TYPE_HEAD` marks
+   the typedef body as a *type* container so its members classify as
+   methods; the symbol extractor accepts `type_identifier` and template
+   arguments in type names.
+4. **Declaration-head classifier** — parameter default values, leading
+   access specifiers, keyword/expression heads (`int x = compute();`) and
+   `friend` heads classified correctly.
+5. **Destructor-name lookbehind** — the `~`-prefix rule (definition head
+   vs. destructor call vs. unary complement) needed a proper operator
+   context check; `~A() {`/`= delete` heads are not calls, `this->~A()`
+   keeps its `~` name.
+6. **Member-initialiser / `noexcept` head calls** — *documented limitation*,
+   not a defect: the scanner walks the whole declaration subtree while the
+   checker's per-line mask opens at the body brace (opening at the head
+   would invent `W(`/`x_(` declarator calls). Kept out of the corpus, in
+   the module docstring.
+
+### 15.3 Pins added (tests)
+
+| Surface | What was added |
+|---|---|
+| `tests/test_cpp_probes.py` | E17 probe classes (type declarations, module wrappers, attributes/friend) + the **E18 review set**: wrapped type declarations, single-declaration `extern "C"`, declarator wrappers (reference / `operator_cast`), class-field lambda shape, grammar-error recovery — **78 probes total** (was 59) |
+| `tests/test_scanner.py` | Scanner-level rows: tagged/nested/local types, conversion operators, reference-declarator members, `template_method` calls, error-recovery exclusion |
+| `tests/test_change_detector.py` | **11 end-to-end behaviour tests** (42 C++ detector tests, was 31): tagged-declaration ADD/CHANGE/NO-OP rows, nested-type class+method attribution, local-type non-symbol rule, forward-decl + braced typedef, `extern "C"` body edit, E9-mirroring reference member, conversion-op body edit, class-field-lambda call ownership, `box.put<int>`/`this->~A()` calls, specialisation-as-function, grammar-error no-call |
+| `tests/differential_corpus/cpp/` | 9 corpus files extended with every fixed shape (tagged/nested types, class-field lambdas, conversion operators, specialisations, `template_method`/destructor calls, `extern "C"` forms) — permanently audited |
+| `tests/helpers/differential.py` | Checker fixes above + module docstring's C++ limitation list updated to match |
+
+### 15.4 Expected divergences
+
+Exactly **1** documented checker limitation remains in the 54-case review
+probe: a constructor member-initialiser call (`W() : x_(make()) {}`) — the
+head-call class (default argument / init-list / `noexcept` operand). It is
+recorded as expected in the probe harness and absent from the corpus, per
+the oracle's "documented boundaries are mirrored, not measured" rule.
+`EXPECTED_DIVERGENCES` for the corpus stays **empty**.
+
+### 15.5 Review verification
+
+| Gate | Result |
+|---|---|
+| Review probe (54 cases, scanner vs checker) | 0 unexpected divergences, 1 expected/documented |
+| Fixture probes | 78 passed (`tests/test_cpp_probes.py`) |
+| Change-detector matrix (`-k TestDetectCppChanges`) | 42 passed |
+| Differential audit | 0 divergences over the extended C++ corpus; `EXPECTED_DIVERGENCES` empty |
+| Attribution ban | clean (no co-author / agent notes in files or commits) |
+

@@ -995,6 +995,75 @@ class TestRepositoryScannerCpp:
         # A type alias has no CHANGED_TYPE_ALIAS claim, so no hash.
         assert by_name["Count"].body_hash is None
 
+    def test_scan_cpp_tagged_nested_and_forward_types(self, tmp_path: Path) -> None:
+        """E18: a tagged declaration, a nested type member and a forward
+        declaration all declare CLASS/ENUM facts, and a nested type's
+        members belong to the nested type."""
+        (tmp_path / "types.cpp").write_text(
+            "struct Tagged\n"
+            "{\n"
+            "    void touch() { return; }\n"
+            "} instance;\n"
+            "\n"
+            "struct Outer\n"
+            "{\n"
+            "    struct Inner\n"
+            "    {\n"
+            "        void visit() { return; }\n"
+            "    };\n"
+            "\n"
+            "    enum Kind { First, Second };\n"
+            "};\n"
+            "\n"
+            "struct Forwarded;\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        symbols = result.cpp_files[Path("types.cpp")]
+        assert [(s.name, s.symbol_type.name) for s in symbols] == [
+            ("Tagged", "CLASS"),
+            ("touch", "METHOD"),
+            ("Outer", "CLASS"),
+            ("Inner", "CLASS"),
+            ("visit", "METHOD"),
+            ("Kind", "ENUM"),
+            ("Forwarded", "CLASS"),
+        ]
+        by_name = {s.name: s for s in symbols}
+        assert by_name["touch"].parent_class == "Tagged"
+        assert by_name["visit"].parent_class == "Inner"
+        assert by_name["Forwarded"].body_hash is not None
+
+    def test_scan_cpp_wrapped_declarator_shapes(self, tmp_path: Path) -> None:
+        """E18: the single-declaration ``extern "C"`` form, a reference-
+        return declaration-only member and a declaration-only conversion
+        operator are all indexed (no body → no hash)."""
+        (tmp_path / "api.h").write_text(
+            'extern "C" int legacy_total();\n'
+            "\n"
+            "struct Widget\n"
+            "{\n"
+            "    Widget& merge(const Widget& other);\n"
+            "    explicit operator bool() const;\n"
+            "};\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        symbols = result.cpp_files[Path("api.h")]
+        assert [(s.name, s.symbol_type.name) for s in symbols] == [
+            ("legacy_total", "FUNCTION"),
+            ("Widget", "CLASS"),
+            ("merge", "METHOD"),
+            ("operatorbool", "METHOD"),
+        ]
+        by_name = {s.name: s for s in symbols}
+        assert by_name["merge"].parent_class == "Widget"
+        assert by_name["merge"].body_hash is None
+        assert by_name["operatorbool"].parent_class == "Widget"
+        assert by_name["operatorbool"].body_hash is None
+
 
 class TestRepositoryScannerMultiLang:
     """Multi-language repo with all 9 families."""

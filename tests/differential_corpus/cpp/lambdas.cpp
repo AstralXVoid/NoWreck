@@ -17,3 +17,13 @@ int offset()
 {
     return 3;
 }
+
+// A class-field lambda is a caller named after the field (never a symbol),
+// exactly like a JS class-field arrow: its calls must be attributed.
+struct Hooks
+{
+    auto on_ready = []()
+    {
+        return notify();
+    };
+};

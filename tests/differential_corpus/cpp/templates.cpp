@@ -31,6 +31,15 @@ struct Box<int>
 template <typename T>
 using Stack = Box<T>;
 
+// An explicit specialisation names its declarator through a
+// ``template_function`` node (``identity<int>``), whose arguments are not
+// part of the symbol name.
+template <>
+int identity<int>(int value)
+{
+    return specialize(value);
+}
+
 int use_templates()
 {
     Box<int> box;

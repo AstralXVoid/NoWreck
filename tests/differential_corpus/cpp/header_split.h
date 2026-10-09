@@ -16,3 +16,10 @@ private:
 };
 
 int total_widgets();
+
+// The single-declaration ``extern "C"`` form: the declaration itself sits in
+// the wrapper's ``body`` field (not a declaration list).
+extern "C" int legacy_total();
+
+// A reference-return declaration-only member at module scope.
+Widget& active_widget();
