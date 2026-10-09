@@ -43,6 +43,10 @@ class ScanResult:
         php_files: Mapping of file paths (relative to repo root) to
             the list of ``Symbol`` objects extracted from each
             successfully parsed PHP file (``.php``).
+        cpp_files: Mapping of file paths (relative to repo root) to
+            the list of ``Symbol`` objects extracted from each
+            successfully parsed C++ file (``.cpp``, ``.cc``, ``.cxx``,
+            ``.c++``, ``.hpp``, ``.hh``, ``.hxx``, ``.h++``, ``.h``).
         failed_files: Mapping of file paths (relative to repo root) to
             the error message produced when parsing failed.
     """
@@ -55,6 +59,7 @@ class ScanResult:
     java_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     kotlin_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     php_files: dict[Path, list[Symbol]] = field(default_factory=dict)
+    cpp_files: dict[Path, list[Symbol]] = field(default_factory=dict)
     failed_files: dict[Path, str] = field(default_factory=dict)
     repo_root: Path | None = None
 
@@ -69,6 +74,7 @@ class ScanResult:
             + len(self.java_files)
             + len(self.kotlin_files)
             + len(self.php_files)
+            + len(self.cpp_files)
         )
 
     @property
@@ -78,8 +84,8 @@ class ScanResult:
 
 class RepositoryScanner:
     """Scans a repository for Python, JavaScript, TypeScript, Rust, Go,
-    Java, Kotlin, and PHP files and parses them into their respective
-    structural representations.
+    Java, Kotlin, PHP, and C++ files and parses them into their
+    respective structural representations.
 
     This scanner discovers ``.py`` files recursively and parses each with
     ``ast.parse``, discovers ``.js`` files and parses each with the
@@ -89,7 +95,8 @@ class RepositoryScanner:
     discovers ``.go`` files and parses each with the Go scanner,
     discovers ``.java`` files and parses each with the Java scanner,
     discovers ``.kt``/``.kts`` files and parses each with the Kotlin
-    scanner, and discovers ``.php`` files and parses each with the PHP
+    scanner, discovers ``.php`` files and parses each with the PHP
+    scanner, and discovers C++ files and parses each with the C++
     scanner.  The results are collected into a :class:`ScanResult`.
 
     Files that raise a ``SyntaxError``, ``UnicodeDecodeError``, or
@@ -139,6 +146,7 @@ class RepositoryScanner:
         java_files: dict[Path, list[Symbol]] = {}
         kotlin_files: dict[Path, list[Symbol]] = {}
         php_files: dict[Path, list[Symbol]] = {}
+        cpp_files: dict[Path, list[Symbol]] = {}
         failed: dict[Path, str] = {}
 
         # --- Python files ---
@@ -462,6 +470,55 @@ class RepositoryScanner:
                 elif error is not None:
                     failed[relative] = error
 
+        # --- C++ files ---
+        for cpp_file in self._discover_files(
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".c++",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".h++",
+            ".h",
+        ):
+            relative = cpp_file.relative_to(self._repo_path)
+            try:
+                stat = cpp_file.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError as exc:
+                failed[relative] = f"OSError: {exc}"
+                continue
+
+            cpp_hash = file_content_hash(cpp_file)
+            cached = (
+                cache.get(relative, mtime, size, cpp_hash)
+                if cache is not None
+                else None
+            )
+            if cached is not None and cached.symbols:
+                cpp_files[relative] = [SymbolClass.from_dict(s) for s in cached.symbols]
+            else:
+                symbols, error = self._parse_cpp_file(cpp_file)
+                if symbols is not None:
+                    cpp_files[relative] = symbols
+                    if cache is not None:
+                        cache.put(
+                            relative,
+                            mtime,
+                            size,
+                            CacheEntry(
+                                mtime=mtime,
+                                size=size,
+                                language="cpp",
+                                content_hash=cpp_hash,
+                                symbols=[s.to_dict() for s in symbols],
+                            ),
+                        )
+                elif error is not None:
+                    failed[relative] = error
+
         # Persist cache at the end of a successful scan.
         if cache is not None:
             cache.save()
@@ -478,6 +535,7 @@ class RepositoryScanner:
             + len(java_files)
             + len(kotlin_files)
             + len(php_files)
+            + len(cpp_files)
             + len(failed)
         )
         success = total - len(failed)
@@ -500,6 +558,7 @@ class RepositoryScanner:
                         java_files,
                         kotlin_files,
                         php_files,
+                        cpp_files,
                     )
                 ),
             )
@@ -519,6 +578,7 @@ class RepositoryScanner:
             java_files=java_files,
             kotlin_files=kotlin_files,
             php_files=php_files,
+            cpp_files=cpp_files,
             failed_files=failed,
             repo_root=self._repo_path,
         )
@@ -932,6 +992,68 @@ class RepositoryScanner:
 
         try:
             symbols = scan_php_file(file_path, repo_root=self._repo_path)
+            return symbols, None
+        except (FileNotFoundError, SyntaxError, OSError) as exc:
+            exc_type = type(exc).__name__
+            msg = f"{exc_type}: {exc}"
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+    # ------------------------------------------------------------------
+    # C++ discovery and parsing
+    # ------------------------------------------------------------------
+
+    def _discover_cpp_files(self) -> list[Path]:
+        """Recursively discover C++ files, skipping hidden dirs.
+
+        The extension list covers C++ headers and sources: ``.cpp``,
+        ``.cc``, ``.cxx``, ``.c++``, ``.hpp``, ``.hh``, ``.hxx``,
+        ``.h++`` and ``.h``.  ``.h`` also matches C headers in a mixed
+        repository — accepted, because the C++ grammar parses C
+        (documented for Phase 7).  ``.c`` files are **not** discovered,
+        which is why C support stays out of scope.  ``.c++`` contains no
+        glob metacharacters and matches literally.  Hidden directories
+        (names starting with ``.``) are excluded by default to avoid
+        scanning ``.git``, ``.nowreck``, ``.venv``, etc.
+
+        .. deprecated::
+            Use :meth:`_discover_files` directly.
+        """
+        return self._discover_files(
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".c++",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".h++",
+            ".h",
+        )
+
+    def _parse_cpp_file(
+        self,
+        file_path: Path,
+    ) -> tuple[list[Symbol] | None, str | None]:
+        """Parse a single C++ file using the tree-sitter scanner.
+
+        Returns a ``(symbols, error)`` tuple.  If parsing succeeds,
+        ``symbols`` is the list of :class:`Symbol` objects found in the
+        file and ``error`` is ``None``.  If parsing fails, ``symbols``
+        is ``None`` and ``error`` is a human-readable message.
+        """
+        try:
+            from nowreck.scanner.cpp_scanner import scan_cpp_file  # noqa: PLC0415
+        except ImportError:
+            msg = (
+                "tree-sitter is required for C++ scanning. "
+                "Install it with:  pip install tree-sitter tree-sitter-cpp"
+            )
+            logger.warning("Failed to parse %s: %s", file_path, msg)
+            return None, msg
+
+        try:
+            symbols = scan_cpp_file(file_path, repo_root=self._repo_path)
             return symbols, None
         except (FileNotFoundError, SyntaxError, OSError) as exc:
             exc_type = type(exc).__name__

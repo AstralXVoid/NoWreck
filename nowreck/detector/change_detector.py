@@ -313,6 +313,7 @@ class ChangeDetector:
             | set(pre.java_files)
             | set(pre.kotlin_files)
             | set(pre.php_files)
+            | set(pre.cpp_files)
             | set(pre.failed_files)
         )
         post_files: set[Path] = (
@@ -324,6 +325,7 @@ class ChangeDetector:
             | set(post.java_files)
             | set(post.kotlin_files)
             | set(post.php_files)
+            | set(post.cpp_files)
             | set(post.failed_files)
         )
 
@@ -475,22 +477,22 @@ class ChangeDetector:
         """Extract all :class:`CallEvidence` objects from a scan result.
 
         Handles Python, JavaScript, TypeScript, Rust, Go, Java, Kotlin,
-        and PHP source
-        files:
+        PHP, and C++ source files:
 
         **Python:** walks every function/method body looking for
         ``ast.Call`` nodes with a simple ``ast.Name`` or an
         ``ast.Attribute`` chain (``self.foo()``, ``a.b.c()``) function
         expression, carrying the enclosing class name.
 
-        **JavaScript/TypeScript/Rust/Go/Java/Kotlin/PHP:** re-parses each
-        file listed in ``scan.js_files``, ``scan.ts_files``,
+        **JavaScript/TypeScript/Rust/Go/Java/Kotlin/PHP/C++:** re-parses
+        each file listed in ``scan.js_files``, ``scan.ts_files``,
         ``scan.rust_files``, ``scan.go_files``, ``scan.java_files``,
-        ``scan.kotlin_files``, or ``scan.php_files`` using the respective
-        tree-sitter scanner and extracts a ``call_expression`` (Java:
-        ``method_invocation``, PHP: ``function_call_expression`` etc.)
-        whose target is a simple ``identifier``, a member/field/selector
-        chain, or — for Java — the invocation's own ``name``.
+        ``scan.kotlin_files``, ``scan.php_files``, or ``scan.cpp_files``
+        using the respective tree-sitter scanner and extracts a
+        ``call_expression`` (Java: ``method_invocation``, PHP:
+        ``function_call_expression`` etc.) whose target is a simple
+        ``identifier``, a member/field/selector chain, or — for Java —
+        the invocation's own ``name``.
 
         Non-Python files are re-read from disk.  File paths are resolved
         through :meth:`_resolve_call_file`: against ``scan.repo_root``
@@ -638,6 +640,23 @@ class ChangeDetector:
             except (FileNotFoundError, OSError) as exc:
                 logger.warning(
                     "Could not re-read PHP file for call detection: %s — %s",
+                    abs_path,
+                    exc,
+                )
+
+        # --- C++ calls ---
+        from nowreck.scanner.cpp_scanner import scan_cpp_calls  # noqa: PLC0415
+
+        for file_path in scan.cpp_files:
+            abs_path = ChangeDetector._resolve_call_file(repo_root, file_path)
+            if abs_path is None:
+                continue
+            try:
+                cpp_calls = scan_cpp_calls(abs_path, repo_root=repo_root)
+                calls.update(cpp_calls)
+            except (FileNotFoundError, OSError) as exc:
+                logger.warning(
+                    "Could not re-read C++ file for call detection: %s — %s",
                     abs_path,
                     exc,
                 )

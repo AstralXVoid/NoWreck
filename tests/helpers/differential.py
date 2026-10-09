@@ -15,6 +15,21 @@ The checker is a *completeness audit*, not a second parser:
   nested functions, TS interface members), the checker mirrors the
   boundary so the audit measures real gaps, not known design limits.
 
+The C++ checker mirrors the scanner's probe-pinned model
+(``tests/test_cpp_probes.py``): a ``template <...>`` wrapper is unwrapped
+before the declaration inside it is classified (E5); a class-body member,
+any name at module scope or a *qualified* out-of-line definition is a
+FUNCTION/METHOD while a qualified **call statement** inside a body
+(``Service::flush();``) is not a declaration at all; ``typedef`` names —
+including a function-pointer ``(*Fn)`` — are type aliases; a leading
+access specifier is stripped from a member head; and a templated call
+(``f<int>(x)``) is matched by a second pattern because its name ends at a
+``>``.  Documented checker limitations, all kept out of the corpus: a
+call-bearing default argument (the scanner attributes it to the function,
+while the per-line mask opens at the body brace), a call-bearing
+``friend`` *definition*, template arguments nested deeper than one level,
+and a ``<``/``>`` comparison in call position.
+
 Every divergence between checker and parser is either fixed (parser bug)
 or mapped in ``EXPECTED_DIVERGENCES`` with a written justification.
 
@@ -58,6 +73,7 @@ LANGS = (
     "java",
     "kotlin",
     "php",
+    "cpp",
 )
 
 KIND_FUNCTION = "function"
@@ -440,6 +456,38 @@ def _strip_php(source: str) -> str:
     return _php_code_regions(_PHP_TOKEN.sub(_blank, source))
 
 
+# C++: a single left-to-right pass matches block comments, line comments,
+# raw strings (``R"delim(...)delim"``), encoding-prefixed and plain
+# double-quoted strings, and char literals as alternatives \u2014 the leftmost
+# match wins, so a ``//`` inside a string or a quote inside a comment can
+# never be misattributed.  The raw alternative **must** precede the plain
+# string one: both start at a ``"`` and the earlier alternative wins, so
+# ``R"(x)"`` is consumed whole instead of leaving a dangling quote behind.
+# The encoding prefixes (``u8``/``u``/``U``/``L``) are optional and part of
+# the literal, exactly as the grammar nests them under ``string_literal``.
+_CPP_TOKEN = re.compile(
+    r"(?P<block>/\*.*?\*/)"
+    r"|(?P<line>//[^\n]*)"
+    r'|(?P<raw>(?:u8|u|U|L)?R"(?P<delim>[^()\\\s]{0,16})\('
+    r"(?P<rawbody>.*?)\)(?P=delim)\")"
+    r'|(?P<string>(?:u8|u|U|L)?"(?:\\.|[^"\\\n])*")'
+    r"|(?P<char>(?:u8|u|U|L)?'(?:\\.|[^'\\\n])*')",
+    re.DOTALL,
+)
+
+# Preprocessor directive lines (``#include``, ``#define OK(x)``): their text
+# is not code, so a macro head must never read as a call.  Only the
+# directive line is blanked \u2014 the conditional *bodies* it guards are
+# ordinary statements the scanner walks (E6), so ``#ifdef DEBUG`` keeps its
+# ``debug_log(x)`` call.
+_CPP_PREPROC = re.compile(r"^[ \t]*#[^\n]*", re.MULTILINE)
+
+
+def _strip_cpp(source: str) -> str:
+    """Blank comments, string/char literals and preprocessor lines."""
+    return _CPP_PREPROC.sub(_blank, _CPP_TOKEN.sub(_blank, source))
+
+
 # ``{$expr}`` / ``${expr}`` interpolation: the parser sees real calls in
 # here (probe PH11), so they are collected from the raw line \u2014 on rows
 # that already sit inside a caller body, which is where the parser
@@ -481,6 +529,7 @@ _STRIPPERS = {
     "java": _strip_java,
     "kotlin": _strip_kotlin,
     "php": _strip_php,
+    "cpp": _strip_cpp,
 }
 
 
@@ -878,6 +927,56 @@ _KEYWORDS: dict[str, frozenset[str]] = {
             # when the occurrence is *bare*: ``list(…)`` is a construct,
             # while ``$obj->list()`` is an ordinary method call (see
             # :func:`_php_name_is_call`).
+        }
+    ),
+    "cpp": frozenset(
+        {
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "switch",
+            "case",
+            "catch",
+            "return",
+            "goto",
+            "throw",
+            "new",
+            "delete",
+            "sizeof",
+            "alignof",
+            "decltype",
+            "typeid",
+            "noexcept",
+            "static_assert",
+            "static_cast",
+            "dynamic_cast",
+            "const_cast",
+            "reinterpret_cast",
+            "co_await",
+            "co_return",
+            "co_yield",
+            "requires",
+            "and",
+            "or",
+            "not",
+            "class",
+            "struct",
+            "union",
+            "enum",
+            "namespace",
+            "template",
+            "typename",
+            "using",
+            "typedef",
+            "constexpr",
+            "consteval",
+            # NOTE: ``assert`` is NOT listed — the grammar parses
+            # ``assert(x)`` as an ordinary ``call_expression`` (it is a
+            # macro, but tree-sitter sees a call), so the scanner captures
+            # it and the checker must too.  ``operator`` is not listed
+            # either: ``operator()`` in a call is handled structurally.
         }
     ),
 }
@@ -2425,6 +2524,409 @@ def _php_call_mask(source: str) -> list[int]:
     return mask
 
 
+# ---------------------------------------------------------------------------
+# C++ structure walk
+# ---------------------------------------------------------------------------
+
+
+class _CppEvent(NamedTuple):
+    """One structural event from :func:`_cpp_structure`.
+
+    ``event`` is ``"open"`` (a ``{``), ``"close"`` (a ``}``) or ``"semi"``
+    (a statement-level ``;``).  ``symbol_kind``/``name`` describe a symbol
+    the parser would emit, or are ``None``; ``is_fn`` marks a body that
+    owns calls — a function/method definition head or a lambda head.
+    """
+
+    event: str
+    symbol_kind: str | None
+    name: str | None
+    is_fn: bool
+    index: int
+
+
+def _cpp_strip_template_prefix(head: str) -> str:
+    """Drop a leading ``template <...>`` wrapper from a declaration head.
+
+    The grammar models ``template <...>`` as a *sibling* wrapper
+    (``template_declaration``) around the declaration it parameterises
+    (probe E5), so the checker unwraps it the same way before classifying
+    what is inside: without this, ``template <class T> struct Box`` reads
+    as neither a type nor a function and the wrapped symbol is lost.
+    ``<...>`` nests (``template <template <class> class T>``), so the
+    closing ``>`` is found by depth.  A head without the keyword is
+    returned unchanged.
+    """
+    match = re.match(r"\s*template\s*<", head)
+    if match is None:
+        return head
+    depth = 0
+    for idx in range(match.end() - 1, len(head)):
+        ch = head[idx]
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+            if depth == 0:
+                return head[idx + 1 :]
+    return head
+
+
+# A lambda head: a ``[...]`` capture (optional ``mutable``), an optional
+# parameter list and an optional trailing return type.  The ``(?!\[)`` /
+# ``(?!\])`` guards keep a C++ attribute (``[[nodiscard]]``) from reading
+# as a capture list.
+_CPP_LAMBDA_HEAD = re.compile(
+    r"\[(?!\[)[^\]]*\](?!\])\s*(?:mutable\b\s*)?(?:<[^<>]*>\s*)?"
+    r"(?:\([^()]*\)\s*)?(?:->\s*[^;{}]*)?\s*$"
+)
+
+# ``auto f = [`` — a *named* lambda is the C++ spelling of the JS
+# ``const f = () => {}`` rule the scanner indexes as a FUNCTION.
+_CPP_LAMBDA_ASSIGN = re.compile(
+    r"(?:^|[;{}\s])(?:auto|[A-Za-z_]\w*(?:::\w*)*(?:\s*<[^<>;{}]*>)?)"
+    r"\s+(?P<name>[A-Za-z_]\w*)\s*=\s*\[(?!\[)"
+)
+
+_CPP_CONTROL = re.compile(r"^\s*(?:if|for|while|switch|do|else|try|catch)\b")
+
+# ``namespace`` (incl. ``inline``/``a::b``/anonymous) and ``extern "C"``
+# are module scope, exactly as the scanner treats them (the string is
+# already blanked, so ``extern "C"`` reads as ``extern``).
+_CPP_NAMESPACE = re.compile(r"^\s*(?:inline\s+)?namespace\b|^\s*extern\s*$")
+
+# Template arguments after a type name (``struct Box<int>``, ``using X
+# = Box<T>``).  One nesting level is modelled, which is what a declaration
+# head needs; a deeper level is a documented checker limitation.
+_CPP_TEMPLATE_ARGUMENTS = r"(?:\s*<[^<>;{}]*(?:<[^<>;{}]*>[^<>;{}]*)*>)?"
+
+# ``class``/``struct``/``union``/``enum``/``enum class`` with a name and
+# only an optional template-argument list and base list — the guard rejects
+# an aggregate-init head (``struct Foo f = { ... }``) and an anonymous type.
+# The name keeps a specialisation's template arguments (``Box<int>``),
+# exactly as the grammar's ``template_type`` name node does.
+_CPP_TYPE_DECL = re.compile(
+    r"^\s*(?P<kind>class|struct|union|enum(?:\s+class)?)\s+"
+    r"(?P<name>[A-Za-z_]\w*" + _CPP_TEMPLATE_ARGUMENTS + r")(?:\s+final)?\s*"
+    r"(?::[^;{}()]*)?\s*$"
+)
+
+_CPP_USING_ALIAS = re.compile(r"^\s*using\s+(?P<name>[A-Za-z_]\w*)\s*=")
+
+# ``typedef int Alias;`` — the simple form (the name is the last token).
+_CPP_TYPEDEF = re.compile(
+    r"^typedef\b[^;{}\n]*?(?P<name>[A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$"
+)
+
+# ``typedef void (*Fn)(int);`` — a function-pointer typedef, whose name is
+# inside the parenthesised ``(*Fn)`` the simple form cannot reach.  The
+# scanner indexes it as a TYPE_ALIAS like any other, so the checker models
+# it too (``typedef int (*Fn)(int);`` with a return type included).
+_CPP_TYPEDEF_FN_PTR = re.compile(
+    r"^typedef\b[^;{}\n]*?\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)"
+)
+
+# A declaration name: an operator, a destructor, or a possibly-qualified
+# identifier (the qualifier disappears from the symbol name — the scanner
+# keeps only the last segment, mirroring the header/impl split).  Each
+# form takes the same optional ``::`` qualifier, so an out-of-line
+# ``Vec::operator*`` is read as qualified (and thus a METHOD).
+_CPP_OPERATOR_NAME = (
+    r"operator\s*(?:\(\)|\[\]|(?:new|delete)(?:\[\])?|[^\s\w(]{1,3}|[A-Za-z_]\w*)"
+)
+_CPP_NAME = (
+    r"(?:(?:[A-Za-z_]\w*::)*(?:" + _CPP_OPERATOR_NAME + r")"
+    r"|(?:[A-Za-z_]\w*::)*~[A-Za-z_]\w*"
+    r"|(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)"
+)
+_CPP_FUNC_TOKEN = re.compile(rf"(?P<name>{_CPP_NAME})\s*\(")
+
+# What may follow the parameter list of an ordinary function declaration:
+# cv/ref qualifiers, ``override``/``final``, ``noexcept(...)``, a trailing
+# return type, a member-initialiser list, or ``= default|delete|0``.
+_CPP_DECL_TAIL = re.compile(
+    r"^\s*(?:(?:const|volatile|override|final|mutable|constexpr|consteval|"
+    r"&|&&|noexcept(?:\s*\([^()]*\))?)\s*)*"
+    r"(?:(?:->)\s*[\w:<>,*&\[\]\s]+)?"
+    r"(?:=\s*(?:default|delete|0)\s*)?"
+    r"(?::[^\n]*)?\s*$",
+    re.DOTALL,
+)
+
+# A plausible parameter item: type-ish tokens, at most one name and an
+# optional default (``int x = 3``, ``T value = make_default()``).  This is
+# what separates ``void f();`` (a declaration) from ``int x(1);`` (a
+# paren-initialised variable, which the grammar models as an initialiser
+# and the scanner never emits).  A default value may nest one level of
+# parentheses; deeper nesting is a documented checker limitation.
+_CPP_PARAM_ITEM = re.compile(
+    r"^\s*(?:[A-Za-z_]\w*(?:::\w*)*(?:\s*<[^<>]*>)?[\s*&]*)+?"
+    r"(?:\.\.\.\s*)?(?:[A-Za-z_]\w*)?\s*"
+    r"(?:=\s*(?:[^,()]|\([^()]*\))*)?\s*$"
+)
+
+
+def _cpp_matching_paren(text: str, open_idx: int) -> int | None:
+    """Index of the ``)`` matching the ``(`` at *open_idx*, or ``None``."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _cpp_split_params(text: str) -> list[str]:
+    """Split a parameter list on top-level commas."""
+    items: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "(<[":
+            depth += 1
+        elif ch in ")>]":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            items.append(text[start:i])
+            start = i + 1
+    items.append(text[start:])
+    return items
+
+
+def _cpp_params_look_like_a_list(params: str) -> bool:
+    """Whether *params* reads as a parameter list rather than an argument."""
+    text = params.strip()
+    if not text:
+        return True
+    return all(_CPP_PARAM_ITEM.match(item) for item in _cpp_split_params(text))
+
+
+def _cpp_prefix_is_typeish(prefix: str) -> bool:
+    """Whether the text before a declarator name reads as a type prefix.
+
+    A declarator is preceded by a type (``void f``, ``Widget* f``,
+    ``explicit Foo``); an *initialised* declaration (``int x = compute()``)
+    is preceded by a top-level ``=`` and an expression statement
+    (``return foo()``) by a keyword — treating either as a declaration
+    would invent a symbol the parser never emits.  ``=`` inside brackets
+    (a default argument, ``void f(int x = 3)``) is not the statement's
+    assignment operator and is ignored.
+    """
+    depth = 0
+    for ch in prefix:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "=" and depth == 0:
+            return False
+    last_word = re.search(r"[A-Za-z_]\w*$", prefix.strip())
+    return last_word is None or last_word.group(0) not in _KEYWORDS["cpp"]
+
+
+def _cpp_function_name(head: str) -> tuple[str, bool] | None:
+    """``(name, qualified)`` for a function-ish head, or ``None``.
+
+    Scans left to right for ``NAME(`` whose parentheses close a plausible
+    parameter list, whose remainder is a declaration tail and whose prefix
+    reads as a type.  The *first* such match is the declarator itself,
+    which is why a member-initialiser list (``Pt(int x) : x_(x)``) cannot
+    win: ``Pt(`` comes first.  ``qualified`` is true for an out-of-line
+    definition (``A::f``), which the scanner attributes to ``A`` as a
+    METHOD.
+    """
+    for match in _CPP_FUNC_TOKEN.finditer(head):
+        open_idx = match.end() - 1
+        close = _cpp_matching_paren(head, open_idx)
+        if close is None:
+            continue
+        if not _cpp_params_look_like_a_list(head[open_idx + 1 : close]):
+            continue
+        if not _CPP_DECL_TAIL.match(head[close + 1 :]):
+            continue
+        if not _cpp_prefix_is_typeish(head[: match.start()]):
+            continue
+        raw = match.group("name")
+        last = raw.rsplit("::", 1)[-1]
+        if last.startswith("operator"):
+            last = "".join(last.split())
+        return last, "::" in raw
+    return None
+
+
+def _cpp_function_kind(qualified: bool, container: str) -> str | None:
+    """Symbol kind for a function-ish declaration, or ``None``.
+
+    A member of a class body is a METHOD, and a *qualified* name
+    (``Widget::draw``) is an out-of-line definition — but only at module
+    scope: inside a function body a qualified name is an ordinary
+    qualified *call* (``Service::flush();``), which the parser models as an
+    expression statement and never indexes.
+    """
+    if container == "type" or (qualified and container == "module"):
+        return KIND_METHOD
+    if container == "module":
+        return KIND_FUNCTION
+    return None
+
+
+def _cpp_open_event(
+    head: str,
+    container: str,
+) -> tuple[str | None, str | None, bool, str]:
+    """Classify the head of an opening ``{``.
+
+    Returns ``(symbol kind, name, is_fn, pushed container)``.  Order
+    matters: a lambda is tested before a function (its head also ends in
+    ``)``), and control flow before a function (``if (ready())`` would
+    otherwise read ``ready`` as the declarator).
+    """
+    stripped = _cpp_strip_template_prefix(head)
+    if _CPP_LAMBDA_HEAD.search(stripped) is not None:
+        name: str | None = None
+        if container == "module":
+            assign = _CPP_LAMBDA_ASSIGN.search(stripped)
+            if assign is not None:
+                name = assign.group("name")
+        return (KIND_FUNCTION if name else None), name, True, "block"
+    if _CPP_CONTROL.match(stripped) is not None:
+        return None, None, False, "block"
+    if _CPP_NAMESPACE.match(stripped.strip()) is not None:
+        return None, None, False, "module"
+    type_decl = _CPP_TYPE_DECL.match(stripped)
+    if type_decl is not None:
+        kind = KIND_ENUM if type_decl.group("kind").startswith("enum") else KIND_CLASS
+        emitted = kind if container == "module" else None
+        return emitted, type_decl.group("name"), False, "type"
+    function = _cpp_function_name(stripped)
+    if function is not None:
+        name, qualified = function
+        return _cpp_function_kind(qualified, container), name, True, "block"
+    return None, None, False, "block"
+
+
+# An access specifier (``public:``) belongs to the enclosing class body, not
+# to the statement that follows it, so it is stripped before a member is
+# classified (a member ends at its ``;``/``}`` and the head starts just after
+# the previous one).
+_CPP_ACCESS_SPECIFIER = re.compile(r"^\s*(?:public|private|protected)\s*:\s*")
+
+
+def _cpp_semi_event(head: str, container: str) -> tuple[str | None, str | None]:
+    """Classify a statement-level ``;`` for symbols with no body.
+
+    ``using X = Y;`` / ``typedef ... X;`` are type aliases and a
+    declaration-only function (``void draw();``, ``int add(int, int);``)
+    is a symbol with no hash — the header side of the split.  A ``friend``
+    declaration yields nothing: it declares a non-member, which the
+    scanner does not index.
+    """
+    stripped = _CPP_ACCESS_SPECIFIER.sub("", head).strip()
+    if not stripped or stripped.startswith("friend"):
+        return None, None
+    body = _cpp_strip_template_prefix(stripped).strip()
+    alias = _CPP_USING_ALIAS.match(body)
+    if alias is not None:
+        return KIND_TYPE_ALIAS, alias.group("name")
+    fn_ptr = _CPP_TYPEDEF_FN_PTR.match(body)
+    if fn_ptr is not None:
+        return KIND_TYPE_ALIAS, fn_ptr.group("name")
+    typedef = _CPP_TYPEDEF.match(body)
+    if typedef is not None:
+        return KIND_TYPE_ALIAS, typedef.group("name")
+    function = _cpp_function_name(head)
+    if function is not None:
+        name, qualified = function
+        return _cpp_function_kind(qualified, container), name
+    return None, None
+
+
+def _cpp_structure(src: str) -> Iterator[_CppEvent]:
+    """Walk stripped C++ source, yielding structural events.
+
+    ``src`` must be the stripped copy (``_strip_cpp``): every brace inside
+    a string, char literal or comment is already blanked, so the braces
+    counted here are real.  Class/enum bodies push a ``type`` container,
+    namespaces and ``extern "C"`` a ``module`` container, function and
+    lambda bodies a ``block``; a control-flow or initialiser-list brace
+    pushes a ``block`` too (so nothing inside it can be a symbol).
+    """
+    stack: list[tuple[str, bool]] = []  # (container kind, is_fn)
+    stmt_start = 0
+    paren = 0
+    for idx, ch in enumerate(src):
+        if ch == "(":
+            paren += 1
+            continue
+        if ch == ")":
+            paren = max(0, paren - 1)
+            continue
+        container = stack[-1][0] if stack else "module"
+        if ch == "{":
+            kind, name, is_fn, push = _cpp_open_event(src[stmt_start:idx], container)
+            yield _CppEvent("open", kind, name, is_fn, idx)
+            stack.append((push, is_fn))
+            stmt_start = idx + 1
+        elif ch == "}":
+            if stack:
+                stack.pop()
+            stmt_start = idx + 1
+            yield _CppEvent("close", None, None, False, idx)
+        elif ch == ";" and paren == 0:
+            kind, name = _cpp_semi_event(src[stmt_start:idx], container)
+            yield _CppEvent("semi", kind, name, False, idx)
+            stmt_start = idx + 1
+
+
+def _cpp_call_mask(source: str) -> list[int]:
+    """Per-line caller-body mask for C++.
+
+    Only function/method definition bodies and lambda bodies own calls; a
+    class body, a namespace and a module-level statement do not, so a
+    class-level field initialiser stays at ``-1`` — exactly the scanner's
+    boundary (a call needs a caller to be attributed to).
+    """
+    src = _strip_cpp(source)
+    lines = src.splitlines()
+    mask = [-1] * len(lines)
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+    brace_stack: list[tuple[int, bool, int]] = []
+    regions: list[tuple[int, int, int]] = []
+    for ev in _cpp_structure(src):
+        row = bisect_right(line_starts, ev.index) - 1
+        if ev.event == "open":
+            brace_stack.append((row, ev.is_fn, ev.index - line_starts[row]))
+        elif ev.event == "close":
+            if not brace_stack:
+                continue
+            open_row, open_is_fn, col = brace_stack.pop()
+            if open_is_fn:
+                regions.append((open_row, row, col))
+    deltas = [0] * (len(lines) + 1)
+    opened_col: dict[int, int] = {}
+    for start, end, col in regions:
+        deltas[start] += 1
+        if end + 1 <= len(lines):
+            deltas[end + 1] -= 1
+        opened_col.setdefault(start, col)
+    running = 0
+    for row in range(len(lines)):
+        running += deltas[row]
+        if running > 1:
+            mask[row] = 0
+        elif running == 1:
+            mask[row] = opened_col.get(row, 0)
+    return mask
+
+
 _MASKS: dict[str, object] = {
     "python": _py_call_mask,
     "javascript": _js_call_mask,
@@ -2434,6 +2936,7 @@ _MASKS: dict[str, object] = {
     "java": _java_call_mask,
     "kotlin": _kotlin_call_mask,
     "php": _php_call_mask,
+    "cpp": _cpp_call_mask,
 }
 
 
@@ -2782,7 +3285,15 @@ def extract_called_names(lang: str, source: str) -> set[str]:
       ``$obj->list()``), magic-member calls excluded (``$o->__construct()``)
       while a bare ``__foo()`` is captured, first-class callables
       (``strlen(...)``) excluded, and calls inside ``{$…}`` interpolation
-      collected from the raw line (PH11).
+      collected from the raw line (PH11),
+    - C++ ``new Foo(…)`` excluded, a declaration's own declarator
+      (``Widget w(1);``) excluded, keyword heads excluded (``if (``,
+      ``sizeof (``), a reserved cast/query keyword excluded even though the
+      grammar exposes it as call-shaped (``static_cast<int>(x)``,
+      ``typeid(x)``), ``f().bar()`` excluded while ``(*p).m()`` and
+      ``arr[0].m()`` are captured, ``ns::f()`` / ``Class::m()`` captured
+      with their final segment, and calls counted only inside function or
+      lambda bodies (probes E1/E4).
     """
     src = _STRIPPERS[lang](source)
     if lang == "java":
@@ -2837,6 +3348,12 @@ def extract_called_names(lang: str, source: str) -> set[str]:
                     continue
                 if _kotlin_receiver_is_call(lines, i, match.start()):
                     continue
+            elif lang == "cpp":
+                # ``Widget w(1);`` is an initialiser, ``new Foo(1)`` a
+                # ``new_expression`` and ``f().bar()`` a call receiver —
+                # none of them a call (probes E1/E4).
+                if not _cpp_name_is_call(lines, i, match, keywords):
+                    continue
             elif lang != "php" and _receiver_is_call(lines, i, match.start()):
                 continue
             # Dunder *attributes* (``obj.__x__()``) are excluded by the
@@ -2880,6 +3397,8 @@ def extract_called_names(lang: str, source: str) -> set[str]:
         names |= _kotlin_interpolation_names(source.splitlines(), mask)
     elif lang == "php":
         names |= _php_interpolation_names(source.splitlines(), mask)
+    elif lang == "cpp":
+        names |= _cpp_templated_call_names(lines, mask)
 
     return names
 
@@ -3312,6 +3831,187 @@ def extract_symbols_php(source: str) -> set[SymbolTuple]:
     return symbols
 
 
+# ---------------------------------------------------------------------------
+# C++ call helpers
+# ---------------------------------------------------------------------------
+
+
+def _cpp_operator_before(line: str, name_start: int) -> tuple[str, int] | None:
+    """The ``.``/``->``/``::`` immediately before *name_start*, if any.
+
+    ``->`` is tested before ``.``; a namespaced call (``ns::f()``) has an
+    operator too, but its scope is a namespace/class name, never a call.
+    """
+    idx = name_start
+    while idx > 0 and line[idx - 1].isspace():
+        idx -= 1
+    if idx >= 2 and line[idx - 2 : idx] == "->":
+        return "->", idx - 2
+    if idx >= 2 and line[idx - 2 : idx] == "::":
+        return "::", idx - 2
+    if idx >= 1 and line[idx - 1] == ".":
+        return ".", idx - 1
+    return None
+
+
+def _cpp_receiver_is_call(lines: list[str], i: int, name_start: int) -> bool:
+    """C++ receiver rule: a *call* receiver is excluded (``f().bar()``).
+
+    Only ``.``/``->`` chains have receivers; a ``::`` scope is a name.  A
+    subscript (``arr[0].m()``) or parenthesised (``(*p).m()``) receiver is
+    captured — the scanner sees neither as a ``call_expression`` (probe
+    E1/extra boundaries).
+    """
+    found = _cpp_operator_before(lines[i], name_start)
+    if found is None:
+        return False
+    op, op_start = found
+    if op == "::":
+        return False
+    if op_start > 0 and lines[i][op_start - 1] == ")":
+        return _paren_is_call(lines[i], op_start - 1)
+    if op_start == 0 or not lines[i][:op_start].strip():
+        if i == 0:
+            return False
+        tail = lines[i - 1].rstrip()
+        return (
+            bool(tail)
+            and tail[-1] == ")"
+            and _paren_is_call(lines[i - 1], len(tail) - 1)
+        )
+    return False
+
+
+def _cpp_new_prefix(line: str, name_start: int) -> bool:
+    """``new Foo(...)`` — a ``new_expression``, never a call (probe E4).
+
+    Any namespace scope between ``new`` and the matched name is removed
+    first, so ``new ns::Logger(...)`` is excluded as well (the matched
+    name is ``Logger`` and ``ns::`` sits in between).
+    """
+    before = re.sub(r"(?:\s*[A-Za-z_]\w*::)+\s*$", "", line[:name_start])
+    return re.search(r"\bnew\s*$", before) is not None
+
+
+# The end of a *type* prefix: an identifier, an optional ``<...>`` and
+# optional ``*``/``&`` — ``Widget w(`` / ``std::string s(`` / ``int* p(``.
+_CPP_DECL_END = re.compile(r"[A-Za-z_]\w*(?:::\w*)*(?:\s*<[^<>;{}]*>)?\s*[\*&]*\s*$")
+
+
+def _cpp_decl_prefix(line: str, name_start: int) -> bool:
+    """Whether *name* is a declaration's declarator (``Widget w(1);``).
+
+    A paren-initialised local (``Widget w(1);``) is an initialiser, not a
+    call (probe E4), and it is never a symbol either.  The statement text
+    before the name is inspected: it is a declarator when it ends with a
+    type-ish token and its last word is not an expression keyword
+    (``return``/``new``/``case``/\u2026).
+    """
+    before = re.split(r"[;{}]", line[:name_start])[-1]
+    stripped = before.strip()
+    if not stripped:
+        return False
+    last_word = re.search(r"[A-Za-z_]\w*$", stripped)
+    if last_word is not None and last_word.group(0) in _KEYWORDS["cpp"]:
+        return False
+    return _CPP_DECL_END.search(stripped) is not None
+
+
+# ``f<int>(x)`` / ``std::vector<int>(10)``: the grammar exposes these as a
+# ``call_expression`` whose target is a ``template_function`` (probes
+# E2/E4), but the name ends at a ``>``, so an ordinary ``NAME(`` scan cannot
+# see it.  One level of template arguments is modelled; the arguments are
+# type-ish only, so a ``<``/``>`` comparison is not matched (the corpus
+# keeps comparisons out of call position).
+_CPP_TEMPLATED_CALL = re.compile(
+    r"(?<![A-Za-z0-9_$])([A-Za-z_]\w*)\s*"
+    r"<[^<>;{}()]*(?:<[^<>;{}()]*>[^<>;{}()]*)*>\s*\("
+)
+
+
+def _cpp_templated_call_names(lines: list[str], mask: list[int]) -> set[str]:
+    """Called names with explicit template arguments (``f<int>(x)``).
+
+    The same guards as the plain scan apply (a keyword is not a call, a
+    declaration's own declarator is not a call, and a call receiver is
+    excluded), plus the shared dunder-attribute rule.
+    """
+    keywords = _KEYWORDS["cpp"]
+    names: set[str] = set()
+    for i, line in enumerate(lines):
+        body_start = mask[i]
+        if body_start < 0:
+            continue
+        for match in _CPP_TEMPLATED_CALL.finditer(line):
+            if match.start() < body_start:
+                continue
+            name = match.group(1)
+            if not _cpp_name_is_call(lines, i, match, keywords):
+                continue
+            if (
+                is_dunder_name(name)
+                and match.start() >= 1
+                and line[match.start() - 1] == "."
+            ):
+                continue
+            names.add(name)
+    return names
+
+
+def _cpp_name_is_call(
+    lines: list[str],
+    i: int,
+    match: re.Match[str],
+    keywords: frozenset[str],
+) -> bool:
+    """Whether a ``name(`` occurrence is a real C++ call.
+
+    Excluded: bare keywords (``if (``, ``sizeof (``), the ``new`` class
+    name, a declaration's own declarator (``Widget w(1);``), a call
+    receiver (``f().bar()``) and a dunder-style member name (the shared
+    rule).  ``ns::f()`` and ``Class::m()`` are captured with their final
+    segment, matching the scanner's ``qualified_identifier`` handling.
+    """
+    name = match.group(1)
+    line = lines[i]
+    start = match.start()
+    op = _cpp_operator_before(line, start)
+    if op is None:
+        if name in keywords:
+            return False
+        if _cpp_new_prefix(line, start):
+            return False
+        if _cpp_decl_prefix(line, start):
+            return False
+        return True
+    if (
+        op is not None
+        and op[0] in (".", "->")
+        and _cpp_receiver_is_call(lines, i, start)
+    ):
+        return False
+    return not is_dunder_name(name)
+
+
+def extract_symbols_cpp(source: str) -> set[SymbolTuple]:
+    """Type declarations, functions, methods, aliases and named lambdas.
+
+    Mirrors ``cpp_scanner``: class/struct/union \u2192 class, enum \u2192 enum,
+    ``using X =`` / ``typedef`` \u2192 type alias, a definition or a
+    declaration-only member \u2192 function (module scope) or method (a class
+    body, or any qualified ``A::f`` name \u2014 the header/impl split), and an
+    ``auto f = [](...) {`` assignment \u2192 function (the JS arrow rule).
+    Namespaces, ``extern "C"`` and control-flow/initialiser braces change
+    no symbol.  Conversion operators (``operator T()``) are not modelled \u2014
+    the corpus keeps to the operator forms the scanner pins.
+    """
+    symbols: set[SymbolTuple] = set()
+    for ev in _cpp_structure(_strip_cpp(source)):
+        if ev.symbol_kind is not None and ev.name is not None:
+            symbols.add((ev.symbol_kind, ev.name))
+    return symbols
+
+
 _SYMBOL_EXTRACTORS: dict[str, object] = {
     "python": extract_symbols_python,
     "javascript": extract_symbols_javascript,
@@ -3321,6 +4021,7 @@ _SYMBOL_EXTRACTORS: dict[str, object] = {
     "java": extract_symbols_java,
     "kotlin": extract_symbols_kotlin,
     "php": extract_symbols_php,
+    "cpp": extract_symbols_cpp,
 }
 
 

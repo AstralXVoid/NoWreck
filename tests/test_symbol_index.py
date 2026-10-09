@@ -1211,3 +1211,76 @@ class TestSymbolIndexPhp:
             SymbolType.METHOD,
         }
         assert {s.parent_class for s in greet} == {None, "Greeter", "Person"}
+
+
+class TestSymbolIndexCpp:
+    """build_symbol_index processes cpp_files from ScanResult (Phase 5)."""
+
+    def _index(self):
+        from pathlib import Path
+
+        from nowreck.scanner.cpp_scanner import scan_cpp_file
+
+        test_file = Path("test_cpp_samples/basic.cpp")
+        if not test_file.exists():
+            pytest.skip("test_cpp_samples/basic.cpp not found")
+
+        symbols = scan_cpp_file(test_file, repo_root=Path("test_cpp_samples"))
+        return build_symbol_index(ScanResult(cpp_files={Path("basic.cpp"): symbols}))
+
+    def test_build_with_cpp_files(self) -> None:
+        idx = self._index()
+
+        assert idx.by_name("Greeter")[0].symbol_type is SymbolType.CLASS
+        assert idx.by_name("Mode")[0].symbol_type is SymbolType.ENUM
+        assert idx.by_name("Name")[0].symbol_type is SymbolType.TYPE_ALIAS
+        # C++ has no interface keyword: INTERFACE never fires.
+        assert idx.interfaces == []
+
+    def test_cpp_methods_have_parent_class(self) -> None:
+        idx = self._index()
+        greet = idx.by_name("greet")
+        assert len(greet) == 1
+        assert greet[0].symbol_type is SymbolType.METHOD
+        assert greet[0].parent_class == "Greeter"
+        assert greet[0].body_hash is not None
+
+    def test_cpp_has_namespace_scope_functions(self) -> None:
+        """A namespace-scope function is a FUNCTION with no parent (E17)."""
+        idx = self._index()
+        assert sorted(s.name for s in idx.functions) == ["free_function", "run"]
+        assert all(s.parent_class is None for s in idx.functions)
+
+    def test_cpp_declaration_only_member_has_no_hash(self) -> None:
+        """E9: the header-side ``format`` carries ``body_hash=None`` while
+        the defined ``greet`` does not."""
+        idx = self._index()
+        format_syms = idx.by_name("format")
+        assert len(format_syms) == 1
+        assert format_syms[0].body_hash is None
+
+    def test_cpp_merges_with_other_languages(self) -> None:
+        from pathlib import Path
+
+        from nowreck.scanner.cpp_scanner import scan_cpp_file
+
+        test_file = Path("test_cpp_samples/basic.cpp")
+        if not test_file.exists():
+            pytest.skip("test_cpp_samples/basic.cpp not found")
+
+        symbols = scan_cpp_file(test_file, repo_root=Path("test_cpp_samples"))
+        python_module = ast.parse("def greet():\n    return 1\n")
+        idx = build_symbol_index(
+            ScanResult(
+                modules={Path("app.py"): python_module},
+                cpp_files={Path("basic.cpp"): symbols},
+            )
+        )
+        # ``greet`` exists as a Python function and as a C++ method with a
+        # different parent; both survive the merge.
+        greet = idx.by_name("greet")
+        assert {s.symbol_type for s in greet} == {
+            SymbolType.FUNCTION,
+            SymbolType.METHOD,
+        }
+        assert {s.parent_class for s in greet} == {None, "Greeter"}

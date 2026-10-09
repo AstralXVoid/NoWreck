@@ -128,6 +128,7 @@ class TestTreeSitterMissing:
                         "tree_sitter_java": None,
                         "tree_sitter_kotlin": None,
                         "tree_sitter_php": None,
+                        "tree_sitter_cpp": None,
                     }}
 
                     with patch.dict("sys.modules", blocked):
@@ -212,6 +213,15 @@ class TestTreeSitterMissing:
         assert "pip install" in output
         assert "ERROR" in output
 
+    def test_cpp_file_graceful_error(self, tmp_path: Path) -> None:
+        """C++ file with missing tree-sitter should return helpful error."""
+        cpp_file = tmp_path / "test.cpp"
+        cpp_file.write_text("int hello() { return 1; }\n")
+        output = self._scan_file_with_missing_tree_sitter(cpp_file, "parse_cpp_file")
+        assert "tree-sitter" in output
+        assert "pip install" in output
+        assert "ERROR" in output
+
     def test_scan_with_missing_tree_sitter_no_crash(self, tmp_path: Path) -> None:
         """Full scan with JS files and missing tree-sitter should not crash."""
         js_file = tmp_path / "test.js"
@@ -234,6 +244,7 @@ class TestTreeSitterMissing:
                         "tree_sitter_java": None,
                         "tree_sitter_kotlin": None,
                         "tree_sitter_php": None,
+                        "tree_sitter_cpp": None,
                     }}
 
                     with patch.dict("sys.modules", blocked):
@@ -297,4 +308,50 @@ class TestTreeSitterMissing:
         assert "PHP files: 0" in result.stdout
         assert "Failed: 1" in result.stdout
         assert "tree-sitter-php" in result.stdout
+        assert "tree-sitter" in result.stdout
+
+    def test_scan_with_missing_cpp_grammar_no_crash(self, tmp_path: Path) -> None:
+        """A full scan with only a ``.cpp`` file and no grammar must not
+        crash: the file lands in ``failed_files`` with the install hint."""
+        cpp_file = tmp_path / "test.cpp"
+        cpp_file.write_text("int hello() { return 1; }\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent(f"""\
+                    import sys
+                    from unittest.mock import patch
+
+                    blocked = {{
+                        "tree_sitter": None,
+                        "tree_sitter_javascript": None,
+                        "tree_sitter_typescript": None,
+                        "tree_sitter_rust": None,
+                        "tree_sitter_go": None,
+                        "tree_sitter_java": None,
+                        "tree_sitter_kotlin": None,
+                        "tree_sitter_php": None,
+                        "tree_sitter_cpp": None,
+                    }}
+
+                    with patch.dict("sys.modules", blocked):
+                        from nowreck.scanner.repository_scanner import RepositoryScanner
+                        scanner = RepositoryScanner("{tmp_path}", use_cache=False)
+                        scan_result = scanner.scan()
+                        print(f"CPP files: {{len(scan_result.cpp_files)}}")
+                        print(f"Failed: {{len(scan_result.failed_files)}}")
+                        for path, err in scan_result.failed_files.items():
+                            print(f"  {{path}}: {{err}}")
+                """),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "CPP files: 0" in result.stdout
+        assert "Failed: 1" in result.stdout
+        assert "tree-sitter-cpp" in result.stdout
         assert "tree-sitter" in result.stdout

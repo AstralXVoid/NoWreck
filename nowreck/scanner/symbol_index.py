@@ -240,6 +240,11 @@ class SymbolIndexBuilder:
             for sym in symbols:
                 index.setdefault(sym.name, []).append(sym)
 
+        # Process C++ files (tree-sitter-based)
+        for file_path, symbols in scan_result.cpp_files.items():
+            for sym in symbols:
+                index.setdefault(sym.name, []).append(sym)
+
         # Sort each name group for deterministic output
         ordered: dict[str, list[Symbol]] = {}
         for name in sorted(index):

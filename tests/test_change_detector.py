@@ -2745,6 +2745,471 @@ class TestDetectPhpChanges:
         ]
 
 
+class TestDetectCppChanges:
+    """C++ detector matrix: symbols, shells, calls, header/impl split.
+
+    Uses the real ``RepositoryScanner`` (tree-sitter C++).  Every row of
+    the Phase 5 test matrix is pinned here — the three-row header/impl
+    scenario (E9), template-parameter folding (E5), ``#ifdef`` edits
+    (E6), raw-vs-interpreted strings (E7) and the overload coarseness
+    (E11).
+    """
+
+    _CLASS = "class A {\n public:\n  int f;\n  void m() { return; }\n};\n"
+
+    def _scan(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+    ) -> tuple[ScanResult, SymbolIndex]:
+        for rel_path, source in files.items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(source, encoding="utf-8")
+        from nowreck.scanner.repository_scanner import RepositoryScanner
+
+        scan_result = RepositoryScanner(tmp_path).scan()
+        sym_index = build_symbol_index(scan_result)
+        return scan_result, sym_index
+
+    def _changes(
+        self,
+        tmp_path: Path,
+        pre: dict[str, str],
+        post: dict[str, str],
+    ) -> list[DetectedChange]:
+        pre_scan, pre_sym = self._scan(tmp_path / "pre", pre)
+        post_scan, post_sym = self._scan(tmp_path / "post", post)
+        return detect_changes(pre_scan, post_scan, pre_sym, post_sym)
+
+    # -- discovery -----------------------------------------------------
+
+    def test_cpp_extensions_are_discovered(self, tmp_path: Path) -> None:
+        """Every C++ extension flow through one ``cpp_files`` mapping."""
+        files = {
+            name: "void f() {}\n"
+            for name in (
+                "a.cpp",
+                "b.cc",
+                "c.cxx",
+                "d.c++",
+                "e.hpp",
+                "f.hh",
+                "g.hxx",
+                "h.h++",
+                "i.h",
+            )
+        }
+        scan, _ = self._scan(tmp_path, files)
+        assert set(scan.cpp_files) == {Path(name) for name in files}
+        assert scan.success_count == len(files)
+
+    # -- symbol add / remove / change ----------------------------------
+
+    def test_cpp_free_function_added(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "int x = 1;\n"},
+            {"a.cpp": "int x = 1;\n\nint add(int a, int b) { return a + b; }\n"},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("add", None)]
+
+    def test_cpp_free_function_removed(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "int add(int a, int b) { return a + b; }\n"},
+            {"a.cpp": "int x = 1;\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in removed] == [("add", None)]
+
+    def test_cpp_method_added_carries_parent(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": self._CLASS},
+            {
+                "a.cpp": self._CLASS.replace(
+                    "  int f;\n", "  int f;\n  void n() { return; }\n"
+                )
+            },
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in added] == [("n", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_cpp_method_removed(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": self._CLASS},
+            {"a.cpp": "class A {\n public:\n  int f;\n};\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in removed] == [("m", "A")]
+
+    def test_cpp_constructor_and_destructor_added(self, tmp_path: Path) -> None:
+        """E14: ``Foo()`` and ``~Foo()`` are METHOD symbols named after the
+        class (the destructor keeping its ``~``)."""
+        changes = self._changes(
+            tmp_path,
+            {"Foo.cpp": "class Foo {\n public:\n  int x;\n};\n"},
+            {"Foo.cpp": ("class Foo {\n public:\n  Foo();\n  ~Foo();\n  int x;\n};\n")},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert sorted((c.symbol_name, c.parent_class) for c in added) == [
+            ("Foo", "Foo"),
+            ("~Foo", "Foo"),
+        ]
+
+    def test_cpp_remove_and_recreate_is_remove_plus_add(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "void old_fn() {}\n"},
+            {"a.cpp": "void fresh_fn() {}\n"},
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.REMOVE_FUNCTION)
+        ] == ["old_fn"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        ] == ["fresh_fn"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    # -- disjoint facts ------------------------------------------------
+
+    def test_cpp_method_body_edit_is_changed_function_only(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": self._CLASS},
+            {"a.cpp": self._CLASS.replace("return;", "poke(); return;")},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in changed] == [("m", "A")]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert not _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+
+    def test_cpp_field_edit_is_changed_class_only(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": self._CLASS},
+            {"a.cpp": self._CLASS.replace("int f;", "double f;")},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["A"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_cpp_base_class_edit_is_changed_class(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {
+                "a.cpp": (
+                    "class Base {};\nclass D : public Base {\n public:\n  int x;\n};\n"
+                )
+            },
+            {
+                "a.cpp": (
+                    "class Base {};\nclass Other {};\n"
+                    "class D : public Other {\n public:\n  int x;\n};\n"
+                )
+            },
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert "D" in [c.symbol_name for c in changed]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_cpp_access_specifier_edit_is_changed_class(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "class A {\n public:\n  int f;\n};\n"},
+            {"a.cpp": "class A {\n private:\n  int f;\n};\n"},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["A"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_cpp_struct_and_enum_are_class_and_enum(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {},
+            {
+                "a.cpp": (
+                    "struct P { int x; };\n"
+                    "enum Color { RED };\n"
+                    "enum class Mode { ON };\n"
+                    "using Alias = P;\n"
+                )
+            },
+        )
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_CLASS)
+        ] == ["P"]
+        assert sorted(
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_ENUM)
+        ) == ["Color", "Mode"]
+        assert [
+            c.symbol_name for c in _changes_of_type(changes, ChangeType.ADD_TYPE_ALIAS)
+        ] == ["Alias"]
+
+    # -- header / impl split (E9 three-row table) ----------------------
+
+    HEADER = "class Widget {\n public:\n  Widget();\n  void draw();\n};\n"
+    IMPL = "void Widget::draw() { render(); }\n"
+
+    def test_cpp_header_declaration_edit_is_changed_class_on_the_header(
+        self, tmp_path: Path
+    ) -> None:
+        """Row 1: a header *declaration* edit is shell content — the
+        declaration-only method symbol is hash-less, so the header's own
+        type fires CHANGED_CLASS (the pinned coarseness)."""
+        changes = self._changes(
+            tmp_path,
+            {"w.h": self.HEADER},
+            {"w.h": self.HEADER.replace("void draw();", "void draw(int n);")},
+        )
+        changed_class = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed_class] == ["Widget"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+
+    def test_cpp_impl_body_edit_fires_on_the_impl_symbol(self, tmp_path: Path) -> None:
+        """Row 2: a ``.cpp`` body edit fires CHANGED_FUNCTION on the
+        ``.cpp`` symbol, attributed to the class named in the qualifier."""
+        changes = self._changes(
+            tmp_path,
+            {"w.h": self.HEADER, "w.cpp": self.IMPL},
+            {"w.h": self.HEADER, "w.cpp": self.IMPL.replace("render()", "draw_all()")},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [(c.symbol_name, c.parent_class) for c in changed] == [
+            ("draw", "Widget")
+        ]
+        assert [str(c.file_path) for c in changed] == ["w.cpp"]
+        assert not _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+
+    def test_cpp_declaration_only_symbol_never_fires_from_the_impl_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """Row 3: the header's declaration-only METHOD carries
+        ``body_hash=None``, so the ``.cpp`` edit can never falsify it (the
+        header symbol is a distinct per-file fact)."""
+        changes = self._changes(
+            tmp_path,
+            {"w.h": self.HEADER, "w.cpp": self.IMPL},
+            {"w.h": self.HEADER, "w.cpp": self.IMPL.replace("render()", "draw_all()")},
+        )
+        header_fires = [
+            c
+            for c in _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+            if str(c.file_path) == "w.h"
+        ]
+        assert header_fires == []
+        assert [
+            str(c.file_path) for c in _changes_of_type(changes, ChangeType.FILE_CREATED)
+        ] == []
+
+    def test_cpp_header_impl_split_symbols_are_two_per_file_facts(
+        self, tmp_path: Path
+    ) -> None:
+        scan, sym = self._scan(tmp_path, {"w.h": self.HEADER, "w.cpp": self.IMPL})
+        draws = [s for s in sym.by_name("draw") if s.symbol_type.name == "METHOD"]
+        assert {(str(s.file_path), s.parent_class) for s in draws} == {
+            ("w.h", "Widget"),
+            ("w.cpp", "Widget"),
+        }
+        by_file = {str(s.file_path): s for s in draws}
+        assert by_file["w.h"].body_hash is None
+        assert by_file["w.cpp"].body_hash is not None
+
+    # -- template folding (E5) ----------------------------------------
+
+    def test_cpp_template_parameter_edit_is_visible(self, tmp_path: Path) -> None:
+        """E5: only the template parameter list changed — the wrapped
+        declaration is byte-identical, so a hash over the declaration
+        alone would miss it."""
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "template <typename T>\nvoid sink() { poke(); }\n"},
+            {"a.cpp": "template <typename U>\nvoid sink() { poke(); }\n"},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["sink"]
+
+    def test_cpp_class_template_parameter_edit_is_changed_class(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "template <class T>\nstruct Box { int x; };\n"},
+            {"a.cpp": "template <class U>\nstruct Box { int x; };\n"},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_CLASS)
+        assert [c.symbol_name for c in changed] == ["Box"]
+
+    def test_cpp_templated_method_body_edit_is_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "template <typename T>\nT id(T x) { return x; }\n"},
+            {"a.cpp": "template <typename T>\nT id(T x) { return x + 0; }\n"},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["id"]
+
+    # -- preprocessor (E6) --------------------------------------------
+
+    def test_cpp_ifdef_region_edit_is_changed_function(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "void f() {\n#ifdef DEBUG\n  log_it();\n#endif\n}\n"},
+            {"a.cpp": "void f() {\n#ifdef NDEBUG\n  log_it();\n#endif\n}\n"},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["f"]
+
+    def test_cpp_ifdef_member_is_a_symbol(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "void f() {}\n"},
+            {"a.cpp": ("void f() {}\n#ifdef ENABLE\nvoid g() {}\n#endif\n")},
+        )
+        added = _changes_of_type(changes, ChangeType.ADD_FUNCTION)
+        assert [c.symbol_name for c in added] == ["g"]
+
+    # -- string policy (E7) -------------------------------------------
+
+    def test_cpp_raw_to_interpreted_string_is_a_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": 'void f() { const char* s = "hi"; }\n'},
+            {"a.cpp": 'void f() { const char* s = R"(hi)"; }\n'},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["f"]
+
+    def test_cpp_string_content_edit_is_a_change(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": 'void f() { const char* s = "hi"; }\n'},
+            {"a.cpp": 'void f() { const char* s = "bye"; }\n'},
+        )
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["f"]
+
+    # -- reformatting / comments / line shift --------------------------
+
+    def test_cpp_reformat_and_comment_only_edits_are_invisible(
+        self, tmp_path: Path
+    ) -> None:
+        pre = "int add(int a, int b) {\n  return a + b;\n}\n"
+        post = "// explain the sum\nint add(int a, int b)\n{\n    return a + b;\n}\n"
+        changes = self._changes(tmp_path, {"a.cpp": pre}, {"a.cpp": post})
+        assert changes == []
+
+    def test_cpp_line_shift_is_invisible(self, tmp_path: Path) -> None:
+        pre = "int add(int a, int b) { return a + b; }\n"
+        post = "\n\n\n" + pre
+        changes = self._changes(tmp_path, {"a.cpp": pre}, {"a.cpp": post})
+        assert changes == []
+
+    # -- overload coarseness (E11) ------------------------------------
+
+    def test_cpp_changing_the_first_overload_fires_changed_function(
+        self, tmp_path: Path
+    ) -> None:
+        pre = "int f(int x) { return 1; }\nint f(double x) { return 2; }\n"
+        post = "int f(int x) { return 99; }\nint f(double x) { return 2; }\n"
+        changes = self._changes(tmp_path, {"a.cpp": pre}, {"a.cpp": post})
+        changed = _changes_of_type(changes, ChangeType.CHANGED_FUNCTION)
+        assert [c.symbol_name for c in changed] == ["f"]
+
+    def test_cpp_shadowed_overload_edit_is_invisible(self, tmp_path: Path) -> None:
+        """E11 (as executed): identity dedupes same-identity overloads, so
+        only one is comparable — a shadowed overload edit fires nothing.
+        See the audit report for the wording correction."""
+        pre = "int f(int x) { return 1; }\nint f(double x) { return 2; }\n"
+        post = "int f(int x) { return 1; }\nint f(double x) { return 99; }\n"
+        changes = self._changes(tmp_path, {"a.cpp": pre}, {"a.cpp": post})
+        assert changes == []
+
+    def test_cpp_adding_an_overload_fires_nothing(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "int f(int x) { return 1; }\n"},
+            {"a.cpp": "int f(int x) { return 1; }\nint f(double x) { return 2; }\n"},
+        )
+        assert changes == []
+
+    # -- calls ---------------------------------------------------------
+
+    def test_cpp_calls_captured_and_excluded(self, tmp_path: Path) -> None:
+        """The C++ call matrix: plain, member (``.``/``->``), qualified
+        (``::``), chain, local lambda invocation and ``this->`` are
+        captured; a call receiver, ``new``, a paren initialiser and a
+        subscript target are not."""
+        source = (
+            "void free_fn() {}\n"
+            "class Client {\n"
+            " public:\n"
+            "  void run() {\n"
+            "    foo();\n"
+            "    obj.m();\n"
+            "    obj->m();\n"
+            "    this->local();\n"
+            "    ns::f();\n"
+            "    Class::stat();\n"
+            "    a.b.c();\n"
+            "    build().chained();\n"
+            "    new Thing();\n"
+            "    Thing t(1);\n"
+            "    arr[0]();\n"
+            "    auto lam = [](int x) { return inner(x); };\n"
+            "    lam(3);\n"
+            "  }\n"
+            "};\n"
+        )
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        run_calls = [c for c in calls if c.caller_name == "run"]
+        assert {c.called_name for c in run_calls} == {
+            "foo",
+            "m",
+            "local",
+            "f",
+            "stat",
+            "c",
+            "build",
+            "lam",
+        }
+        assert all(c.parent_class == "Client" for c in run_calls)
+        lam_calls = [c for c in calls if c.caller_name == "lam"]
+        assert [(c.called_name, c.parent_class) for c in lam_calls] == [
+            ("inner", "Client")
+        ]
+
+    def test_cpp_namespace_caller_keeps_namespace_less_name(
+        self, tmp_path: Path
+    ) -> None:
+        source = "namespace app {\nvoid run() { helper(); }\n}\n"
+        changes = self._changes(tmp_path, {}, {"a.cpp": source})
+        calls = _changes_of_type(changes, ChangeType.CALL_DETECTED)
+        assert [(c.caller_name, c.called_name, c.parent_class) for c in calls] == [
+            ("run", "helper", None)
+        ]
+
+    def test_cpp_removed_call_detected(self, tmp_path: Path) -> None:
+        changes = self._changes(
+            tmp_path,
+            {"a.cpp": "void main_fn() { validate(1); }\n"},
+            {"a.cpp": "void main_fn() { render(1); }\n"},
+        )
+        removed = _changes_of_type(changes, ChangeType.CALL_REMOVED)
+        assert [(c.caller_name, c.called_name) for c in removed] == [
+            ("main_fn", "validate")
+        ]
+
+
 class TestCallRemovedChanges:
     """P2-03: disappeared call sites surface as CALL_REMOVED."""
 

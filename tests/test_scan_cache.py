@@ -809,3 +809,96 @@ class TestPhpCacheRoundTrip:
         cache_file = php_repo / CACHE_DIR / CACHE_FILE
         assert json.loads(cache_file.read_text())["version"] == 2
         assert CACHE_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 5: C++ cache round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cpp_repo(tmp_path: Path) -> Path:
+    """A repo with a C++ class header/impl pair and a free function."""
+    (tmp_path / "Greeter.hpp").write_text(
+        "class Greeter\n{\npublic:\n    void greet();\n};\n"
+    )
+    (tmp_path / "Greeter.cpp").write_text(
+        '#include "Greeter.hpp"\n\nvoid Greeter::greet()\n{\n    emit_line();\n}\n'
+    )
+    (tmp_path / "helpers.cpp").write_text(
+        "int shout(int value)\n{\n    return value + 1;\n}\n"
+    )
+    return tmp_path
+
+
+class TestCppCacheRoundTrip:
+    """C++ scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_cpp_symbols(self, cpp_repo: Path) -> None:
+        scanner = RepositoryScanner(cpp_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.cpp_files) == set(result_warm.cpp_files)
+        assert set(result_cold.cpp_files) == {
+            Path("Greeter.hpp"),
+            Path("Greeter.cpp"),
+            Path("helpers.cpp"),
+        }
+        for path in result_cold.cpp_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.cpp_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.cpp_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_cpp_body_hash(self, cpp_repo: Path) -> None:
+        scanner = RepositoryScanner(cpp_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.cpp_files[Path("helpers.cpp")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+
+    def test_cache_preserves_cpp_declaration_only_member(self, cpp_repo: Path) -> None:
+        """E9: the header-side member survives the round-trip as an
+        unhashed symbol, so a ``.cpp`` body edit can never falsify it."""
+        RepositoryScanner(cpp_repo).scan()
+        warm = RepositoryScanner(cpp_repo).scan()
+
+        header = warm.cpp_files[Path("Greeter.hpp")]
+        greet = [s for s in header if s.name == "greet"]
+        assert len(greet) == 1
+        assert greet[0].parent_class == "Greeter"
+        assert greet[0].body_hash is None
+
+    def test_cache_preserves_cpp_impl_hash(self, cpp_repo: Path) -> None:
+        RepositoryScanner(cpp_repo).scan()
+        warm = RepositoryScanner(cpp_repo).scan()
+
+        impl = warm.cpp_files[Path("Greeter.cpp")]
+        greet = [s for s in impl if s.name == "greet"]
+        assert len(greet) == 1
+        assert greet[0].parent_class == "Greeter"
+        assert greet[0].body_hash is not None
+
+    def test_cache_file_records_cpp_language(self, cpp_repo: Path) -> None:
+        RepositoryScanner(cpp_repo).scan()
+        cache_file = cpp_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {
+            path: e for path, e in data["entries"].items() if e["language"] == "cpp"
+        }
+        assert set(entries) == {"Greeter.hpp", "Greeter.cpp", "helpers.cpp"}
+
+    def test_cache_schema_version_is_still_v2_for_cpp(self, cpp_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(cpp_repo).scan()
+        cache_file = cpp_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2

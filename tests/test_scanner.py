@@ -426,8 +426,31 @@ def php_only_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def cpp_only_repo(tmp_path: Path) -> Path:
+    """A repo with C++ files only.
+
+    C++ has namespace-scope functions (like Rust/Go), so one file
+    exercises the FUNCTION path and the other the CLASS/METHOD path.
+    """
+    (tmp_path / "Main.cpp").write_text(
+        "class Main\n"
+        "{\n"
+        "public:\n"
+        "    int greet() const\n"
+        "    {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n",
+    )
+    (tmp_path / "Utils.cpp").write_text(
+        "int helper()\n{\n    return 42;\n}\n",
+    )
+    return tmp_path
+
+
+@pytest.fixture
 def multi_lang_repo(tmp_path: Path) -> Path:
-    """A repo with Python, JS, TS, Rust, Go, Java, Kotlin, and PHP files."""
+    """A repo with Python, JS, TS, Rust, Go, Java, Kotlin, PHP, C++ files."""
     (tmp_path / "app.py").write_text("def run(): ...\n")
     (tmp_path / "util.js").write_text("function greet() {}\n")
     (tmp_path / "mod.ts").write_text("function hello(): void {}\n")
@@ -443,6 +466,9 @@ def multi_lang_repo(tmp_path: Path) -> Path:
     )
     (tmp_path / "Index.php").write_text(
         "<?php\n\nfunction index(): void\n{\n}\n",
+    )
+    (tmp_path / "app.cpp").write_text(
+        "int entry()\n{\n    return 1;\n}\n",
     )
     return tmp_path
 
@@ -843,14 +869,141 @@ class TestRepositoryScannerPhp:
         assert by_name["log"].parent_class == "Loggable"
 
 
+class TestRepositoryScannerCpp:
+    """C++ file discovery and parsing (v0.17.0 Phase 5)."""
+
+    def test_scan_finds_cpp_files(self, cpp_only_repo: Path) -> None:
+        scanner = RepositoryScanner(cpp_only_repo)
+        result = scanner.scan()
+
+        assert result.success_count == 2
+        assert result.failure_count == 0
+
+        assert Path("Main.cpp") in result.cpp_files
+        assert Path("Utils.cpp") in result.cpp_files
+
+        main_syms = result.cpp_files[Path("Main.cpp")]
+        assert [(s.name, s.symbol_type.name) for s in main_syms] == [
+            ("Main", "CLASS"),
+            ("greet", "METHOD"),
+        ]
+        assert main_syms[1].parent_class == "Main"
+
+        # C++ has namespace-scope functions (like Kotlin, unlike Java).
+        util_syms = result.cpp_files[Path("Utils.cpp")]
+        assert [(s.name, s.symbol_type.name) for s in util_syms] == [
+            ("helper", "FUNCTION"),
+        ]
+        assert util_syms[0].parent_class is None
+
+    def test_scan_cpp_hidden_dirs_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "Visible.cpp").write_text("int visible() { return 1; }\n")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "Ignored.cpp").write_text("int ignored() { return 1; }\n")
+
+        scanner = RepositoryScanner(tmp_path)
+        result = scanner.scan()
+
+        assert result.success_count == 1
+        assert Path("Visible.cpp") in result.cpp_files
+        assert Path("Ignored.cpp") not in result.cpp_files
+
+    def test_scan_cpp_deterministic(self, cpp_only_repo: Path) -> None:
+        scanner = RepositoryScanner(cpp_only_repo)
+        result1 = scanner.scan()
+        result2 = scanner.scan()
+
+        assert result1.success_count == result2.success_count
+        for path in result1.cpp_files:
+            syms1 = [(s.name, s.symbol_type) for s in result1.cpp_files[path]]
+            syms2 = [(s.name, s.symbol_type) for s in result2.cpp_files[path]]
+            assert syms1 == syms2
+
+    def test_scan_cpp_counts_in_success_total(self, cpp_only_repo: Path) -> None:
+        result = RepositoryScanner(cpp_only_repo).scan()
+        assert result.success_count == len(result.cpp_files)
+
+    def test_scan_cpp_extensions(self, tmp_path: Path) -> None:
+        """Every documented C++ extension is discovered; ``.c`` is not."""
+        supported = [
+            "a.cpp",
+            "b.cc",
+            "c.cxx",
+            "d.c++",
+            "e.hpp",
+            "f.hh",
+            "g.hxx",
+            "h.h++",
+            "i.h",
+        ]
+        for name in supported:
+            (tmp_path / name).write_text("int marker() { return 1; }\n")
+        (tmp_path / "Legacy.c").write_text("int legacy(void) { return 1; }\n")
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        assert set(result.cpp_files) == {Path(n) for n in supported}
+        assert Path("Legacy.c") not in result.cpp_files
+
+    def test_scan_cpp_declaration_only_member_has_no_body_hash(
+        self, tmp_path: Path
+    ) -> None:
+        """E9: a header-side member ends with ``;`` instead of a body, so
+        it carries ``body_hash=None`` and can never fire CHANGED_FUNCTION."""
+        (tmp_path / "widget.h").write_text(
+            "class Widget\n{\npublic:\n    void draw();\n};\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        methods = [
+            s
+            for s in result.cpp_files[Path("widget.h")]
+            if s.symbol_type.name == "METHOD"
+        ]
+        assert [s.name for s in methods] == ["draw"]
+        assert methods[0].body_hash is None
+
+    def test_scan_cpp_union_enum_and_alias_symbols(self, tmp_path: Path) -> None:
+        """A union maps to CLASS (a class-like type), ``enum class`` to ENUM
+        and ``using`` to TYPE_ALIAS, each with its own shell hash."""
+        (tmp_path / "types.cpp").write_text(
+            "union Value\n"
+            "{\n"
+            "    int as_int;\n"
+            "    double as_double;\n"
+            "};\n\n"
+            "enum class Mode\n"
+            "{\n"
+            "    Fast\n"
+            "};\n\n"
+            "using Count = unsigned long;\n",
+        )
+
+        result = RepositoryScanner(tmp_path).scan()
+
+        symbols = result.cpp_files[Path("types.cpp")]
+        assert [(s.name, s.symbol_type.name) for s in symbols] == [
+            ("Value", "CLASS"),
+            ("Mode", "ENUM"),
+            ("Count", "TYPE_ALIAS"),
+        ]
+        by_name = {s.name: s for s in symbols}
+        assert by_name["Value"].body_hash is not None
+        assert by_name["Mode"].body_hash is not None
+        # A type alias has no CHANGED_TYPE_ALIAS claim, so no hash.
+        assert by_name["Count"].body_hash is None
+
+
 class TestRepositoryScannerMultiLang:
-    """Multi-language repo with all 8 families."""
+    """Multi-language repo with all 9 families."""
 
     def test_scan_discovers_all_languages(self, multi_lang_repo: Path) -> None:
         scanner = RepositoryScanner(multi_lang_repo)
         result = scanner.scan()
 
-        assert result.success_count == 8
+        assert result.success_count == 9
         assert Path("app.py") in result.modules
         assert Path("util.js") in result.js_files
         assert Path("mod.ts") in result.ts_files
@@ -859,6 +1012,7 @@ class TestRepositoryScannerMultiLang:
         assert Path("App.java") in result.java_files
         assert Path("App.kt") in result.kotlin_files
         assert Path("Index.php") in result.php_files
+        assert Path("app.cpp") in result.cpp_files
 
     def test_scan_success_count_includes_all(
         self,
@@ -875,5 +1029,6 @@ class TestRepositoryScannerMultiLang:
             + len(result.java_files)
             + len(result.kotlin_files)
             + len(result.php_files)
+            + len(result.cpp_files)
         )
         assert result.success_count == expected

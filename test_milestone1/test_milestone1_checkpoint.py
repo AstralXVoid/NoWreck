@@ -55,6 +55,7 @@ PURE_GO_REPO = REPOS / "pure-go" / "src"
 PURE_JAVA_REPO = REPOS / "pure-java" / "src"
 PURE_KOTLIN_REPO = REPOS / "pure-kotlin" / "src"
 PURE_PHP_REPO = REPOS / "pure-php" / "src"
+PURE_CPP_REPO = REPOS / "pure-cpp" / "src"
 MIXED_REPO = REPOS / "mixed"
 
 EXPECTED_PY_FILES = 3  # greeter.py, calculator.py, models.py
@@ -66,6 +67,7 @@ EXPECTED_GO_FILES = 3  # greeter.go, calculator.go, models.go
 EXPECTED_JAVA_FILES = 3  # Greeter.java, Calculator.java, Models.java
 EXPECTED_KOTLIN_FILES = 3  # Greeter.kt, Calculator.kt, Models.kt
 EXPECTED_PHP_FILES = 3  # Greeter.php, Calculator.php, Models.php
+EXPECTED_CPP_FILES = 5  # greeter.h/.cpp, calculator.h/.cpp, models.h
 EXPECTED_MIXED_PY = 2  # utils.py, main.py
 EXPECTED_MIXED_JS = 2  # utils.js, ui_handler.js
 
@@ -160,6 +162,11 @@ def pure_kotlin_scan() -> tuple[ScanResult, SymbolIndex]:
 @pytest.fixture(scope="module")
 def pure_php_scan() -> tuple[ScanResult, SymbolIndex]:
     return _scan_and_index(PURE_PHP_REPO)
+
+
+@pytest.fixture(scope="module")
+def pure_cpp_scan() -> tuple[ScanResult, SymbolIndex]:
+    return _scan_and_index(PURE_CPP_REPO)
 
 
 @pytest.fixture(scope="module")
@@ -1418,6 +1425,157 @@ class TestPurePhpRepo:
     ) -> None:
         scan1, idx1 = pure_php_scan
         scan2, idx2 = _scan_and_index(PURE_PHP_REPO)
+        changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
+        changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
+        assert changes1 == changes2
+
+
+class TestPureCppRepo:
+    """5 C++ files: free functions, a class, hierarchy, a split, calls.
+
+    Every assertion below was verified against the real scanner first
+    (the scan dump is the empirical basis, not an assumption).
+    """
+
+    def test_discovers_all_files(self, pure_cpp_scan: tuple[ScanResult, Any]) -> None:
+        scan, _ = pure_cpp_scan
+        assert scan.success_count == EXPECTED_CPP_FILES
+        assert scan.failure_count == 0
+        assert len(scan.cpp_files) == EXPECTED_CPP_FILES
+        assert set(scan.cpp_files) == {
+            Path("greeter.h"),
+            Path("greeter.cpp"),
+            Path("calculator.h"),
+            Path("calculator.cpp"),
+            Path("models.h"),
+        }
+
+    def test_free_functions_are_functions(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """A namespace-scope function is a FUNCTION with no ``parent_class``
+        — the C++ spelling of the Kotlin/PHP rule."""
+        _, idx = pure_cpp_scan
+        for name in ("greet", "formatGreeting", "farewell", "trimCopy"):
+            found = [
+                s for s in idx.by_name(name) if s.symbol_type is SymbolType.FUNCTION
+            ]
+            # The header declaration and the .cpp definition are two symbols.
+            assert len(found) == 2, name
+            assert all(s.parent_class is None for s in found), name
+
+    def test_calculator_has_class_and_methods(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_cpp_scan
+        calc = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.CLASS
+        ]
+        assert len(calc) == 1
+        for name in (
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "display",
+            "computeAverage",
+        ):
+            methods = [
+                s
+                for s in idx.by_name(name)
+                if s.parent_class == "Calculator" and s.symbol_type is SymbolType.METHOD
+            ]
+            # Declaration (calculator.h) + definition (calculator.cpp).
+            assert len(methods) == 2, name
+
+    def test_constructor_is_named_after_its_class(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """C++ spells its constructor with the class name, so the METHOD is
+        named ``Calculator`` with the class as ``parent_class``."""
+        _, idx = pure_cpp_scan
+        ctors = [
+            s for s in idx.by_name("Calculator") if s.symbol_type is SymbolType.METHOD
+        ]
+        assert len(ctors) == 2
+        assert {s.parent_class for s in ctors} == {"Calculator"}
+
+    def test_models_has_types(self, pure_cpp_scan: tuple[ScanResult, Any]) -> None:
+        _, idx = pure_cpp_scan
+
+        def only(name: str, kind: SymbolType) -> list:
+            return [s for s in idx.by_name(name) if s.symbol_type is kind]
+
+        assert len(only("User", SymbolType.CLASS)) == 1
+        assert len(only("AdminUser", SymbolType.CLASS)) == 1
+        assert len(only("Status", SymbolType.ENUM)) == 1
+        assert len(only("Id", SymbolType.TYPE_ALIAS)) == 1
+        # C++ has no interface keyword: INTERFACE never fires (a documented
+        # accepted edge, like a Go enum).
+        assert idx.interfaces == []
+
+    def test_declaration_only_members_carry_no_hash(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        """E9: a header-side member has ``body_hash=None`` so the ``.cpp``
+        body edit can never falsify it, while the definition is hashed."""
+        _, idx = pure_cpp_scan
+        for name in ("add", "display"):
+            methods = [s for s in idx.by_name(name) if s.parent_class == "Calculator"]
+            header = [s for s in methods if str(s.file_path) == "calculator.h"]
+            impl = [s for s in methods if str(s.file_path) == "calculator.cpp"]
+            assert len(header) == 1 and len(impl) == 1, name
+            assert header[0].body_hash is None, name
+            assert impl[0].body_hash is not None, name
+
+    def test_symbol_index_has_cpp_symbols(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        _, idx = pure_cpp_scan
+        # 4 declarations in greeter.h + 4 definitions in greeter.cpp + escape.
+        assert len(idx.functions) == 9
+        assert len(idx.classes) == 3  # Calculator, User, AdminUser
+        assert len(idx.enums) >= 1  # Status
+        assert len(idx.type_aliases) >= 1  # Id
+        assert len(idx.methods) >= 20
+
+    def test_call_detection(self) -> None:
+        changes = _changes_between(None, PURE_CPP_REPO)
+        call_changes = [c for c in changes if c.change_type is ChangeType.CALL_DETECTED]
+        callers = {(c.caller_name, c.called_name) for c in call_changes}
+        # greet.cpp: greet -> formatGreeting, formatGreeting -> trimCopy
+        assert ("greet", "formatGreeting") in callers
+        assert ("formatGreeting", "trimCopy") in callers
+        # AdminUser::display -> User::display() (the qualified-call row)
+        assert ("display", "display") in callers
+        # Calculator::computeAverage -> totalOf() / values.size()
+        assert ("computeAverage", "totalOf") in callers
+        assert ("computeAverage", "size") in callers
+        # User::toJson -> escape()
+        assert ("toJson", "escape") in callers
+
+    def test_file_changes_detected(self) -> None:
+        changes = _changes_between(None, PURE_CPP_REPO)
+        created = [c for c in changes if c.change_type is ChangeType.FILE_CREATED]
+        assert len(created) == EXPECTED_CPP_FILES
+        types = {c.change_type for c in changes}
+        assert ChangeType.ADD_FUNCTION in types
+        assert ChangeType.ADD_CLASS in types
+        assert ChangeType.ADD_ENUM in types
+        assert ChangeType.ADD_TYPE_ALIAS in types
+
+    def test_no_changes_when_identical(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan, idx = pure_cpp_scan
+        changes = detect_changes(scan, scan, idx, idx)
+        assert len(changes) == 0
+
+    def test_deterministic_across_runs(
+        self, pure_cpp_scan: tuple[ScanResult, Any]
+    ) -> None:
+        scan1, idx1 = pure_cpp_scan
+        scan2, idx2 = _scan_and_index(PURE_CPP_REPO)
         changes1 = detect_changes(ScanResult(), scan1, SymbolIndex(), idx1)
         changes2 = detect_changes(ScanResult(), scan2, SymbolIndex(), idx2)
         assert changes1 == changes2

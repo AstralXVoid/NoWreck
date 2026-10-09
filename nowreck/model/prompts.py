@@ -30,9 +30,11 @@ Valid claim types:
 - ADD_INTERFACE    — An interface was added to a file
                      (TypeScript/TSX/Rust/Go/Java/Kotlin/PHP).
 - REMOVE_INTERFACE — An interface was removed from a file.
-- ADD_ENUM         — An enum was added to a file (TypeScript/TSX/Rust/Java/Kotlin/PHP).
+- ADD_ENUM         — An enum was added to a file
+                     (TypeScript/TSX/Rust/Java/Kotlin/PHP/C++).
 - REMOVE_ENUM      — An enum was removed from a file.
-- ADD_TYPE_ALIAS   — A type alias was added to a file (TypeScript/TSX/Rust/Go).
+- ADD_TYPE_ALIAS   — A type alias was added to a file
+                     (TypeScript/TSX/Rust/Go/Kotlin/C++).
 - REMOVE_TYPE_ALIAS — A type alias was removed from a file.
 - CHANGED_FUNCTION — The body of an existing function was changed.
 - CHANGED_CLASS    — The body of an existing class was changed.
@@ -110,9 +112,9 @@ Valid claim types:
 - REMOVE_CLASS     — A class was removed from a file.
 - ADD_INTERFACE    — An interface was added (TS/TSX/Rust/Go/Java/Kotlin/PHP).
 - REMOVE_INTERFACE — An interface was removed.
-- ADD_ENUM         — An enum was added (TS/TSX/Rust/Java/Kotlin/PHP).
+- ADD_ENUM         — An enum was added (TS/TSX/Rust/Java/Kotlin/PHP/C++).
 - REMOVE_ENUM      — An enum was removed.
-- ADD_TYPE_ALIAS   — A type alias was added (TS/TSX/Rust/Go).
+- ADD_TYPE_ALIAS   — A type alias was added (TS/TSX/Rust/Go/Kotlin/C++).
 - REMOVE_TYPE_ALIAS — A type alias was removed.
 - CHANGED_FUNCTION — The body of an existing function was changed.
 - CHANGED_CLASS    — The body of an existing class was changed.

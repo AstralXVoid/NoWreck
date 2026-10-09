@@ -436,6 +436,7 @@ class PromptModeVerifier:
             + len(before.scan_result.java_files)
             + len(before.scan_result.kotlin_files)
             + len(before.scan_result.php_files)
+            + len(before.scan_result.cpp_files)
         )
         logger.info("Captured BEFORE state: %d files", n_files)
 
@@ -479,6 +480,7 @@ class PromptModeVerifier:
                 + len(after.scan_result.java_files)
                 + len(after.scan_result.kotlin_files)
                 + len(after.scan_result.php_files)
+                + len(after.scan_result.cpp_files)
             )
             logger.info("Captured AFTER state: %d files", n_files_after)
 

@@ -879,6 +879,13 @@ _LANG_CASES = [
         "<?php\n\nfunction greet(): string\n{\n    return 'hello';\n}\n",
         None,
     ),
+    (
+        "cpp",
+        "app.cpp",
+        "int greet() { return 1; }\n",
+        "int greet() { return 2; }\n",
+        None,
+    ),
 ]
 
 
@@ -2010,6 +2017,396 @@ class TestE2EPhpPipeline:
         self, capsys: pytest.CaptureFixture
     ) -> None:
         """P3 for PHP: external ``.php`` snapshot dirs get no ``.nowreck/``."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                ["fix", "--pre", str(pre), "--post", str(post)]
+            )
+            handle_fix(args)
+            capsys.readouterr()
+
+            assert not (pre / ".nowreck").exists()
+            assert not (post / ".nowreck").exists()
+
+
+class TestE2ECppPipeline:
+    """Phase 5 gate 5: the real CLI pipeline over C++ sources.
+
+    Covers ``--pre/--post`` with all three output formats, ``--compare``
+    against a git repo, both non-CONFIRMED verdict paths, the top-level
+    (no ``parent_class``) function spelling, and the external-dirs
+    cache-free rule for ``.cpp`` snapshots.
+    """
+
+    _PRE = (
+        "class App\n"
+        "{\n"
+        "public:\n"
+        "    int greet() const\n"
+        "    {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+    )
+    _POST = _PRE.replace("return 1;", "return 2;")
+
+    def _snapshots(self, tmpdir: str) -> tuple[Path, Path]:
+        pre = Path(tmpdir) / "pre"
+        post = Path(tmpdir) / "post"
+        pre.mkdir()
+        post.mkdir()
+        (pre / "App.cpp").write_text(self._PRE, encoding="utf-8")
+        (post / "App.cpp").write_text(self._POST, encoding="utf-8")
+        return pre, post
+
+    @pytest.mark.parametrize("fmt", ["json", "sarif", "junit"])
+    def test_cpp_change_renders_every_format(
+        self, capsys: pytest.CaptureFixture, fmt: str
+    ) -> None:
+        """An unexplained C++ change renders through json/sarif/junit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--format",
+                    fmt,
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            # A CHANGED_FUNCTION with no claim is unexplained → exit 1.
+            assert rc == 1, out
+            if fmt == "json":
+                data = json.loads(out)
+                assert "version" in data and "results" in data
+                unexplained = data["unexplained_changes"]
+                assert any(
+                    c["symbol_name"] == "greet" and c["parent_class"] == "App"
+                    for c in unexplained
+                ), unexplained
+            elif fmt == "sarif":
+                data = json.loads(out)
+                assert data["version"] == "2.1.0"
+                assert "$schema" in data
+            else:
+                assert "testsuites" in out
+                assert "nowreck" in out
+
+    def test_cpp_claim_confirmed_via_pre_post(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The honest claim set for a C++ method-body edit is CONFIRMED."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.cpp",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_cpp_top_level_function_confirmed(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A namespace-scope C++ function needs no ``parent_class`` and
+        still confirms end-to-end."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "helpers.cpp").write_text(
+                "int slugify(int value)\n{\n    return value;\n}\n",
+                encoding="utf-8",
+            )
+            (post / "helpers.cpp").write_text(
+                "int slugify(int value)\n{\n    return normalise(value);\n}\n",
+                encoding="utf-8",
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="slugify",
+                    file_path="helpers.cpp",
+                ),
+                _make_claim_dict(
+                    ClaimType.CALLS_FUNCTION,
+                    file_path="helpers.cpp",
+                    caller_name="slugify",
+                    called_name="normalise",
+                ),
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_cpp_method_call_claim_confirmed(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A C++ method-call claim confirms through the real pipeline: call
+        capture + strict class matching."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre = Path(tmpdir) / "pre"
+            post = Path(tmpdir) / "post"
+            pre.mkdir()
+            post.mkdir()
+            (pre / "Calc.cpp").write_text(
+                "class Calc\n"
+                "{\n"
+                "public:\n"
+                "    int process(int x)\n"
+                "    {\n"
+                "        return x;\n"
+                "    }\n"
+                "};\n",
+                encoding="utf-8",
+            )
+            (post / "Calc.cpp").write_text(
+                "class Calc\n"
+                "{\n"
+                "public:\n"
+                "    int process(int x)\n"
+                "    {\n"
+                "        return validate(x);\n"
+                "    }\n\n"
+                "    int validate(int x)\n"
+                "    {\n"
+                "        return x > 0 ? 1 : 0;\n"
+                "    }\n"
+                "};\n",
+                encoding="utf-8",
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            # The honest claim set for this edit: the new method, the
+            # method-body change, and the new call.
+            claims = [
+                _make_claim_dict(
+                    ClaimType.ADD_FUNCTION,
+                    symbol_name="validate",
+                    file_path="Calc.cpp",
+                    parent_class="Calc",
+                ),
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="process",
+                    file_path="Calc.cpp",
+                    parent_class="Calc",
+                ),
+                _make_claim_dict(
+                    ClaimType.CALLS_FUNCTION,
+                    file_path="Calc.cpp",
+                    parent_class="Calc",
+                    caller_name="process",
+                    called_name="validate",
+                ),
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 0, out
+            assert "CONFIRMED" in out
+            assert "UNEXPLAINED" not in out
+
+    def test_cpp_hallucinated_claim_unverifiable(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A CHANGED_FUNCTION claim about a C++ method nobody touched is
+        UNVERIFIABLE (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+            (post / "App.cpp").write_text(self._PRE, encoding="utf-8")
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.cpp",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "UNVERIFIABLE" in out
+
+    def test_cpp_changed_claim_contradicted_by_removal(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Claiming CHANGED_FUNCTION for a C++ method that was actually
+        removed is CONTRADICTED (exit 1)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pre, post = self._snapshots(tmpdir)
+            (post / "App.cpp").write_text(
+                "class App\n{\npublic:\n};\n", encoding="utf-8"
+            )
+
+            from nowreck.cli import build_parser
+            from nowreck.main import handle_fix
+
+            claims = [
+                _make_claim_dict(
+                    ClaimType.CHANGED_FUNCTION,
+                    symbol_name="greet",
+                    file_path="App.cpp",
+                    parent_class="App",
+                )
+            ]
+            args = build_parser().parse_args(
+                [
+                    "fix",
+                    "--pre",
+                    str(pre),
+                    "--post",
+                    str(post),
+                    "--claims",
+                    json.dumps({"claims": claims}),
+                ]
+            )
+            rc = handle_fix(args)
+            out, _ = capsys.readouterr()
+
+            assert rc == 1
+            assert "CONTRADICTED" in out
+
+    def test_cpp_compare_mode_detects_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """``--compare HEAD~1`` picks up a C++ method-body edit from git."""
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "App.cpp").write_text(self._PRE, encoding="utf-8")
+        env = {
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t.local",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t.local",
+        }
+
+        def git(*args: str) -> None:
+            assert (
+                subprocess.run(
+                    ["git", *args], cwd=repo, capture_output=True, text=True, env=env
+                ).returncode
+                == 0
+            ), args
+
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "init")
+        (repo / "App.cpp").write_text(self._POST, encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "change")
+
+        from nowreck.cli import build_parser
+        from nowreck.main import handle_fix
+
+        monkeypatch.chdir(repo)
+        args = build_parser().parse_args(
+            ["fix", "--compare", "HEAD~1", "--format", "json"]
+        )
+        rc = handle_fix(args)
+        out, _ = capsys.readouterr()
+
+        assert rc == 1, out
+        data = json.loads(out)
+        assert any(
+            c["symbol_name"] == "greet" and c["parent_class"] == "App"
+            for c in data["unexplained_changes"]
+        )
+
+    def test_cpp_pre_post_scan_writes_no_cache(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """P3 for C++: external ``.cpp`` snapshot dirs get no ``.nowreck/``."""
         with tempfile.TemporaryDirectory() as tmpdir:
             pre, post = self._snapshots(tmpdir)
 

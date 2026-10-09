@@ -564,12 +564,12 @@ and the map-hygiene test keeps it that way.
 
 ---
 
-## 12. Phase 4 — PHP remediation — closed (uncommitted, by instruction)
+## 12. Phase 4 — PHP remediation — closed (committed as `e8f1201`)
 
-> **Process note:** Phase 4 is finished and verified through all six gates, but
-> was **not committed** — the standing instruction for this session is to stop
-> at the verified state and report. The work sits in the working tree on
-> `main` (21 changed/new paths on top of `a77c10a`, the Phase 3 commit).
+> **Process note:** Phase 4 was verified through all six gates, reported, and
+> then committed by explicit instruction as `e8f1201` (`feat(v17): Phase 4 —
+> PHP language support + full-repo checkup fixes`). Sections 12 and 13 below
+> were written before that commit and are included in it.
 
 ### Dependency floor
 
@@ -764,3 +764,218 @@ sibling suites (`test_kotlin/java/php_multiround.py`) for consistency.
 | Attribution ban | clean (grep over diff + new files) |
 | Dependency floors (`pyproject.toml`) | all 8 grammar pins present, incl. `tree-sitter-php>=0.24` (installed 0.24.1) |
 | Dead code | one unused `source_bytes` parameter removed from `_closure_assignment` (`php_scanner.py`, Phase 4 new code); `scan_cache.put` unused-by-design `mtime`/`size` documented as API contract, pre-existing |
+
+## 14. Phase 5 — C++ remediation — verified (awaiting commit instruction)
+
+> **Process note:** Phase 5 is finished and verified through all six gates, but
+> is **not committed** — the standing instruction is to stop at the verified
+> state and report. The work sits in the working tree on `main`: 14 modified
+> files (+2282/−20) and 5 new paths on top of `e8f1201`, the Phase 4 commit.
+
+### Dependency floor
+
+`tree-sitter-cpp>=0.23` pinned in `pyproject.toml`; installed **0.23.4**
+(ABI 14) verified against `tree-sitter` 0.26.0. The grammar exposes a single
+`language()` covering the whole C++ grammar. Discovery list (user decision):
+`.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.h`. Two
+accepted edges, documented for Phase 7: the grammar **also** parses C, and
+`.h` is in the list, so a C header in a mixed repository is parsed as C++
+(and `_discover_files`' `rglob("*.c++")` was verified to match literally);
+`.c` is never discovered.
+
+### Fixture probes E1–E14 — resolved empirically, each pinned as a permanent test
+
+Resolved **before** any collector code and pinned in
+`tests/test_cpp_probes.py` (**59 tests** — E1–E14 plus the extra boundaries
+and the dependency-floor pin). Facts that shaped the implementation:
+
+- **E1/E2 — call shapes**: `a.b()` and `a->b()` are one `field_expression`
+  shape (member in the `field` field, receiver in `argument`); `ns::func()` /
+  `Class::static()` / `::global_fn()` carry a `qualified_identifier` in the
+  call's `function` field with a recursive `name` child (`a::b::c()`), and a
+  templated target keeps its head identifier in a `template_function`.
+- **E3 — operator functions**: `operator+`, `operator<<`, `operator[]`,
+  `operator()` are `operator_name` nodes; a reference return type wraps the
+  declarator in a `reference_declarator`, so a declarator walk is required.
+- **E4 — constructor invocations**: `new Foo()` is a `new_expression` and
+  `Foo obj(3)` an `init_declarator` — neither call-shaped, so neither is
+  captured; `std::vector<int>(10)` **is** a `call_expression` and is captured.
+  Policy: only grammar-exposed call shapes are captured, never guessed.
+- **E5 — template prefix**: `template <...>` is a sibling wrapper
+  (`template_declaration`); the whole wrapper is hashed, so a template-parameter
+  edit is visible (the v16 TS-decorator lesson generalised).
+- **E6 — `#ifdef` regions**: `preproc_ifdef` nodes are embedded *inside* the
+  enclosing `compound_statement`, so a conditional edit is part of that
+  function's span; no conditional-aware hashing.
+- **E7/E8/E10 — hash model**: string leaves are `string_literal`,
+  `raw_string_literal`, `char_literal` (raw stays a distinct node, so a
+  raw↔interpreted swap is a change); C++ `;` is required syntax and is
+  **hashed as content** (the shared ASI exclusion set is never forwarded);
+  `comment` was already in `COMMENT_NODE_TYPES`. Consequence:
+  `_tree_sitter_helpers.py` needed **no change** for C++ — its string/comment
+  unions already covered every leaf C++ produces, and C++ uses no string
+  normaliser.
+- **E9 — declaration-only members**: no `compound_statement` → symbol with
+  `body_hash=None`, so a `.cpp` body edit can never falsify a header symbol.
+- **E11 — overloads**: every overload is emitted; `Symbol` identity is
+  `(name, kind, file, parent_class)`, so same-identity overloads dedupe in the
+  ADD/REMOVE set-diff and the body-hash pass is last-wins (deterministic scan
+  order). An edit fires `CHANGED_FUNCTION` only when the last-iterated
+  overload changed — pinned exactly in the detector matrix, documented as
+  coarseness.
+- **E12 — lambdas**: a named lambda assignment (`auto f = [](){};`) →
+  FUNCTION (the JS `const f = () => {}` rule); a named lambda inside a
+  function body is a caller, not a symbol.
+- **E13 — `= default` / `= delete`**: a `function_definition` with no body but
+  a `default_method_clause`/`delete_method_clause` — a *definition*, hashed
+  normally; `override`/`noexcept` live inside the node and hash naturally.
+- **E14 — constructors/destructors**: METHOD symbols, names `Calculator` and
+  `~Widget`, parent attribution as for any member.
+
+Scope assumption broken: the scope document names the `using X = Y` node
+`type_alias_declaration`. The grammar actually calls it **`alias_declaration`**
+(`type_alias_declaration` exists in other grammars, not this one); `typedef` is
+`type_definition`. Both → TYPE_ALIAS, pinned in `TestE17TypeDeclarations`.
+
+Two more findings that changed collector code:
+
+- **`union_specifier` is class-like** → added to `_CLASS_KINDS` (canonical
+  kinds stay `class_specifier`/`struct_specifier`) — a union is a class-like
+  type declaration.
+- **Reserved call-shaped keywords**: the grammar exposes `static_cast<int>(x)`
+  and siblings as a `call_expression` with a `template_function` target, and
+  `typeid(x)`/`noexcept(x)` as identifier targets. These are keywords, not
+  calls, so `_RESERVED_CALL_KEYWORDS` filters them in `_cpp_called_name`;
+  `sizeof`/`alignof`/`decltype` are not call nodes at all.
+
+### Header/impl split (E9) — the new modeling
+
+A method declared in `foo.h` and defined in `foo.cpp` is **two independent
+per-file symbols**; there is no `#include` resolution. The three pinned rows:
+
+| Scenario | Result |
+|---|---|
+| Header *declaration* edited (signature shell content) | `CHANGED_CLASS` on the header's own type; the declaration-only method symbol is hash-less by design and never fires |
+| `.cpp` body edited | `CHANGED_FUNCTION` on the `.cpp` symbol |
+| `.cpp` body edited, header declaration symbol considered | never fires — `body_hash=None` (defensive rule tested) |
+
+`= default` / `= delete` members are definitions and fire normally. Out-of-line
+definitions (`void Widget::draw() {}`) put the qualifier in `parent_class`
+(`Widget`); the grammar cannot distinguish a class qualifier from a namespace
+qualifier (both `namespace_identifier`), so `void app::run() {}` is attributed
+to `app` — accepted coarseness, documented. `Box<T>::put` keeps the head
+identifier (`Box`), mirroring the Rust generic-`impl` rule. A templated
+specialisation (`template <> class Buffer<char, 0>`) indexes the name as
+written (`Buffer<char, 0>`). `namespace_definition` and `linkage_specification`
+(`extern "C" { … }`) descend — not symbols, like Python modules. `friend`
+declarations declare a non-member and yield no symbol. A bare
+`int (*callback)(int);` (no `typedef`) yields no symbol — it is a variable, not
+a type; `typedef void (*Cb)(int);`, `typedef int Table[4];` and
+`using UAlias = …` are TYPE_ALIAS (the declarator walk needed
+`parenthesized_declarator` support: its inner declarator is an *unnamed*
+child; `array_declarator` and `type_identifier` names were added to the
+resolver).
+
+### Scanner + pipeline integration
+
+`nowreck/scanner/cpp_scanner.py` (new, 927 lines): the symbol model above,
+plus the hash rules — CLASS/ENUM carry a class-*shell* hash with
+`function_definition` subtrees excluded (method edits fire
+`CHANGED_FUNCTION` only), TYPE_ALIAS carries no hash (no
+`CHANGED_TYPE_ALIAS` claim type, like every other language), semicolons
+hashed, no ASI exclusions, no string normaliser. `INTERFACE` never fires — C++
+has no interface keyword (the Phase 7-documented accepted edge, like Go
+enums). Wired through: `repository_scanner` (`ScanResult.cpp_files`,
+`.cpp`-family discovery, `_parse_cpp_file` with the
+`pip install tree-sitter tree-sitter-cpp` install hint, cache
+`language="cpp"`, success/failure accounting), `symbol_index` merge,
+`change_detector._extract_calls` C++ arm, `prompt_verifier` `n_files` counts
+(two places), and `model/prompts.py` language lists (`ADD_INTERFACE` excludes
+C++; `ADD_ENUM` and `ADD_TYPE_ALIAS` include it). Scanning a file whose parse
+has `has_error` (e.g. a numeric user-defined literal `1"_km"`, which this
+grammar treats as an error) logs a warning and still extracts the partial
+symbols — loud, not silent.
+
+### Differential audit (C++ corpus)
+
+17 corpus files added (`basic`, `classes`, `header_split.h/.cpp`, `namespaces`,
+`templates`, `enums`, `aliases`, `lambdas`, `calls`, `operators`, `control`,
+`preprocessor`, `strings_comments`, `attributes_friend`, `realworld`,
+`negatives`) — 525 lines, **0 divergences**. The checker gained the C++
+stripper, structure/head classifiers, call mask and symbol extractor;
+`LANGS` is now 9 languages; `EXPECTED_DIVERGENCES` stays **empty**.
+
+Checker defects found and fixed while wiring the corpus (same discipline as
+prior phases — the parser was ground truth throughout):
+
+1. **`f().bar()` receiver exclusion never fired** — `_cpp_name_is_call`
+   compared `op in (".", "->")` where `op` is a tuple; fixed to `op[0]`.
+2. **Qualified call statement misread as a declaration** —
+   `Service::flush();` inside a body was classified as a METHOD symbol; new
+   `_cpp_function_kind` counts a qualified name as a declaration only at
+   module scope.
+3. **Template arguments dropped from type names** — `_CPP_TYPE_DECL` now
+   keeps `Box<int>` intact.
+4. **Typedef function-pointer form** — `_CPP_TYPEDEF_FN_PTR` mirrors the
+   scanner's TYPE_ALIAS for `typedef void (*Cb)(int);`.
+5. **`type_identifier` names** — accepted in the symbol extractor.
+6. **`template <...>` sibling unwrap** — `_cpp_strip_template_prefix` runs
+   before classifying type/function heads (E5).
+7. **Keyword/expression heads misclassified as declarations** —
+   `_cpp_prefix_is_typeish` rejects `int x = compute();` and keyword-prefixed
+   expression statements.
+8. **Parameter default values** — `_CPP_PARAM_ITEM` accepts `int x = 3`.
+9. **Leading access specifiers** — `_CPP_ACCESS_SPECIFIER` strips
+   `public:`/`private:`/`protected:` from member heads.
+10. **`friend` declarations** — yield nothing.
+11. **Operator/destructor qualifiers** — `_cpp_operator_before` returns a
+    tuple and `_CPP_OPERATOR_NAME` takes the `::` qualifier
+    (`Widget::~Widget`).
+12. **Templated calls** — `f<int>(x)` / `std::vector<int>(10)` reachable only
+    via `_cpp_templated_call_names` + `_CPP_TEMPLATED_CALL` because the name
+    ends at `>` (the plain scan cannot see it).
+
+Documented checker limitations (docstrings; all kept out of the corpus): a
+call-bearing default argument, a call-bearing `friend` *definition*,
+template arguments nested deeper than one level, `<`/`>` comparison in call
+position, and conversion operators (`operator T()`) not modelled.
+
+### Per-suite verification
+
+| Gate | Result |
+|---|---|
+| Fixture probes | 59 passed (`tests/test_cpp_probes.py`) |
+| Differential audit | 129 passed; 0 divergences over the 17-file C++ corpus; `EXPECTED_DIVERGENCES` empty and hygiene-enforced |
+| Detector matrix | `tests/test_change_detector.py -k cpp`: 31 passed (add/remove/change per symbol kind, header/impl three-row pins, template/`#ifdef`/string/semicolon/reformat rows, overload rows, full call matrix with exclusions, destructor/naming rows) |
+| Scanner / index / hash / cache / dependency errors / CLI | 56 / 72 / 115 / 57 / 14 / 111 passed |
+| Full suite | **1683 passed** in 92.17 s (Phase 4 baseline 1545 + 138 C++ additions); 1 pre-existing deprecation warning |
+| Sample suites (`test_cpp_samples/`) | `test_cpp_types.py` 157, `test_cpp_comprehensive.py` 51, `test_cpp_multiround.py` 44 — all green (multiround covers repeatability, the 30.0 s stress smoke bound, 9-language cross regression `success_count == 9`, 60 truncation chaos) |
+| Milestone repo | `pure-cpp` in the checkpoint module: 127 passed overall, incl. 11 `TestPureCppRepo` tests (discovery/9 extensions/declaration-only `body_hash=None`/union+enum+alias symbols/`interfaces == []`/constructor parent/header-vs-impl hashing) |
+| CLI binary smoke (`nowreck fix`, C++ project) | `--pre/--post` json mixed: 2 claims/2 CONFIRMED, 1 unexplained (`free_function`, line 40) → exit 1; json all-true: 3/3 CONFIRMED, 0 unexplained → exit 0; sarif: 2.1.0 + schema, NW015 note for the unexplained change; junit: `testsuites name="nowreck" tests="2" failures="0"`; `--compare HEAD~1` in a real git repo: `src/app.cpp` + `lib/util.hpp` (.hpp) parsed, exactly 1 change (`CHANGED_FUNCTION run`) → exit 1 |
+| `ruff check` / `ruff format --check` | All checks passed / 113 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| TODO/FIXME/XXX/HACK in the Phase 5 surface | none |
+| Attribution ban | clean (grep over the tracked diff and every new file) |
+
+### Phase 5 DoD checklist
+
+- [x] E1–E14 resolved + pinned before collector code (59 probes)
+- [x] Header/impl semantics pinned by the three-row test table; `body_hash=None` defensive rule tested
+- [x] `ScanResult.cpp_files` flows through cache/index/detector/verifier-counts
+- [x] Differential pass over the C++ corpus clean
+- [x] `test_cpp_samples/` + `pure-cpp` milestone green
+- [x] Adversarial review passed (sweeps above); commit pending the standing instruction
+
+### Accepted edges carried to Phase 6/7
+
+- `.h` discovers C headers and the C++ grammar parses C — accepted, documented
+  for Phase 7 (`.c` never discovered).
+- No `#include` resolution: header declaration and `.cpp` definition are two
+  independent per-file facts, by design.
+- Namespace vs class qualifier collision (`void app::run() {}` → parent `app`).
+- Overload coarseness in the detector (E11) — precise, documented, pinned.
+- Template-specialisation names are indexed as written (`Buffer<char, 0>`).
+- Grammar parse errors are loud: warning logged, partial symbols retained
+  (`1"_km"` pinned as the lag example).
+- Constructor invocations are captured only in the forms the grammar exposes
+  as calls (E4 policy — `new Foo()`/`Foo obj(3)` excluded).
