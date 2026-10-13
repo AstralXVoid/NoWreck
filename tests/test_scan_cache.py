@@ -502,7 +502,10 @@ class TestRegression:
 
 
 class TestCacheBodyHashV16:
-    """body_hash survives the JS/TS/Rust/Go cache round-trip (v0.16.0)."""
+    """JS body_hash survives the v0.16.0 cache round-trip.
+
+    TS/Rust/Go round-trips are covered by the Phase 6 classes below.
+    """
 
     def test_cache_preserves_js_body_hash(self, js_repo: Path) -> None:
         """A warm JS scan returns identical body hashes to a cold one."""
@@ -902,3 +905,298 @@ class TestCppCacheRoundTrip:
         cache_file = cpp_repo / CACHE_DIR / CACHE_FILE
         assert json.loads(cache_file.read_text())["version"] == 2
         assert CACHE_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 6: TypeScript / Rust / Go cache round-trips
+#
+# Phases 2–5 added per-language round-trips for Java/Kotlin/PHP/C++; these
+# close the gap for the remaining v16 languages so the Phase 6 cache
+# honesty check covers all nine.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ts_repo(tmp_path: Path) -> Path:
+    """A repo with a TypeScript module and a TSX component (one TS family)."""
+    (tmp_path / "widget.ts").write_text(
+        "export function widget(): number {\n"
+        "    return 1;\n"
+        "}\n\n"
+        "export class Panel {\n"
+        "    show(): void {\n"
+        "        widget();\n"
+        "    }\n"
+        "}\n"
+    )
+    (tmp_path / "view.tsx").write_text(
+        "export function View() {\n    return null;\n}\n"
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def rust_repo(tmp_path: Path) -> Path:
+    """A repo with a Rust library module and a binary entry point."""
+    (tmp_path / "lib.rs").write_text("pub fn helper() -> i32 {\n    1\n}\n")
+    (tmp_path / "main.rs").write_text('fn main() {\n    println!("hi");\n}\n')
+    return tmp_path
+
+
+@pytest.fixture
+def go_repo(tmp_path: Path) -> Path:
+    """A repo with a Go entry point and a helper file."""
+    (tmp_path / "main.go").write_text(
+        "package main\n\nfunc main() {\n\tprintln(1)\n}\n"
+    )
+    (tmp_path / "utils.go").write_text(
+        "package main\n\nfunc Add(a int, b int) int {\n\treturn a + b\n}\n"
+    )
+    return tmp_path
+
+
+class TestTypeScriptCacheRoundTrip:
+    """TypeScript scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_ts_symbols(self, ts_repo: Path) -> None:
+        scanner = RepositoryScanner(ts_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.ts_files) == set(result_warm.ts_files)
+        assert set(result_cold.ts_files) == {Path("widget.ts"), Path("view.tsx")}
+        for path in result_cold.ts_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.ts_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.ts_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_ts_body_hash(self, ts_repo: Path) -> None:
+        scanner = RepositoryScanner(ts_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.ts_files[Path("widget.ts")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+        # The class shell hash and every member hash must survive the
+        # cache round-trip distinctly (no collapsing to one value).
+        assert len({s.body_hash for s in symbols}) == len(symbols)
+
+    def test_cache_file_records_typescript_language_for_both_extensions(
+        self, ts_repo: Path
+    ) -> None:
+        RepositoryScanner(ts_repo).scan()
+        cache_file = ts_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {
+            path for path, e in data["entries"].items() if e["language"] == "typescript"
+        }
+        assert entries == {"widget.ts", "view.tsx"}
+
+    def test_cache_schema_version_is_still_v2_for_ts(self, ts_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(ts_repo).scan()
+        cache_file = ts_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2
+
+
+class TestRustCacheRoundTrip:
+    """Rust scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_rust_symbols(self, rust_repo: Path) -> None:
+        scanner = RepositoryScanner(rust_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.rust_files) == set(result_warm.rust_files)
+        assert set(result_cold.rust_files) == {Path("lib.rs"), Path("main.rs")}
+        for path in result_cold.rust_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.rust_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.rust_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_rust_body_hash(self, rust_repo: Path) -> None:
+        scanner = RepositoryScanner(rust_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.rust_files[Path("lib.rs")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+
+    def test_cache_file_records_rust_language(self, rust_repo: Path) -> None:
+        RepositoryScanner(rust_repo).scan()
+        cache_file = rust_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {
+            path for path, e in data["entries"].items() if e["language"] == "rust"
+        }
+        assert entries == {"lib.rs", "main.rs"}
+
+    def test_cache_schema_version_is_still_v2_for_rust(self, rust_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(rust_repo).scan()
+        cache_file = rust_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2
+
+
+class TestGoCacheRoundTrip:
+    """Go scans are identical warm or cold, body_hash included."""
+
+    def test_cache_hit_returns_same_go_symbols(self, go_repo: Path) -> None:
+        scanner = RepositoryScanner(go_repo)
+        result_cold = scanner.scan()
+        result_warm = scanner.scan()
+
+        assert set(result_cold.go_files) == set(result_warm.go_files)
+        assert set(result_cold.go_files) == {Path("main.go"), Path("utils.go")}
+        for path in result_cold.go_files:
+            cold = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_cold.go_files[path]
+            ]
+            warm = [
+                (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                for s in result_warm.go_files[path]
+            ]
+            assert cold == warm
+
+    def test_cache_preserves_go_body_hash(self, go_repo: Path) -> None:
+        scanner = RepositoryScanner(go_repo)
+        scanner.scan()
+        warm = scanner.scan()
+
+        symbols = warm.go_files[Path("utils.go")]
+        assert symbols
+        assert all(s.body_hash is not None for s in symbols)
+
+    def test_cache_file_records_go_language(self, go_repo: Path) -> None:
+        RepositoryScanner(go_repo).scan()
+        cache_file = go_repo / CACHE_DIR / CACHE_FILE
+        data = json.loads(cache_file.read_text())
+        entries = {path for path, e in data["entries"].items() if e["language"] == "go"}
+        assert entries == {"main.go", "utils.go"}
+
+    def test_cache_schema_version_is_still_v2_for_go(self, go_repo: Path) -> None:
+        """v0.17.0 adds languages without touching the cache schema."""
+        RepositoryScanner(go_repo).scan()
+        cache_file = go_repo / CACHE_DIR / CACHE_FILE
+        assert json.loads(cache_file.read_text())["version"] == 2
+        assert CACHE_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Phase 6: the stale-cache rebuild covers every language
+# ---------------------------------------------------------------------------
+
+
+class TestStaleCacheRebuildAllNineLanguages:
+    """A stale v1 cache is ignored and rebuilt with hashes for all 9 languages."""
+
+    def test_stale_cache_rebuilt_with_hashes_for_all_nine(self, tmp_path: Path) -> None:
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n")
+        (tmp_path / "util.js").write_text("function util() { return 1; }\n")
+        (tmp_path / "widget.ts").write_text(
+            "export function widget(): number {\n    return 1;\n}\n"
+        )
+        (tmp_path / "lib.rs").write_text("pub fn helper() -> i32 {\n    1\n}\n")
+        (tmp_path / "main.go").write_text(
+            "package main\n\nfunc main() {\n\tprintln(1)\n}\n"
+        )
+        (tmp_path / "Greeter.java").write_text(
+            "public class Greeter {\n    int greet() { return 1; }\n}\n"
+        )
+        (tmp_path / "Main.kt").write_text("fun main() {\n    println(1)\n}\n")
+        (tmp_path / "helpers.php").write_text(
+            "<?php\n\nfunction shout(string $text): string\n{\n    return $text;\n}\n"
+        )
+        (tmp_path / "calc.cpp").write_text(
+            "int add(int a, int b) {\n    return a + b;\n}\n"
+        )
+
+        RepositoryScanner(tmp_path).scan()
+        cache_file = tmp_path / CACHE_DIR / CACHE_FILE
+
+        # Rewrite the cache as a legacy v1 file with body_hash stripped.
+        data = json.loads(cache_file.read_text())
+        data["version"] = 1
+        for entry in data["entries"].values():
+            for sym in entry.get("symbols", []):
+                sym.pop("body_hash", None)
+        cache_file.write_text(json.dumps(data))
+
+        # Rescan — the stale cache must be ignored and rebuilt at v2.
+        result = RepositoryScanner(tmp_path).scan()
+        assert result.failure_count == 0
+        assert result.modules, "python ASTs missing after rebuild"
+        for mapping in (
+            result.js_files,
+            result.ts_files,
+            result.rust_files,
+            result.go_files,
+            result.java_files,
+            result.kotlin_files,
+            result.php_files,
+            result.cpp_files,
+        ):
+            assert mapping, "language map unexpectedly empty after rebuild"
+
+        fresh = json.loads(cache_file.read_text())
+        assert fresh["version"] == CACHE_VERSION
+        for language in (
+            "javascript",
+            "typescript",
+            "rust",
+            "go",
+            "java",
+            "kotlin",
+            "php",
+            "cpp",
+        ):
+            cached = [
+                sym
+                for entry in fresh["entries"].values()
+                if entry["language"] == language
+                for sym in entry.get("symbols", [])
+            ]
+            assert cached, f"no rebuilt symbol entries for {language}"
+            assert any(sym.get("body_hash") is not None for sym in cached), (
+                f"rebuilt {language} symbols lost body_hash"
+            )
+
+        # The rebuilt cache must itself be warm-honest.
+        warm = RepositoryScanner(tmp_path).scan()
+        cold_warm_maps = [
+            (result.js_files, warm.js_files),
+            (result.ts_files, warm.ts_files),
+            (result.rust_files, warm.rust_files),
+            (result.go_files, warm.go_files),
+            (result.java_files, warm.java_files),
+            (result.kotlin_files, warm.kotlin_files),
+            (result.php_files, warm.php_files),
+            (result.cpp_files, warm.cpp_files),
+        ]
+        for cold_map, warm_map in cold_warm_maps:
+            assert set(cold_map) == set(warm_map)
+            for path in cold_map:
+                assert [
+                    (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                    for s in cold_map[path]
+                ] == [
+                    (s.name, s.symbol_type, s.parent_class, s.body_hash)
+                    for s in warm_map[path]
+                ]

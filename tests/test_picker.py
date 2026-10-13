@@ -11,6 +11,7 @@ from nowreck.picker import (
     _check_endpoint_reachable,
     _ExitPickerError,
     _pause,
+    _print_scan_summary,
     _resolve_last_report_path,
     _run_config_setup,
     _run_pre_post,
@@ -21,6 +22,7 @@ from nowreck.picker import (
     run_picker,
 )
 from nowreck.reporter.terminal_reporter import TerminalReporter
+from nowreck.scanner.repository_scanner import RepositoryScanner
 from nowreck.verifier.verifier import Verdict, VerificationReport, VerificationResult
 
 # ============================================================================
@@ -1497,3 +1499,73 @@ class TestPause:
         """_pause has no return value (None)."""
         mock_input.return_value = ""
         assert _pause() is None
+
+
+# ============================================================================
+# _print_scan_summary — mixed-language smoke test
+# ============================================================================
+
+
+class TestPrintScanSummaryMixedLanguages:
+    """Picker smoke test: a repo with all nine languages flows through.
+
+    The picker constructs ``RepositoryScanner`` directly (pre/post mode),
+    so every language the scanner knows must surface in the printed
+    summary without per-language plumbing in ``picker.py``.
+    """
+
+    def test_all_nine_languages_appear_in_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """One file per language — all nine breakdown lines must print."""
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n")
+        (tmp_path / "util.js").write_text("function util() { return 1; }\n")
+        (tmp_path / "widget.ts").write_text(
+            "export function widget(): number {\n    return 1;\n}\n"
+        )
+        (tmp_path / "panel.tsx").write_text(
+            "export function Panel() {\n    return null;\n}\n"
+        )
+        (tmp_path / "lib.rs").write_text("pub fn lib() -> i32 {\n    1\n}\n")
+        (tmp_path / "svc.go").write_text(
+            "package main\n\nfunc svc() int {\n\treturn 1\n}\n"
+        )
+        (tmp_path / "Greeter.java").write_text(
+            "public class Greeter {\n    int greet() { return 1; }\n}\n"
+        )
+        (tmp_path / "Main.kt").write_text("fun main() {\n    println(1)\n}\n")
+        (tmp_path / "helpers.php").write_text(
+            "<?php\n\nfunction shout(string $text): string\n{\n    return $text;\n}\n"
+        )
+        (tmp_path / "Greeter.hpp").write_text(
+            "class Greeter {\npublic:\n    int greet();\n};\n"
+        )
+        (tmp_path / "Greeter.cpp").write_text(
+            '#include "Greeter.hpp"\n\nint Greeter::greet() { return 1; }\n'
+        )
+
+        # The exact construction the picker uses in pre/post mode.
+        scan = RepositoryScanner(tmp_path, use_cache=False).scan()
+        assert scan.failure_count == 0
+
+        _print_scan_summary(scan)
+        out = capsys.readouterr().out
+
+        expected = [
+            ("Python", "app.py"),
+            ("JS", "util.js"),
+            ("TS", "widget.ts"),
+            ("Rust", "lib.rs"),
+            ("Go", "svc.go"),
+            ("Java", "Greeter.java"),
+            ("Kotlin", "Main.kt"),
+            ("PHP", "helpers.php"),
+            ("C++", "Greeter.cpp"),
+        ]
+        for label, filename in expected:
+            assert f"    {label:<6} (" in out
+            assert filename in out
+        # The TS family fold keeps the .tsx component on the TS line.
+        assert "panel.tsx" in out
+        # Header/impl split: the C++ header is listed alongside the impl.
+        assert "Greeter.hpp" in out

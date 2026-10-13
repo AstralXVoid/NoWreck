@@ -23,6 +23,7 @@ Tests
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from nowreck.detector.change_detector import (
 )
 from nowreck.scanner.repository_scanner import RepositoryScanner, ScanResult
 from nowreck.scanner.symbol_index import (
+    Symbol,
     SymbolIndex,
     SymbolType,
     build_symbol_index,
@@ -112,6 +114,33 @@ def _changes_of_type(
     change_type: ChangeType,
 ) -> list[DetectedChange]:
     return [c for c in changes if c.change_type is change_type]
+
+
+def _full_symbol_tuples(
+    symbols: Iterable[Symbol],
+) -> list[tuple[str, str, str, int, str | None, str | None]]:
+    """Explicit symbol projection including the ``__eq__``-exempt fields.
+
+    ``Symbol.__eq__`` deliberately excludes ``line_number`` and ``body_hash``
+    (identity-exempt, so a line shift or body edit is not a remove+add pair).
+    A determinism sweep must still compare them, so symbols are projected to
+    explicit tuples in a canonical order.
+    """
+    tuples = [
+        (
+            s.name,
+            s.symbol_type.name,
+            str(s.file_path),
+            s.line_number,
+            s.parent_class,
+            s.body_hash,
+        )
+        for s in symbols
+    ]
+    return sorted(
+        tuples,
+        key=lambda t: (t[0], t[1], t[2], t[3], t[4] or "", t[5] or ""),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1677,7 +1706,14 @@ class TestMixedRepo:
 
 
 class TestAllReposDeterministic:
-    """All repos, scanned 3x each — every field must be identical."""
+    """All 11 milestone repos, scanned 3x each — every field must be identical.
+
+    Besides the ``ScanResult`` fields, every symbol is compared as an explicit
+    ``(name, type, path, line, parent, body_hash)`` tuple across all eight
+    language maps and the symbol index — ``Symbol.__eq__`` exempts
+    ``line_number`` and ``body_hash``, so dataclass equality alone would not
+    catch a run-to-run hash difference.
+    """
 
     REPOS = [
         ("pure-python", PURE_PY_REPO),
@@ -1686,6 +1722,10 @@ class TestAllReposDeterministic:
         ("pure-tsx", PURE_TSX_REPO),
         ("pure-rust", PURE_RUST_REPO),
         ("pure-go", PURE_GO_REPO),
+        ("pure-java", PURE_JAVA_REPO),
+        ("pure-kotlin", PURE_KOTLIN_REPO),
+        ("pure-php", PURE_PHP_REPO),
+        ("pure-cpp", PURE_CPP_REPO),
         ("mixed", MIXED_REPO),
     ]
 
@@ -1702,10 +1742,61 @@ class TestAllReposDeterministic:
             assert results[i][0].ts_files == results[0][0].ts_files
             assert results[i][0].rust_files == results[0][0].rust_files
             assert results[i][0].go_files == results[0][0].go_files
+            assert results[i][0].java_files == results[0][0].java_files
+            assert results[i][0].kotlin_files == results[0][0].kotlin_files
+            assert results[i][0].php_files == results[0][0].php_files
+            assert results[i][0].cpp_files == results[0][0].cpp_files
             assert results[i][0].failed_files == results[0][0].failed_files
             assert results[i][1].symbols == results[0][1].symbols, (
                 f"{name}: symbol index differs on run {i + 1}"
             )
+
+            # ``Symbol.__eq__`` exempts ``line_number`` and ``body_hash``, so
+            # the field asserts above cannot see those two; compare explicit
+            # projections for every language map and the whole index.
+            map_names = (
+                "js_files",
+                "ts_files",
+                "rust_files",
+                "go_files",
+                "java_files",
+                "kotlin_files",
+                "php_files",
+                "cpp_files",
+            )
+            run_maps = (
+                results[i][0].js_files,
+                results[i][0].ts_files,
+                results[i][0].rust_files,
+                results[i][0].go_files,
+                results[i][0].java_files,
+                results[i][0].kotlin_files,
+                results[i][0].php_files,
+                results[i][0].cpp_files,
+            )
+            base_maps = (
+                results[0][0].js_files,
+                results[0][0].ts_files,
+                results[0][0].rust_files,
+                results[0][0].go_files,
+                results[0][0].java_files,
+                results[0][0].kotlin_files,
+                results[0][0].php_files,
+                results[0][0].cpp_files,
+            )
+            for map_name, run_map, base_map in zip(
+                map_names, run_maps, base_maps, strict=True
+            ):
+                assert {
+                    str(p): _full_symbol_tuples(syms) for p, syms in run_map.items()
+                } == {
+                    str(p): _full_symbol_tuples(syms) for p, syms in base_map.items()
+                }, f"{name}: {map_name} symbols differ on run {i + 1}"
+            assert _full_symbol_tuples(
+                sym for syms in results[i][1].symbols.values() for sym in syms
+            ) == _full_symbol_tuples(
+                sym for syms in results[0][1].symbols.values() for sym in syms
+            ), f"{name}: symbol index contains a differing symbol on run {i + 1}"
 
 
 # ---------------------------------------------------------------------------

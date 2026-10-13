@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -478,25 +479,29 @@ def _view_last_report() -> None:
 def _print_scan_summary(scan_result: ScanResult) -> None:
     """Print a summary of a scan result, including language breakdown.
 
-    Shows total file counts, Python vs JavaScript vs TypeScript breakdown,
-    and any parse failures.
+    Shows total file counts, the per-language file breakdown for all nine
+    supported languages, and any parse failures.
     """
     success = scan_result.success_count
     failure = scan_result.failure_count
-    modules = scan_result.modules or {}
-    js_files = scan_result.js_files or {}
-    ts_files = scan_result.ts_files or {}
 
     print(f"  \u2192 {success} files parsed, {failure} failed")
-    if modules:
-        py_files = ", ".join(str(p) for p in modules)
-        print(f"    Python ({len(modules)}): {py_files}")
-    if js_files:
-        js_lines = ", ".join(str(p) for p in js_files)
-        print(f"    JS     ({len(js_files)}): {js_lines}")
-    if ts_files:
-        ts_lines = ", ".join(str(p) for p in ts_files)
-        print(f"    TS     ({len(ts_files)}): {ts_lines}")
+
+    language_files: list[tuple[str, Mapping[Path, object]]] = [
+        ("Python", scan_result.modules or {}),
+        ("JS", scan_result.js_files or {}),
+        ("TS", scan_result.ts_files or {}),
+        ("Rust", scan_result.rust_files or {}),
+        ("Go", scan_result.go_files or {}),
+        ("Java", scan_result.java_files or {}),
+        ("Kotlin", scan_result.kotlin_files or {}),
+        ("PHP", scan_result.php_files or {}),
+        ("C++", scan_result.cpp_files or {}),
+    ]
+    for label, files in language_files:
+        if files:
+            listing = ", ".join(str(p) for p in files)
+            print(f"    {label:<6} ({len(files)}): {listing}")
 
 
 def _print_symbol_summary(label: str, sym_index: SymbolIndex) -> None:

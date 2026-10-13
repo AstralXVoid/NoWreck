@@ -1088,3 +1088,125 @@ the oracle's "documented boundaries are mirrored, not measured" rule.
 | Differential audit | 0 divergences over the extended C++ corpus; `EXPECTED_DIVERGENCES` empty |
 | Attribution ban | clean (no co-author / agent notes in files or commits) |
 
+---
+
+## 16. Phase 6 — Cross-language hardening
+
+Phase 6 re-verified the whole nine-language surface against the same bar as
+the original five and fixed in-phase whatever the sweep surfaced. **No scanner
+code changed in this phase:** the findings were all in the verification
+surface itself — a determinism sweep that had silently lagged the four new
+repos (and, as the adversarial review found, had never actually compared the
+two identity-exempt fields `line_number`/`body_hash`), a picker summary that
+still knew only three languages, and cache round-trip coverage missing for the
+last three v16 languages.
+
+### 16.1 Differential grounding pass — all nine corpora
+
+`tests/test_differential_audit.py`: **129 passed** over the nine corpora
+(125 files: python/javascript/typescript/rust/go = 12 each, cpp 17, kotlin 15,
+java 15, php 18). `EXPECTED_DIVERGENCES` stays **empty**; the single documented
+checker limitation (C++ declaration-head calls) lives in the module docstring
+and is mirrored by the probe harness, not the corpus (section 15.4).
+
+### 16.2 Full matrix re-run
+
+All nine per-language detector matrix classes re-run through the real pipeline
+(`RepositoryScanner` → `build_symbol_index` → `detect_changes`): **163 passed**
+(`TestDetectFunctionChanges` for Python plus the JS/TSX/Rust/Go/Java/Kotlin/PHP/C++
+classes), each carrying its CHANGED + CALL rows.
+
+### 16.3 Cache honesty check
+
+`CACHE_VERSION` stays **2** (pinned by the per-language round-trip classes' own
+schema asserts). Coverage closed in-phase:
+
+- `TestTypeScriptCacheRoundTrip`, `TestRustCacheRoundTrip`,
+  `TestGoCacheRoundTrip` — 4 tests each: cold/warm symbol identity including
+  `body_hash`, hash preservation across the round-trip (distinct per symbol),
+  the cache's recorded language string, and schema v2. These close the three
+  languages that had no per-language round-trip: the v16 body-hash class
+  exercised **JS only** (its docstring claimed TS/Rust/Go too — corrected to
+  match), and Java/Kotlin/PHP/C++ landed with Phases 2–5.
+- `TestStaleCacheRebuildAllNineLanguages` — the all-nine stale-cache check: a
+  real cache is rewritten as a legacy **v1** file with `body_hash` stripped,
+  then re-scanned; the test asserts the rebuild produced fresh symbols for all
+  nine languages, a rebuilt **v2** cache whose entries carry hashes again, and
+  that the rebuilt cache is itself warm-honest (cold/warm symbol tuples
+  identical per language).
+
+`tests/test_scan_cache.py`: 57 → **70 passed** (+13).
+
+### 16.4 Determinism sweep
+
+**Finding 1:** `TestAllReposDeterministic` (the all-repos sweep) still listed
+the seven v16 repos and compared only js/ts/rust/go fields — the four v17 repos
+and their `java_files`/`kotlin_files`/`php_files`/`cpp_files` maps were outside
+the sweep entirely.
+
+**Finding 2 (adversarial review of the fix):** `Symbol.__eq__` is
+identity-exempt **by design** — `line_number` and `body_hash` are
+`compare=False` so that a line shift or a body edit is not reported as a
+remove+add pair. The consequence for the sweep: `index.symbols ==` a peer run
+(and every per-language map comparison) **never compared either exempt field**,
+so a run-to-run `body_hash` difference could have survived the sweep — despite
+the sweep being the byte-identity gate the phase relies on.
+
+**Fix:** both defects fixed together — the sweep spans all **11 repos × nine
+language maps** (+ `failed_files`), and every symbol is compared as an explicit
+`(name, type, path, line, parent_class, body_hash)` tuple across all eight
+language maps and the whole symbol index. Non-vacuity verified directly: the
+samples confirm the projection carries real hashes (`pure-cpp`: 22 of 34
+symbols, `pure-ts`: 16 of 19) and a single mutated hash changes the comparison.
+**11 passed** (one case per repo; each scans 3× and requires bit-for-bit
+equality including the exempt fields).
+
+### 16.5 Performance sanity
+
+Gate: full-suite runtime < 2× the Phase 0 baseline of **29.74 s** (section 1).
+
+| Run | Tests | Wall-clock | vs baseline |
+|---|---|---|---|
+| Final full suite | 1,729 | **29.22 s** | 0.98× |
+| Final full suite (repeat) | 1,729 | **33.95 s** | 1.14× |
+| Post-review verification run | 1,729 | **47.85 s** | 1.61× |
+
+All inside the gate, consistent with the machine's documented 19 s–103 s
+full-suite variance. The 1,729-test suite is up from 1,004 at baseline — the
+only sub-second hotspots are the PTY picker-integration tests (~4.5 s) and the
+differential corpus setup (~0.9 s); no new collector shows an O(n²)
+footprint.
+
+### 16.6 Picker smoke test
+
+**Finding (real gap):** `picker.py::_print_scan_summary` had hard-coded lines
+for Python/JS/TS only — six of the nine languages were **invisible** in the
+picker's pre/post scan output. The picker constructs `RepositoryScanner`
+directly, so the fix belongs in the summary, not in language plumbing.
+
+**Fix:** one loop over the nine language maps (`modules`, `js_files`,
+`ts_files`, `rust_files`, `go_files`, `java_files`, `kotlin_files`, `php_files`,
+`cpp_files`), identical label formatting; the Python/JS/TS lines are
+byte-identical to before, so existing expectations stayed untouched.
+
+**Test:** `tests/test_picker.py::TestPrintScanSummaryMixedLanguages` writes one
+file per language — including a `.tsx` component and a C++ header/impl pair —
+scans through the exact construction the picker uses, and asserts all nine
+breakdown lines plus the TS-family fold and the header listing.
+`tests/test_picker.py`: 57 → **58 passed** (+1).
+
+### 16.7 Phase 6 verification
+
+| Item | Evidence | Result |
+|---|---|---|
+| 6.1 Differential — nine languages | `tests/test_differential_audit.py` | 129 passed; 0 unexpected divergences |
+| 6.2 Matrix re-run | nine per-language detector classes | 163 passed |
+| 6.3 Cache honesty | `tests/test_scan_cache.py` | 70 passed (+13); `CACHE_VERSION == 2` |
+| 6.4 Determinism | `TestAllReposDeterministic` | 11 repos × 9 languages, explicit `body_hash`/`line_number` tuples; 11 passed |
+| 6.5 Performance | final full suite | 29.22 s / 33.95 s vs 29.74 s — 0.98× / 1.14×, gate < 2× |
+| 6.6 Picker smoke test | `TestPrintScanSummaryMixedLanguages` | 58 passed (+1) |
+
+Regression gates on the final tree: full suite **1,729 passed**; `ruff check`
+and `ruff format --check` clean; `basedpyright` strict **0 errors**; milestone
+checkpoint **131 passed**; `test_cpp_samples/` suites green.
+
