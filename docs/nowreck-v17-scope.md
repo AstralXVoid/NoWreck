@@ -179,14 +179,14 @@ artifact), plus a `pyproject.toml` ruff exclusion (below).
 
 **DoD:**
 
-- [ ] Perf baseline recorded in the audit report
-- [ ] Checker + 5 corpora exist; `tests/test_differential_audit.py` runs them
-- [ ] Corpus dir excluded from ruff check/format in `pyproject.toml`; everything else still lint-clean
-- [ ] First divergences either mapped (with justification) or listed as findings
-- [ ] `docs/v17-audit-report.md` written: findings classified, evidence included
-- [ ] Dead-code items (`pty_helper` — no importers found) investigated and dispositioned
-- [ ] Phase 1 fix list frozen (no new fixes mid-Phase-1 without re-running the audit)
-- [ ] Full suite green (checker infrastructure must not disturb anything)
+- [x] Perf baseline recorded in the audit report
+- [x] Checker + 5 corpora exist; `tests/test_differential_audit.py` runs them
+- [x] Corpus dir excluded from ruff check/format in `pyproject.toml`; everything else still lint-clean
+- [x] First divergences either mapped (with justification) or listed as findings
+- [x] `docs/v17-audit-report.md` written: findings classified, evidence included
+- [x] Dead-code items (`pty_helper` — no importers found) investigated and dispositioned
+- [x] Phase 1 fix list frozen (no new fixes mid-Phase-1 without re-running the audit)
+- [x] Full suite green (checker infrastructure must not disturb anything)
 
 ## Phase 1 — Audit remediation + flake kill
 
@@ -206,11 +206,11 @@ consecutive full-suite runs, all green**. That count is the gate — not
 
 **DoD:**
 
-- [ ] Every Phase 0 REAL GAP fixed with its catching test; suite green
-- [ ] Every accepted edge mapped + pinned + documented
-- [ ] tmux flake fixed; **10 consecutive clean full-suite runs** recorded
-- [ ] `ruff check`/`format` + `basedpyright` strict green
-- [ ] Adversarial review passed; committed
+- [x] Every Phase 0 REAL GAP fixed with its catching test; suite green
+- [x] Every accepted edge mapped + pinned + documented
+- [x] tmux flake fixed; **10 consecutive clean full-suite runs** recorded
+- [x] `ruff check`/`format` + `basedpyright` strict green
+- [x] Adversarial review passed; committed
 
 ---
 
@@ -270,11 +270,11 @@ via the exact `rust_scanner.py` pattern (per-process singleton, clean
 
 **DoD:** all six gates of The Quality Bar, plus:
 
-- [ ] J1–J12 resolved empirically, each pinned as a permanent test, **before** collector code
-- [ ] `ScanResult.java_files` flows through cache/index/detector/verifier-counts
-- [ ] Differential pass over the Java corpus clean (or mapped)
-- [ ] `test_java_samples/` + `pure-java` milestone green
-- [ ] Adversarial review passed; committed
+- [x] J1–J12 resolved empirically, each pinned as a permanent test, **before** collector code
+- [x] `ScanResult.java_files` flows through cache/index/detector/verifier-counts
+- [x] Differential pass over the Java corpus clean (or mapped)
+- [x] `test_java_samples/` + `pure-java` milestone green
+- [x] Adversarial review passed; committed
 
 ---
 
@@ -337,11 +337,11 @@ Samples: `test_kotlin_samples/` (mirrors). Milestone: `pure-kotlin` repo +
 
 **DoD:** all six gates, plus:
 
-- [ ] K1–K12 resolved + pinned before collector code; grammar floor pinned (K12)
-- [ ] Disjoint-facts rule verified for Kotlin (companion/property rows)
-- [ ] Differential pass over the Kotlin corpus clean (or mapped)
-- [ ] `test_kotlin_samples/` + `pure-kotlin` milestone green
-- [ ] Adversarial review passed; committed
+- [x] K1–K12 resolved + pinned before collector code; grammar floor pinned (K12)
+- [x] Disjoint-facts rule verified for Kotlin (companion/property rows)
+- [x] Differential pass over the Kotlin corpus clean (or mapped)
+- [x] `test_kotlin_samples/` + `pure-kotlin` milestone green
+- [x] Adversarial review passed; committed
 
 ---
 
@@ -418,11 +418,11 @@ Samples: `test_php_samples/` (comprehensive, multiround, types +
 
 **DoD:** all six gates of The Quality Bar, plus:
 
-- [ ] PH1–PH12 resolved empirically, each pinned as a permanent test, **before** collector code
-- [ ] `ScanResult.php_files` flows through cache/index/detector/verifier-counts
-- [ ] Differential pass over the PHP corpus clean (or mapped)
-- [ ] `test_php_samples/` + `pure-php` milestone green
-- [ ] Adversarial review passed; committed
+- [x] PH1–PH12 resolved empirically, each pinned as a permanent test, **before** collector code
+- [x] `ScanResult.php_files` flows through cache/index/detector/verifier-counts
+- [x] Differential pass over the PHP corpus clean (or mapped)
+- [x] `test_php_samples/` + `pure-php` milestone green
+- [x] Adversarial review passed; committed
 
 ---
 
@@ -502,12 +502,12 @@ including the header-split pins.
 
 **DoD:** all six gates, plus:
 
-- [ ] E1–E14 resolved + pinned before collector code
-- [ ] Header/impl semantics pinned by the three-row test table; `body_hash=None` defensive rule tested
-- [ ] `ScanResult.cpp_files` flows through cache/index/detector/verifier-counts
-- [ ] Differential pass over the C++ corpus clean (or mapped)
-- [ ] `test_cpp_samples/` + `pure-cpp` milestone green
-- [ ] Adversarial review passed; committed
+- [x] E1–E14 resolved + pinned before collector code
+- [x] Header/impl semantics pinned by the three-row test table; `body_hash=None` defensive rule tested
+- [x] `ScanResult.cpp_files` flows through cache/index/detector/verifier-counts
+- [x] Differential pass over the C++ corpus clean (or mapped)
+- [x] `test_cpp_samples/` + `pure-cpp` milestone green
+- [x] Adversarial review passed; committed
 
 ---
 
@@ -613,19 +613,42 @@ missing-grammar cases.
 
 ## Definition of Done (global)
 
-- [ ] **Phase 0:** checker + 5 corpora + audit report; findings frozen
-- [ ] **Phase 1:** every REAL GAP fixed with its test; accepted edges
+- [x] **Phase 0:** checker + 5 corpora + audit report; findings frozen
+- [x] **Phase 1:** every REAL GAP fixed with its test; accepted edges
       documented + mapped; tmux flake dead (10 consecutive green full runs)
-- [ ] **Phase 2:** Java through all six gates (probes J1–J12 pinned first)
-- [ ] **Phase 3:** Kotlin through all six gates (probes K1–K12 pinned first)
-- [ ] **Phase 4:** PHP through all six gates (probes PH1–PH12 pinned first)
-- [ ] **Phase 5:** C++ through all six gates (probes E1–E14 pinned first)
-- [ ] **Phase 6:** 9-language differential clean; full matrix re-verified;
+- [x] **Phase 2:** Java through all six gates (probes J1–J12 pinned first)
+- [x] **Phase 3:** Kotlin through all six gates (probes K1–K12 pinned first;
+      the phase added K13–K16 with the D7 fix, so the delivered set is
+      K1–K16)
+- [x] **Phase 4:** PHP through all six gates (probes PH1–PH12 pinned first)
+- [x] **Phase 5:** C++ through all six gates (probes E1–E14 pinned first; the
+      adversarial review added E17/E18, so the delivered set is E1–E18)
+- [x] **Phase 6:** 9-language differential clean; full matrix re-verified;
       determinism + perf sanity green
-- [ ] **Phase 7:** version 0.17.0 in all three sites; README/use.md/
+- [x] **Phase 7:** version 0.17.0 in all three sites; README/use.md/
       release17.md complete and accurate
-- [ ] Full suite green; `ruff check`/`format` clean; `basedpyright` strict
+- [x] Full suite green; `ruff check`/`format` clean; `basedpyright` strict
       clean; every phase committed separately (no attribution)
-- [ ] **The standing promise kept:** 9 languages, every one having passed
+- [x] **The standing promise kept:** 9 languages, every one having passed
       the *same* satisfaction bar — no legacy tier, no "new but unproven"
       tier
+
+**Definition of Done: 10/10 complete.** `v0.17.0` ships nine languages —
+Python, JavaScript, TypeScript (incl. `.tsx`), Rust, Go, Java, Kotlin, PHP and
+C++ — every one grounded by the differential oracle, its grammar probes
+pinned before collector code, and its own detector matrix, sample suite and
+milestone repo. Verified on the final tree: full suite **1,731 passed** (1
+pre-existing deprecation warning), differential audit **129 passed** with
+`EXPECTED_DIVERGENCES` empty over **125** corpus files, grammar probes
+**33 / 86 / 74 / 78**, milestone checkpoint **131 passed**, `ruff check` +
+`ruff format --check` clean, `basedpyright` strict **0 errors**. Two Phase 7
+closeout items were fixed rather than assumed: `docs/release17.md` (the one
+missing deliverable) and the picker terminal tests' hermeticity — they drove
+a `PATH`-resolved `nowreck`, so a stale user-level install became the process
+under test; they now run this checkout via `<sys.executable> -m nowreck`,
+pinned by a regression test that puts a broken decoy first on `PATH`. One
+gate is recorded with its measurement rather than as a bare pass: the
+full-suite `< 2×` baseline wall-clock bound measured **1.47×–2.31×** on this
+host (43.84 s–68.57 s vs 29.74 s), one run of five over the bound — a
+load-sensitivity with no collector hotspot behind it (see
+`docs/v17-audit-report.md` §17).

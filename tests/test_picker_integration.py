@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -860,10 +861,15 @@ class TestPickerIntegrationExit:
 # ============================================================================
 # PTY-based terminal test
 #
-# This test uses Python's stdlib pty module to create a pseudo-terminal and
-# script keystrokes into the real ``nowreck --interactive`` binary.  It
-# verifies that the menu renders correctly and responds to keyboard input
-# in a real terminal environment — no mocking of questionary.
+# This test drives a pseudo-terminal with tmux and scripts keystrokes into
+# the real ``nowreck --interactive`` entry point.  It verifies that the menu
+# renders correctly and responds to keyboard input in a real terminal
+# environment — no mocking of questionary.
+#
+# The command under test is this checkout's own ``nowreck``, launched with
+# the interpreter running the tests (see ``_nowreck_command``), never a
+# ``nowreck`` resolved from ``PATH``.  A stale user-level install earlier on
+# ``PATH`` would otherwise be the process under test.
 #
 # Skipped when tmux is not available (CI, headless environments).
 # ============================================================================
@@ -874,7 +880,9 @@ class TestPickerTerminal:
 
     These tests are slower than the mocked tests and require tmux, but
     they verify that ``nowreck --interactive`` actually renders and
-    responds to keyboard input in a real PTY environment.
+    responds to keyboard input in a real PTY environment.  The process
+    they drive is this checkout's own package, not whatever ``nowreck``
+    happens to be first on ``PATH``.
 
     Skipped when tmux is not available (CI, headless machines).
 
@@ -1059,11 +1067,36 @@ class TestPickerTerminal:
             timeout=5,
         )
 
+    @staticmethod
+    def _nowreck_command(*extra_args: str) -> str:
+        """Return the shell command that starts this checkout's nowreck.
+
+        Runs ``nowreck`` as a module of the interpreter running the tests
+        rather than as a bare console script.  A bare ``nowreck`` resolves
+        through ``PATH``, so a stale user-level install (e.g. an old
+        ``pip install --user``) can shadow the code under test — that
+        process raises ``ModuleNotFoundError`` and exits before drawing
+        the menu, leaving every assertion in this class reading a blank
+        pane.  ``-m`` also puts the checkout root first on ``sys.path``,
+        so the code under test is the working tree, matching how the rest
+        of the suite imports the package.
+
+        ``extra_args`` replaces the default ``--interactive`` (used by the
+        hermeticity pin below to run ``--version``).
+        """
+        import shlex
+        import sys
+
+        args = extra_args or ("--interactive",)
+        quoted = " ".join(shlex.quote(arg) for arg in args)
+        return f"{shlex.quote(sys.executable)} -m nowreck {quoted}"
+
     def _start_session(self, command: str) -> None:
         """Start a fresh tmux session for this test.
 
         Kills any existing session with the same name first (safety),
-        then creates a new one.
+        then creates a new one.  The command runs under the tmux server's
+        shell, so a command with arguments must be shell-quoted.
         """
         import subprocess
 
@@ -1084,7 +1117,7 @@ class TestPickerTerminal:
             pytest.skip("tmux not available")
 
         try:
-            self._start_session("nowreck --interactive")
+            self._start_session(self._nowreck_command())
 
             # Poll until the menu appears
             output = self._wait_for_output("What would you like to do?")
@@ -1117,7 +1150,7 @@ class TestPickerTerminal:
         import subprocess
 
         try:
-            self._start_session("nowreck --interactive")
+            self._start_session(self._nowreck_command())
 
             # Wait for menu
             self._wait_for_output("What would you like to do?")
@@ -1147,7 +1180,7 @@ class TestPickerTerminal:
         import subprocess
 
         try:
-            self._start_session("nowreck --interactive")
+            self._start_session(self._nowreck_command())
 
             # --- Step 1: Wait for menu, select Verify by pressing Enter ---
             self._wait_for_output("What would you like to do?")
@@ -1180,3 +1213,54 @@ class TestPickerTerminal:
 
         finally:
             self._cleanup()
+
+
+class TestPickerTerminalLaunch:
+    """The tmux class must drive the checkout, not a ``PATH`` nowreck.
+
+    These tests need no tmux: they pin the *launch strategy*.  Before the
+    interpreter-anchored command, a stale user-level ``nowreck`` earlier on
+    ``PATH`` became the process under test and the whole terminal class
+    failed on a blank pane while every other suite stayed green.
+    """
+
+    def test_launch_command_is_interpreter_anchored(self) -> None:
+        """The command is ``<sys.executable> -m nowreck --interactive``."""
+        import shlex
+        import sys
+
+        tokens = shlex.split(TestPickerTerminal._nowreck_command())
+
+        assert tokens == [sys.executable, "-m", "nowreck", "--interactive"]
+
+    def test_stale_nowreck_on_path_is_not_the_process_under_test(
+        self, tmp_path: Path
+    ) -> None:
+        """A broken ``nowreck`` first on ``PATH`` must not shadow the checkout."""
+        import os
+        import shlex
+        import subprocess
+
+        from nowreck import __version__
+
+        # A decoy that reproduces the real-world failure: a user-level
+        # console script bound to an interpreter without the package.
+        decoy = tmp_path / "nowreck"
+        decoy.write_text(
+            "#!/bin/sh\n"
+            "echo 'ModuleNotFoundError: No module named nowreck' >&2\n"
+            "exit 1\n"
+        )
+        decoy.chmod(0o755)
+        env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+
+        result = subprocess.run(
+            shlex.split(TestPickerTerminal._nowreck_command("--version")),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert __version__ in result.stdout

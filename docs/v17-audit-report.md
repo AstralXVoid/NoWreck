@@ -1211,3 +1211,72 @@ Regression gates on the final tree: full suite **1,729 passed**; `ruff check`
 and `ruff format --check` clean; `basedpyright` strict **0 errors**; milestone
 checkpoint **131 passed**; `test_cpp_samples/` suites green.
 
+---
+
+## 17. Phase 7 — Docs + version bump, and the closeout
+
+### Version + documentation
+
+| Site | Value | Verified by |
+|---|---|---|
+| `nowreck/__init__.py` | `"0.17.0"` | `--version` → `nowreck 0.17.0` |
+| `nowreck/main.py` | `_BANNER` → `NoWreck v0.17.0` | `--help` banner |
+| `pyproject.toml` | `version = "0.17.0"` | `test_packaging.py` |
+
+`README.md` and `use.md` carry the nine-language tables, the per-language
+claim notes (Java has no top-level functions; Kotlin extension functions are
+parentless; PHP `TYPE_ALIAS` never fires and traits map to CLASS; C++
+`INTERFACE` never fires and header/impl are independent per-file facts), the
+rewritten Limitations section taken from this report's §4 accepted-edge
+tables, and the roadmap rows. `docs/release17.md` is new.
+
+### Closeout finding — the picker terminal tests were not hermetic
+
+Phase 1's flake kill assumed the process under test was this checkout's
+`nowreck`. `TestPickerTerminal` launched a **bare** `nowreck`, resolved
+through `PATH`. In a shell where a stale user-level install precedes the
+project venv (here: `/home/cipher/.local/bin/nowreck`, shebang
+`#!/usr/bin/python3`, aborting with `ModuleNotFoundError: No module named
+'nowreck'`), the pane renders blank and the wait returns immediately: the
+class failed 2/3 in ~2 s while every other suite stayed green. This is the
+same class Phase 1 hardened, so the fail-fast diagnosis was correct and the
+*launch* was the unexamined part.
+
+Fix: `_nowreck_command()` runs `nowreck` as a module of the interpreter
+running the tests (`<sys.executable> -m nowreck --interactive`, shell-quoted
+for the tmux server's shell). `-m` also puts the checkout root first on
+`sys.path`, so the process under test is the working tree — the same code the
+rest of the suite imports. No production code changed.
+
+**Catch test (new, `TestPickerTerminalLaunch`):** one test pins the launch
+shape; the other is behavioural — it writes a decoy `nowreck` that fails the
+way the real stale install failed, puts it **first on `PATH`**, and runs
+`_nowreck_command("--version")` requiring exit 0 and the checkout's real
+version. Before the fix that invocation resolved the decoy and failed.
+
+Verified with the decoy in place: `tests/test_picker_integration.py` **23
+passed** (was 2 failed / 1 passed), and the full suite green with the stale
+`~/.local/bin/nowreck` still first on `PATH`.
+
+### Phase 7 verification
+
+| Gate | Result |
+|---|---|
+| Full suite | **1,731 passed** (1,729 + the 2 hermeticity tests), 1 pre-existing DeprecationWarning; 43.84 s / 52.64 s / 53.83 s / 63.88 s / 68.57 s across five runs |
+| Differential audit | 129 passed, `EXPECTED_DIVERGENCES` empty; 125 corpus files |
+| Grammar probes | Java 33 / Kotlin 86 / PHP 74 / C++ 78 |
+| Milestone checkpoint | 131 passed |
+| `ruff check` / `ruff format --check` | All checks passed / 113 files already formatted |
+| `basedpyright` | 0 errors, 0 warnings, 0 notes |
+| Version sync | all three sites (banner, `--version`, `pyproject.toml`) |
+| `docs/release17.md` | new, created in this phase (was the one missing Phase 7 deliverable) |
+
+**Performance, stated honestly:** the `> 2×` baseline gate is a wall-clock
+measure on a host with documented 19 s–103 s full-suite variance. Phase 7
+measured **1.47×–2.31×** (43.84 s–68.57 s vs 29.74 s); one of the five runs
+exceeded 2×. The five runs bracket Phase 6's 29.22 s / 33.95 s / 47.85 s
+(0.98×–1.61×). No hotspot explains it — the slowest items remain the PTY
+picker tests (~12 s) and the differential corpus setup (~6 s) — so the gate
+is met at typical load and is **not** a guaranteed bound under heavy load.
+This is recorded rather than rounded off.
+
