@@ -121,8 +121,8 @@ class RepositoryScanner:
 
     def scan(self) -> ScanResult:
         """Discover and parse all ``.py``, ``.js``, ``.ts``, ``.rs``,
-        ``.go``, ``.java``, ``.kt``/``.kts``, and ``.php`` files under
-        the repository root.
+        ``.go``, ``.java``, ``.kt``/``.kts``, ``.php``, and C++
+        (``.cpp``/``.hpp``-family) files under the repository root.
 
         When the scan cache is enabled (the default), previously parsed
         files are cached on disk and reused if their mtime and size

@@ -13,10 +13,11 @@
    - [Claims Mode](#3-claims-mode)
 5. [Command Reference](#command-reference)
 6. [Understanding the Report](#understanding-the-report)
-7. [Claim Types](#claim-types)
-8. [Confidence System](#confidence-system)
-9. [JSON Output for CI](#json-output-for-ci)
-10. [Troubleshooting](#troubleshooting)
+7. [Supported Languages](#supported-languages)
+8. [Claim Types](#claim-types)
+9. [Confidence System](#confidence-system)
+10. [JSON Output for CI](#json-output-for-ci)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -41,7 +42,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.16.0
+# → nowreck 0.17.0
 
 nowreck
 # → shows banner + usage
@@ -410,6 +411,37 @@ nowreck fix --pre ./before --post ./after --claims @claims.json
 
 ---
 
+## Supported Languages
+
+| Language | Files | Parser |
+|----------|-------|--------|
+| Python | `.py` | Built-in `ast` module |
+| JavaScript | `.js` | Tree-sitter (`tree-sitter-javascript`) |
+| TypeScript | `.ts`, `.tsx` | Tree-sitter (`tree-sitter-typescript`) |
+| Rust | `.rs` | Tree-sitter (`tree-sitter-rust`) |
+| Go | `.go` | Tree-sitter (`tree-sitter-go`) |
+| Java | `.java` | Tree-sitter (`tree-sitter-java`) |
+| Kotlin | `.kt`, `.kts` | Tree-sitter (`tree-sitter-kotlin`) |
+| PHP | `.php` | Tree-sitter (`tree-sitter-php`) |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.h` | Tree-sitter (`tree-sitter-cpp`) |
+
+All parsers produce the same symbol shapes, so the pipeline is
+language-agnostic. Per-language notes:
+
+- **Java** — no top-level functions; every function symbol is a method, so
+  function claims always carry `parent_class`. `@interface` maps to
+  INTERFACE.
+- **Kotlin** — extension functions are ordinary top-level functions (no
+  `parent_class`); `annotation class` maps to INTERFACE.
+- **PHP** — traits map to CLASS; `TYPE_ALIAS` never fires; `$obj->m()`,
+  `Class::m()`, `self::` / `static::` / `parent::` calls resolve to the
+  method name.
+- **C++** — `INTERFACE` never fires (no interface keyword); a declaration
+  and its out-of-line definition are independent per-file facts;
+  `obj->m()` and `Class::m()` calls are captured.
+
+---
+
 ## Claim Types
 
 | Claim type | Fields | Meaning |
@@ -418,11 +450,11 @@ nowreck fix --pre ./before --post ./after --claims @claims.json
 | `REMOVE_FUNCTION` | `symbol_name`, `file_path` | A function was removed |
 | `ADD_CLASS` | `symbol_name`, `file_path` | A class was added |
 | `REMOVE_CLASS` | `symbol_name`, `file_path` | A class was removed |
-| `ADD_INTERFACE` | `symbol_name`, `file_path` | An interface was added (TS/TSX/Rust/Go) |
+| `ADD_INTERFACE` | `symbol_name`, `file_path` | An interface was added (TS/TSX/Rust/Go/Java/Kotlin/PHP) |
 | `REMOVE_INTERFACE` | `symbol_name`, `file_path` | An interface was removed |
-| `ADD_ENUM` | `symbol_name`, `file_path` | An enum was added (TS/TSX/Rust) |
+| `ADD_ENUM` | `symbol_name`, `file_path` | An enum was added (TS/TSX/Rust/Java/Kotlin/PHP/C++) |
 | `REMOVE_ENUM` | `symbol_name`, `file_path` | An enum was removed |
-| `ADD_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was added (TS/TSX/Rust/Go) |
+| `ADD_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was added (TS/TSX/Rust/Go/Kotlin/C++) |
 | `REMOVE_TYPE_ALIAS` | `symbol_name`, `file_path` | A type alias was removed |
 | `CHANGED_FUNCTION` | `symbol_name`, `file_path` | A function's body was changed |
 | `CHANGED_CLASS` | `symbol_name`, `file_path` | A class's shell (fields, bases, decorators) was changed |
@@ -482,7 +514,7 @@ changes:
 
 ```json
 {
-  "version": "0.16.0",
+  "version": "0.17.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -590,7 +622,8 @@ Failed responses are saved to `.nowreck/failed/` for debugging.
 
 Make sure:
 - Both `--pre` and `--post` paths exist and are directories
-- The directories contain `.py`, `.js`, `.ts`, `.tsx`, `.rs`, or `.go` files
+- The directories contain `.py`, `.js`, `.ts`, `.tsx`, `.rs`, `.go`,
+  `.java`, `.kt`, `.kts`, `.php`, or `.cpp`/`.h`-family files
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
@@ -612,4 +645,4 @@ Make sure:
 
 ---
 
-*NoWreck v0.16.0 — September 2026*
+*NoWreck v0.17.0 — October 2026*

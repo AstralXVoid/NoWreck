@@ -2,7 +2,7 @@
 
 # NoWreck
 
-**Deterministic AI Verifier** — v0.16.0
+**Deterministic AI Verifier** — v0.17.0
 
 </div>
 <div align="center">
@@ -113,7 +113,7 @@ pip install -e .
 
 ```bash
 nowreck --version
-# → nowreck 0.16.0
+# → nowreck 0.17.0
 
 nowreck
 # → shows banner + usage
@@ -569,6 +569,10 @@ parser, building a symbol index of every function, class, and method:
 | TypeScript | `.ts`, `.tsx` | Tree-sitter (`tree-sitter-typescript`) |
 | Rust | `.rs` | Tree-sitter (`tree-sitter-rust`) |
 | Go | `.go` | Tree-sitter (`tree-sitter-go`) |
+| Java | `.java` | Tree-sitter (`tree-sitter-java`) |
+| Kotlin | `.kt`, `.kts` | Tree-sitter (`tree-sitter-kotlin`) |
+| PHP | `.php` | Tree-sitter (`tree-sitter-php`) |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.h` | Tree-sitter (`tree-sitter-cpp`) |
 
 All parsers produce the same `Symbol` / `SymbolType` data shapes, so the
 rest of the pipeline never knows (or cares) which language produced the
@@ -598,12 +602,12 @@ contradicting change exists (e.g., claim says "added" but detection shows
 | `REMOVE_FUNCTION` | A function was removed | Structural existence check |
 | `ADD_CLASS` | A class was added | Structural existence check |
 | `REMOVE_CLASS` | A class was removed | Structural existence check |
-| `ADD_INTERFACE` | An interface was added (TS/TSX, Rust, Go) | Structural existence check |
-| `REMOVE_INTERFACE` | An interface was removed (TS/TSX, Rust, Go) | Structural existence check |
-| `ADD_ENUM` | An enum was added (TS/TSX, Rust) | Structural existence check |
-| `REMOVE_ENUM` | An enum was removed (TS/TSX, Rust) | Structural existence check |
-| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX, Rust, Go) | Structural existence check |
-| `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX, Rust, Go) | Structural existence check |
+| `ADD_INTERFACE` | An interface was added (TS/TSX, Rust, Go, Java, Kotlin, PHP) | Structural existence check |
+| `REMOVE_INTERFACE` | An interface was removed (TS/TSX, Rust, Go, Java, Kotlin, PHP) | Structural existence check |
+| `ADD_ENUM` | An enum was added (TS/TSX, Rust, Java, Kotlin, PHP, C++) | Structural existence check |
+| `REMOVE_ENUM` | An enum was removed (TS/TSX, Rust, Java, Kotlin, PHP, C++) | Structural existence check |
+| `ADD_TYPE_ALIAS` | A type alias was added (TS/TSX, Rust, Go, Kotlin, C++) | Structural existence check |
+| `REMOVE_TYPE_ALIAS` | A type alias was removed (TS/TSX, Rust, Go, Kotlin, C++) | Structural existence check |
 | `CHANGED_FUNCTION` | A function's body was changed | Structural body-diff |
 | `CHANGED_CLASS` | A class's shell (fields, bases, decorators) was changed | Structural body-diff |
 | `FILE_CREATED` | A new file appeared | File-list diff |
@@ -616,6 +620,20 @@ the existence-based claim types use symbol-existence comparison, and the
 `CHANGED_*` types use a formatting-insensitive structural body hash (edited
 logic always changes it; reformatting, comment, and quote-style edits do
 not).
+
+**Per-language notes:**
+
+- **Java** — no top-level functions: every function symbol is a method, so
+  `ADD_FUNCTION` / `CHANGED_FUNCTION` claims always name it with
+  `parent_class`; `@interface` maps to INTERFACE.
+- **Kotlin** — extension functions are indexed as ordinary top-level
+  functions (no `parent_class`); `annotation class` maps to INTERFACE.
+- **PHP** — traits map to CLASS (their methods carry the trait name as
+  `parent_class`); `TYPE_ALIAS` never fires; `$obj->m()`, `Class::m()`, and
+  `self::` / `static::` / `parent::` calls resolve to the method name.
+- **C++** — `INTERFACE` never fires (C++ has no interface keyword); a
+  declaration and its out-of-line definition are independent per-file
+  facts; `obj->m()` and `Class::m()` calls are captured.
 
 ### Claim fields
 
@@ -723,7 +741,7 @@ nowreck fix "Add validation to auth.py" --json
 
 ```json
 {
-  "version": "0.16.0",
+  "version": "0.17.0",
   "mode": "prompt_v10",
   "success": false,
   "evidence": {
@@ -779,7 +797,7 @@ else is identical:
 
 ```json
 {
-  "version": "0.16.0",
+  "version": "0.17.0",
   "success": false,
   "summary": { "total_claims": 3, "confirmed": 2, "contradicted": 1, "unverifiable": 0, "unexplained_count": 0 },
   "results": [ { "claim": {}, "verdict": "CONFIRMED", "verifier_confidence": 1.0, "matched_change": {} } ],
@@ -826,9 +844,20 @@ echo "$REPORT" | python3 -c "import sys, json; d = json.load(sys.stdin); print('
 NoWreck verifies structure, not semantics. Be aware of these boundaries:
 
 - **Supported languages** — Python (`.py`), JavaScript (`.js`), TypeScript
-  (`.ts`, `.tsx`), Rust (`.rs`), and Go (`.go`). Python uses the built-in
-  `ast` module; JavaScript, TypeScript, Rust, and Go use Tree-sitter with
-  their respective grammars.
+  (`.ts`, `.tsx`), Rust (`.rs`), Go (`.go`), Java (`.java`), Kotlin
+  (`.kt`, `.kts`), PHP (`.php`), and C++ (`.cpp`, `.cc`, `.cxx`, `.c++`,
+  `.hpp`, `.hh`, `.hxx`, `.h++`, `.h`). Python uses the built-in `ast`
+  module; the other eight use Tree-sitter with their respective grammars.
+  `.h` files are parsed with the C++ grammar (plain C headers parse too);
+  `.c` files are not discovered.
+- **Per-language structural boundaries** — Java has no top-level
+  functions (function claims always name a method); Kotlin extension
+  functions are ordinary top-level functions; PHP traits map to CLASS and
+  `TYPE_ALIAS` never fires there; C++ `INTERFACE` never fires. In C++, a
+  declaration and its out-of-line definition are independent per-file
+  facts — no `#include` resolution or cross-file symbol linking is
+  performed, and a declaration-only member carries no body hash, so a
+  declaration edit alone cannot fire `CHANGED_FUNCTION`.
 - **Dynamic behavior cannot be reliably resolved** — `exec()`, `eval()`,
   dynamic imports, `getattr()` / `setattr()` with dynamic arguments,
   metaclasses, monkey-patching, and reflection fall outside the scanner's
@@ -851,9 +880,10 @@ NoWreck verifies structure, not semantics. Be aware of these boundaries:
 - **Prompt Mode requires a working repository** — it runs against the
   current working directory; without a real repository all claims come
   back UNVERIFIABLE.
-- **Interfaces, enums, and type aliases** (TS/TSX, Rust, Go) are captured
-  as structural symbols and verified for existence only (added/removed) —
-  not for semantic correctness.
+- **Interfaces, enums, and type aliases** are captured as structural
+  symbols in the languages that have them (TS/TSX, Rust, Go, Java, Kotlin,
+  PHP, C++ — per-type availability in the claim table above) and verified
+  for existence only (added/removed) — not for semantic correctness.
 - **The verifier works from `DetectedChange` facts**, not by re-reading the
   repository. It is deterministic within its supported analysis model, not
   infallible.
@@ -919,10 +949,11 @@ Make sure:
 
 - Both `--pre` and `--post` paths exist and are directories
 - The directories contain supported files (`.py`, `.js`, `.ts`, `.tsx`,
-  `.rs`, or `.go`)
+  `.rs`, `.go`, `.java`, `.kt`/`.kts`, `.php`, or `.cpp`/`.h`-family)
 - The Tree-sitter packages are installed for the languages you scan
   (`tree-sitter-javascript`, `tree-sitter-typescript`,
-  `tree-sitter-rust`, `tree-sitter-go`)
+  `tree-sitter-rust`, `tree-sitter-go`, `tree-sitter-java`,
+  `tree-sitter-kotlin`, `tree-sitter-php`, `tree-sitter-cpp`)
 - Files inside hidden directories (names starting with `.`) are skipped
 
 ---
@@ -992,7 +1023,7 @@ jobs:
 
 ## Roadmap
 
-**v0.16.0 is the current release.** Items marked 🗓 are planned future work,
+**v0.17.0 is the current release.** Items marked 🗓 are planned future work,
 not present in the current release.
 
 | Item | Status |
@@ -1014,6 +1045,8 @@ not present in the current release.
 | PyPI publishing — `pip install nowreck` | ✅ v0.15.0 |
 | `CHANGED` claims (verifiable "I modified X") — function/class body edits | ✅ v0.16.0 |
 | Method/attribute call detection (`obj.method()`, `self.foo()`) with strict class matching | ✅ v0.16.0 |
+| Java, Kotlin, PHP + C++ language support (nine languages total) | ✅ v0.17.0 |
+| Differential audit of the existing five parsers — regex checker + corpus, every divergence classified | ✅ v0.17.0 |
 
 ---
 
@@ -1031,4 +1064,4 @@ This version converts automatically to the plain **MIT license** in July
 2028 (two years after initial release, per FSL's standard terms). No action
 is required for the conversion.
 
-*NoWreck v0.16.0 — September 2026*
+*NoWreck v0.17.0 — October 2026*
