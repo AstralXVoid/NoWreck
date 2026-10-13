@@ -102,11 +102,12 @@ depends on them (each was probed, not assumed):
   children) and are skipped by the shared comment set.
 - Property hooks (PHP 8.4) parse as a ``property_hook_list`` inside the
   ``property_declaration``; each ``property_hook`` is a named body.
-- Grammar lag (loud): asymmetric visibility (``private(set)`` /
-  ``protected(set)``) inside a **promoted constructor parameter** fails
-  to parse (an ``ERROR`` node), while a standalone property with the same
-  modifier parses cleanly.  Accepted edge — it is loud
-  (``has_error`` is set), so the scanner's parse warning fires.
+- Grammar-version boundary: asymmetric visibility (``private(set)`` /
+  ``protected(set)``) inside a **promoted constructor parameter** is
+  rejected by older grammar builds as an ``ERROR`` node, while newer
+  builds accept it as a ``property_promotion_parameter``. A standalone
+  property with the same modifier parses cleanly on both; the probe pins
+  both outcomes so a grammar upgrade is deliberate rather than surprising.
 - ``namespace App { ... }`` blocks parse into a
   ``namespace_definition`` → ``compound_statement``; the ``;`` form is a
   declaration followed by siblings.  ``declare(ticks=1) { ... }`` wraps
@@ -1005,8 +1006,10 @@ final class Greeter implements Greets
 """
         assert not _parse_tolerantly(source).has_error
 
-    def test_asymmetric_visibility_in_promoted_parameter_is_a_loud_lag(self) -> None:
-        """Grammar lag: ``private(set)`` promotion errors; properties are fine."""
+    def test_asymmetric_visibility_in_promoted_parameter_tracks_grammar_support(
+        self,
+    ) -> None:
+        """Pin old grammar rejection and new grammar support for PHP 8.4 syntax."""
         promoted = (
             "<?php\nclass P {\n"
             "    public function __construct(public private(set) int $id) {}\n"
@@ -1014,11 +1017,12 @@ final class Greeter implements Greets
         )
         root = _parse_tolerantly(promoted)
         if root.has_error:
-    # Older grammar versions must expose the unsupported syntax.
-    assert _all(root, "ERROR")
-else:
-    # Newer grammars must preserve the promoted parameter.
-    assert _all(root, "property_promotion_parameter")
+            # Older grammar builds must expose the unsupported syntax.
+            assert _all(root, "ERROR")
+        else:
+            # Newer builds accept it as a property-promotion parameter.
+            assert len(_all(root, "property_promotion_parameter")) == 1
+
         standalone = "<?php\nclass P {\n    public private(set) int $id = 0;\n}\n"
         assert not _parse_tolerantly(standalone).has_error
 
