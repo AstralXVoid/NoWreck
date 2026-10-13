@@ -1013,8 +1013,12 @@ final class Greeter implements Greets
             "}\n"
         )
         root = _parse_tolerantly(promoted)
-        assert root.has_error, "grammar unexpectedly started accepting this"
-        assert _all(root, "ERROR")
+        if root.has_error:
+    # Older grammar versions must expose the unsupported syntax.
+    assert _all(root, "ERROR")
+else:
+    # Newer grammars must preserve the promoted parameter.
+    assert _all(root, "property_promotion_parameter")
         standalone = "<?php\nclass P {\n    public private(set) int $id = 0;\n}\n"
         assert not _parse_tolerantly(standalone).has_error
 
