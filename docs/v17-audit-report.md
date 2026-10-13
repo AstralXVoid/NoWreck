@@ -1123,8 +1123,9 @@ schema asserts). Coverage closed in-phase:
 
 - `TestTypeScriptCacheRoundTrip`, `TestRustCacheRoundTrip`,
   `TestGoCacheRoundTrip` — 4 tests each: cold/warm symbol identity including
-  `body_hash`, hash preservation across the round-trip (distinct per symbol),
-  the cache's recorded language string, and schema v2. These close the three
+  `body_hash`, hash preservation across the round-trip, the cache's recorded
+  language string, and schema v2 (the TS class additionally asserts every
+  per-symbol hash is distinct). These close the three
   languages that had no per-language round-trip: the v16 body-hash class
   exercised **JS only** (its docstring claimed TS/Rust/Go too — corrected to
   match), and Java/Kotlin/PHP/C++ landed with Phases 2–5.
